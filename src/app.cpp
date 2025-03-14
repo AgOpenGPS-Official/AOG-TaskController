@@ -12,6 +12,7 @@
 #include "isobus/hardware_integration/can_hardware_interface.hpp"
 #include "isobus/isobus/can_network_manager.hpp"
 #include "isobus/isobus/isobus_preferred_addresses.hpp"
+#include "isobus/isobus/isobus_standard_data_description_indices.hpp"
 #include "isobus/utility/system_timing.hpp"
 
 #include "task_controller.hpp"
@@ -79,6 +80,11 @@ bool Application::initialize()
 	nmea2000MessageInterface->initialize();
 	nmea2000MessageInterface->set_enable_sending_cog_sog_cyclically(true); // TODO: make configurable whether to send these messages
 
+	speedMessagesInterface->wheelBasedSpeedTransmitData.set_implement_start_stop_operations_state(isobus::SpeedMessagesInterface::WheelBasedMachineSpeedData::ImplementStartStopOperations::NotAvailable);
+	speedMessagesInterface->wheelBasedSpeedTransmitData.set_key_switch_state(isobus::SpeedMessagesInterface::WheelBasedMachineSpeedData::KeySwitchState::NotAvailable);
+	speedMessagesInterface->wheelBasedSpeedTransmitData.set_operator_direction_reversed_state(isobus::SpeedMessagesInterface::WheelBasedMachineSpeedData::OperatorDirectionReversed::NotAvailable);
+	speedMessagesInterface->machineSelectedSpeedTransmitData.set_speed_source(isobus::SpeedMessagesInterface::MachineSelectedSpeedData::SpeedSource::NavigationBasedSpeed);
+
 	std::cout << "Task controller server started." << std::endl;
 
 	static std::uint8_t xteSid = 0;
@@ -87,53 +93,6 @@ bool Application::initialize()
 	auto packetHandler = [this, serverCF](std::uint8_t src, std::uint8_t pgn, std::span<std::uint8_t> data) {
 		if (src == 0x7F && pgn == 0xFE) // 254 - Steer Data
 		{
-			std::uint16_t speed = data[0] | (data[1] << 8);
-			std::uint8_t status = data[2];
-
-			// Convert from hm/h to mm/s
-			speed *= 1000 / 36;
-
-			speedMessagesInterface->groundBasedSpeedTransmitData.set_machine_direction_of_travel(isobus::SpeedMessagesInterface::MachineDirection::Forward); // TODO: Implement direction
-			speedMessagesInterface->groundBasedSpeedTransmitData.set_machine_speed(speed);
-			speedMessagesInterface->groundBasedSpeedTransmitData.set_machine_distance(0); // TODO: Implement distance
-			speedMessagesInterface->wheelBasedSpeedTransmitData.set_implement_start_stop_operations_state(isobus::SpeedMessagesInterface::WheelBasedMachineSpeedData::ImplementStartStopOperations::NotAvailable);
-			speedMessagesInterface->wheelBasedSpeedTransmitData.set_key_switch_state(isobus::SpeedMessagesInterface::WheelBasedMachineSpeedData::KeySwitchState::NotAvailable);
-			speedMessagesInterface->wheelBasedSpeedTransmitData.set_machine_direction_of_travel(isobus::SpeedMessagesInterface::MachineDirection::Forward); // TODO: Implement direction
-			speedMessagesInterface->wheelBasedSpeedTransmitData.set_machine_speed(speed);
-			speedMessagesInterface->wheelBasedSpeedTransmitData.set_machine_distance(0); // TODO: Implement distance
-			speedMessagesInterface->wheelBasedSpeedTransmitData.set_operator_direction_reversed_state(isobus::SpeedMessagesInterface::WheelBasedMachineSpeedData::OperatorDirectionReversed::NotAvailable);
-			speedMessagesInterface->machineSelectedSpeedTransmitData.set_speed_source(isobus::SpeedMessagesInterface::MachineSelectedSpeedData::SpeedSource::NavigationBasedSpeed);
-			speedMessagesInterface->machineSelectedSpeedTransmitData.set_machine_direction_of_travel(isobus::SpeedMessagesInterface::MachineDirection::Forward); // TODO: Implement direction
-			speedMessagesInterface->machineSelectedSpeedTransmitData.set_machine_speed(speed);
-			speedMessagesInterface->machineSelectedSpeedTransmitData.set_machine_distance(0); // TODO: Implement distance
-			auto &cog_sog_message = nmea2000MessageInterface->get_cog_sog_transmit_message();
-			cog_sog_message.set_sequence_id(nmea2000SequenceIdentifier++);
-			cog_sog_message.set_speed_over_ground(speed);
-			cog_sog_message.set_course_over_ground(0); // TODO: Implement course
-			cog_sog_message.set_course_over_ground_reference(isobus::NMEA2000Messages::CourseOverGroundSpeedOverGroundRapidUpdate::CourseOverGroundReference::NotApplicableOrNull);
-
-			std::int32_t xte = (data[5] - 127) * 2;
-			static const std::uint8_t xteMode = 0b00000001;
-			xteSid = xteSid % 253 + 1;
-
-			std::array<std::uint8_t, 8> xteData = {
-				xteSid, // Sequence ID
-				static_cast<std::uint8_t>(xteMode | 0b00110000 | (status == 1 ? 0b00000000 : 0b01000000)), // XTE mode (4 bits) + Reserved (2 bits set to 1) + Navigation Terminated (2 bits)
-				static_cast<std::uint8_t>(xte & 0xFF), // XTE LSB
-				static_cast<std::uint8_t>((xte >> 8) & 0xFF), // XTE
-				static_cast<std::uint8_t>((xte >> 16) & 0xFF), // XTE
-				static_cast<std::uint8_t>((xte >> 24) & 0xFF), // XTE MSB
-				0xFF, // Reserved byte 1 (all bits set to 1)
-				0xFF // Reserved byte 2 (all bits set to 1)
-			};
-			if (isobus::SystemTiming::time_expired_ms(lastXteTransmit, 1000)) // Transmit every second
-			{
-				if (isobus::CANNetworkManager::CANNetwork.send_can_message(0x1F903, xteData.data(), xteData.size(), serverCF))
-				{
-					lastXteTransmit = isobus::SystemTiming::get_timestamp_ms();
-				}
-			}
-
 			// TODO: hack to get desired section states. probably want to make a new pgn later when we need more than 16 sections
 			std::vector<bool> sectionStates;
 			for (std::uint8_t i = 0; i < 8; i++)
@@ -152,6 +111,67 @@ bool Application::initialize()
 			std::uint8_t sectionControlState = data[0];
 			std::cout << "Received request from AOG to change section control state to " << (sectionControlState == 1 ? "enabled" : "disabled") << std::endl;
 			tcServer->update_section_control_enabled(sectionControlState == 1);
+		}
+		else if (src == 0x7F && pgn == 0xF2) // Process Data
+		{
+			auto identifier = static_cast<isobus::DataDescriptionIndex>(data[0] | (data[1] << 8));
+
+			std::int32_t value = data[2] | (data[3] << 8) | (data[4] << 16) | (data[5] << 24);
+			if (identifier == isobus::DataDescriptionIndex::ActualSpeed)
+			{
+				std::uint16_t speed = std::abs(value);
+				auto direction = value < 0 ? isobus::SpeedMessagesInterface::MachineDirection::Reverse : isobus::SpeedMessagesInterface::MachineDirection::Forward;
+				speedMessagesInterface->groundBasedSpeedTransmitData.set_machine_direction_of_travel(direction);
+				speedMessagesInterface->wheelBasedSpeedTransmitData.set_machine_direction_of_travel(direction);
+				speedMessagesInterface->machineSelectedSpeedTransmitData.set_machine_direction_of_travel(direction);
+
+				speedMessagesInterface->groundBasedSpeedTransmitData.set_machine_speed(speed);
+				speedMessagesInterface->wheelBasedSpeedTransmitData.set_machine_speed(speed);
+				speedMessagesInterface->machineSelectedSpeedTransmitData.set_machine_speed(speed);
+
+				speedMessagesInterface->groundBasedSpeedTransmitData.set_machine_distance(0); // TODO: Implement distance
+				speedMessagesInterface->wheelBasedSpeedTransmitData.set_machine_distance(0); // TODO: Implement distance
+				speedMessagesInterface->machineSelectedSpeedTransmitData.set_machine_distance(0); // TODO: Implement distance
+
+				auto &cog_sog_message = nmea2000MessageInterface->get_cog_sog_transmit_message();
+				cog_sog_message.set_sequence_id(nmea2000SequenceIdentifier++);
+				cog_sog_message.set_speed_over_ground(speed);
+				cog_sog_message.set_course_over_ground(0); // TODO: Implement course
+				cog_sog_message.set_course_over_ground_reference(isobus::NMEA2000Messages::CourseOverGroundSpeedOverGroundRapidUpdate::CourseOverGroundReference::NotApplicableOrNull);
+			}
+			else if (identifier == isobus::DataDescriptionIndex::GuidanceLineDeviation)
+			{
+				std::int32_t xte = value / 1000; // Convert from mm to m
+				static const std::uint8_t xteMode = 0b00000001;
+				xteSid = xteSid % 253 + 1;
+
+				std::uint8_t status = 0; // TODO: navigation terminated status
+
+				std::array<std::uint8_t, 8> xteData = {
+					xteSid, // Sequence ID
+					static_cast<std::uint8_t>(xteMode | 0b00110000 | (status == 1 ? 0b00000000 : 0b01000000)), // XTE mode (4 bits) + Reserved (2 bits set to 1) + Navigation Terminated (2 bits)
+					static_cast<std::uint8_t>(xte & 0xFF), // XTE LSB
+					static_cast<std::uint8_t>((xte >> 8) & 0xFF), // XTE
+					static_cast<std::uint8_t>((xte >> 16) & 0xFF), // XTE
+					static_cast<std::uint8_t>((xte >> 24) & 0xFF), // XTE MSB
+					0xFF, // Reserved byte 1 (all bits set to 1)
+					0xFF // Reserved byte 2 (all bits set to 1)
+				};
+				if (isobus::SystemTiming::time_expired_ms(lastXteTransmit, 1000)) // Transmit every second
+				{
+					if (isobus::CANNetworkManager::CANNetwork.send_can_message(0x1F903, xteData.data(), xteData.size(), serverCF))
+					{
+						lastXteTransmit = isobus::SystemTiming::get_timestamp_ms();
+					}
+				}
+			}
+			else if (static_cast<std::uint16_t>(identifier) == 597 /*isobus::DataDescriptionIndex::TotalDistance*/)
+			{
+				auto distance = static_cast<std::uint32_t>(value);
+				speedMessagesInterface->groundBasedSpeedTransmitData.set_machine_distance(distance);
+				speedMessagesInterface->wheelBasedSpeedTransmitData.set_machine_distance(distance);
+				speedMessagesInterface->machineSelectedSpeedTransmitData.set_machine_distance(distance);
+			}
 		}
 	};
 	udpConnections->set_packet_handler(packetHandler);
