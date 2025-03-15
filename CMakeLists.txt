@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 project("AOG-TaskController")
 set(PROJECT_VERSION_MAJOR 1)
-set(PROJECT_VERSION_MINOR 0)
+set(PROJECT_VERSION_MINOR 1)
 set(PROJECT_VERSION_PATCH 0)
 set(PROJECT_VERSION
     "${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}.${PROJECT_VERSION_PATCH}"
@@ -29,7 +29,7 @@ FetchContent_MakeAvailable(Boost)
 FetchContent_Declare(
   isobus
   GIT_REPOSITORY https://github.com/Open-Agriculture/AgIsoStack-plus-plus.git
-  GIT_TAG 58686f401282d34b8f15a704a82798222083ca3f
+  GIT_TAG 5f71ceae594f751d1befc775fa01e38a3ba0f5d3
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(isobus)
 
