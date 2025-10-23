@@ -107,6 +107,27 @@ bool Application::initialize()
 
 			tcServer->update_section_states(sectionStates);
 		}
+		if (src == 0x7F && pgn == 0xEF) // 239 - Machine Data
+		{
+			// Tramline data is at byte 8 (data[3] in our span)
+			// Bit 0 = left tramline, Bit 1 = right tramline
+			if (data.size() > 3)
+			{
+				bool leftTram = (data[3] & 0x01) != 0;
+				bool rightTram = (data[3] & 0x02) != 0;
+				static bool prevLeftTram = false;
+				static bool prevRightTram = false;
+				if ((leftTram != prevLeftTram) || (rightTram != prevRightTram))
+				{
+					std::cout << "AOG tramline change detected: left=" << (leftTram ? "ON" : "OFF")
+					          << ", right=" << (rightTram ? "ON" : "OFF") << std::endl;
+					prevLeftTram = leftTram;
+					prevRightTram = rightTram;
+					tcServer->set_left_tramline_state(leftTram);
+					tcServer->set_right_tramline_state(rightTram);
+				}
+			}
+		}
 		else if (src == 0x7F && pgn == 0xF1) // 241 - Section Control
 		{
 			std::uint8_t sectionControlState = data[0];
