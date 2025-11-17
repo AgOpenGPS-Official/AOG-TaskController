@@ -38,4 +38,5 @@ private:
 	std::unique_ptr<isobus::SpeedMessagesInterface> speedMessagesInterface;
 	std::unique_ptr<isobus::NMEA2000MessageInterface> nmea2000MessageInterface;
 	std::uint8_t nmea2000SequenceIdentifier = 0;
+	std::uint32_t currentMachineDistance = 0; ///< Current machine distance in mm
 };

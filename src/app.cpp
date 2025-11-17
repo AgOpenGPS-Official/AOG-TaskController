@@ -130,9 +130,9 @@ bool Application::initialize()
 				speedMessagesInterface->wheelBasedSpeedTransmitData.set_machine_speed(speed);
 				speedMessagesInterface->machineSelectedSpeedTransmitData.set_machine_speed(speed);
 
-				speedMessagesInterface->groundBasedSpeedTransmitData.set_machine_distance(0); // TODO: Implement distance
-				speedMessagesInterface->wheelBasedSpeedTransmitData.set_machine_distance(0); // TODO: Implement distance
-				speedMessagesInterface->machineSelectedSpeedTransmitData.set_machine_distance(0); // TODO: Implement distance
+				speedMessagesInterface->groundBasedSpeedTransmitData.set_machine_distance(currentMachineDistance);
+				speedMessagesInterface->wheelBasedSpeedTransmitData.set_machine_distance(currentMachineDistance);
+				speedMessagesInterface->machineSelectedSpeedTransmitData.set_machine_distance(currentMachineDistance);
 
 				auto &cog_sog_message = nmea2000MessageInterface->get_cog_sog_transmit_message();
 				cog_sog_message.set_sequence_id(nmea2000SequenceIdentifier++);
@@ -168,10 +168,10 @@ bool Application::initialize()
 			}
 			else if (static_cast<std::uint16_t>(identifier) == 597 /*isobus::DataDescriptionIndex::TotalDistance*/)
 			{
-				auto distance = static_cast<std::uint32_t>(value);
-				speedMessagesInterface->groundBasedSpeedTransmitData.set_machine_distance(distance);
-				speedMessagesInterface->wheelBasedSpeedTransmitData.set_machine_distance(distance);
-				speedMessagesInterface->machineSelectedSpeedTransmitData.set_machine_distance(distance);
+				currentMachineDistance = static_cast<std::uint32_t>(value);
+				speedMessagesInterface->groundBasedSpeedTransmitData.set_machine_distance(currentMachineDistance);
+				speedMessagesInterface->wheelBasedSpeedTransmitData.set_machine_distance(currentMachineDistance);
+				speedMessagesInterface->machineSelectedSpeedTransmitData.set_machine_distance(currentMachineDistance);
 			}
 		}
 	};
