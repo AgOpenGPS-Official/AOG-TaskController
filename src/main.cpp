@@ -305,7 +305,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	MSG msg;
 	while (running)
 	{
-		while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE))
+		// This will become the apps main timer.
+		// Wait for a message with a timeout
+		// If a message arrives, process all pending messages
+		// If timeout occurs, continue to app.update()
+		DWORD result = MsgWaitForMultipleObjects(0, NULL, FALSE, 1, QS_ALLINPUT);
+
+		while (result == WAIT_OBJECT_0 && PeekMessage(&msg, NULL, 0, 0, PM_REMOVE))
 		{
 			TranslateMessage(&msg);
 			DispatchMessage(&msg);
