@@ -51,7 +51,7 @@ public:
 	void set_element_number_for_ddi(isobus::DataDescriptionIndex ddi, std::uint16_t elementNumber);
 	// Element work state management these act like master / override for actual sections
 	void set_element_work_state(std::uint16_t elementNumber, bool isWorking);
-	bool get_element_work_state(std::uint16_t elementNumber, bool &isWorking) const;
+	bool try_get_element_work_state(std::uint16_t elementNumber, bool &isWorking) const;
 
 private:
 	isobus::DeviceDescriptorObjectPool pool; ///< The device descriptor object pool (DDOP) for the TC
