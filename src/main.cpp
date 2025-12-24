@@ -116,8 +116,8 @@ private:
 			std::cout << "Options:\n";
 			std::cout << "  --help\t\tShow this help message\n";
 			std::cout << "  --version\t\tShow the version of the application\n";
-			std::cout << "  --adapter=<driver>\tSelect the CAN driver\n";
-			std::cout << "  --channel=<channel>\tSelect the CAN channel\n";
+			std::cout << "  --can_adapter=<driver>\tSelect the CAN driver\n";
+			std::cout << "  --can_channel=<channel>\tSelect the CAN channel\n";
 			std::cout << "  --log_level=<level>\tSet the log level (debug, info, warning, error, critical)\n";
 			std::cout << "  --log2file\t\tLog to file\n";
 			exit(0);

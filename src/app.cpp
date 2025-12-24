@@ -41,6 +41,8 @@ bool Application::initialize()
 		return false;
 	}
 
+	isobus::CANNetworkManager::CANNetwork.get_configuration().set_number_of_packets_per_cts_message(255);
+
 	isobus::NAME ourNAME(0);
 
 	//! Make sure you change these for your device!!!!
