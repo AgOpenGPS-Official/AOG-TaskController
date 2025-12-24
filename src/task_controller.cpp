@@ -561,16 +561,29 @@ void MyTCServer::send_section_setpoint_states(std::shared_ptr<isobus::ControlFun
 		value |= (clients[client].get_section_setpoint_state(sectionOffset + i) << (2 * i));
 	}
 
+	// Modern ECU? (DDI 290  SetpointCondensedWorkState1_16 exists)
 	std::uint16_t ddiTarget = static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SetpointCondensedWorkState1_16) + ddiOffset;
-	std::uint16_t elementNumber = clients[client].get_element_number_for_ddi(static_cast<isobus::DataDescriptionIndex>(ddiTarget));
-	send_set_value(client, ddiTarget, elementNumber, value);
-
-	bool setpointWorkState = clients[client].is_any_section_setpoint_on();
-	if ((clients[client].get_setpoint_work_state() != setpointWorkState))
+	if (clients[client].get_element_number_for_ddi(static_cast<isobus::DataDescriptionIndex>(ddiTarget)) != 0)
 	{
-		send_set_value(client, static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SetpointWorkState), clients[client].get_element_number_for_ddi(isobus::DataDescriptionIndex::SetpointWorkState), setpointWorkState ? 1 : 0);
-		clients[client].set_setpoint_work_state(setpointWorkState);
+		std::uint16_t elementNumber = clients[client].get_element_number_for_ddi(static_cast<isobus::DataDescriptionIndex>(ddiTarget));
+		send_set_value(client, ddiTarget, elementNumber, value);
+
+		bool setpointWorkState = clients[client].is_any_section_setpoint_on();
+		if ((clients[client].get_setpoint_work_state() != setpointWorkState))
+		{
+			send_set_value(client, static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SetpointWorkState), clients[client].get_element_number_for_ddi(isobus::DataDescriptionIndex::SetpointWorkState), setpointWorkState ? 1 : 0);
+			clients[client].set_setpoint_work_state(setpointWorkState);
+		}
+		return;
+	} 
+	ddiTarget = static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState1_16) + ddiOffset;
+	if (clients[client].get_element_number_for_ddi(static_cast<isobus::DataDescriptionIndex>(ddiTarget)) != 0)
+	{
+		send_set_value(client, ddiTarget, clients[client].get_element_number_for_ddi(static_cast<isobus::DataDescriptionIndex>(ddiTarget)), value);
+		return;
 	}
+
+	std::cout << "[TC Server] Neither condensed nor controllable-actual work state supported Missing DDI 290 and 141!" << std::endl;
 }
 
 void MyTCServer::send_section_control_state(std::shared_ptr<isobus::ControlFunction> client, bool enabled)
