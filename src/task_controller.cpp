@@ -140,7 +140,7 @@ void ClientState::set_element_work_state(std::uint16_t elementNumber, bool isWor
 	elementWorkStates[elementNumber] = isWorking;
 }
 
-bool ClientState::get_element_work_state(std::uint16_t elementNumber, bool &isWorking) const
+bool ClientState::try_get_element_work_state(std::uint16_t elementNumber, bool &isWorking) const
 {
 	auto it = elementWorkStates.find(elementNumber);
 	if (it != elementWorkStates.end())
@@ -349,14 +349,14 @@ bool MyTCServer::on_value_command(std::shared_ptr<isobus::ControlFunction> partn
 			auto &clientState = clients[partner];
 			// Check if the current element's work state is off
 			bool currentElementWorkState;
-			if (clientState.get_element_work_state(elementNumber, currentElementWorkState) && !currentElementWorkState)
+			if (clientState.try_get_element_work_state(elementNumber, currentElementWorkState) && !currentElementWorkState)
 			{
 				workStateOff = true;
 				//std::cout << "Element " << elementNumber << " work state is OFF, forcing sections to OFF" << std::endl;
 			}
 			// Check if element 0's work state is off (main implement)
 			bool mainElementWorkState;
-			if (clientState.get_element_work_state(0, mainElementWorkState))
+			if (clientState.try_get_element_work_state(0, mainElementWorkState))
 			{
 				if (!mainElementWorkState)
 				{
