@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include "isobus/isobus/isobus_data_dictionary.hpp"
 #include "isobus/isobus/isobus_device_descriptor_object_pool.hpp"
 #include "isobus/isobus/isobus_standard_data_description_indices.hpp"
 #include "isobus/isobus/isobus_task_controller_server.hpp"
@@ -48,6 +49,9 @@ public:
 	void mark_measurement_commands_sent();
 	std::uint16_t get_element_number_for_ddi(isobus::DataDescriptionIndex ddi) const;
 	void set_element_number_for_ddi(isobus::DataDescriptionIndex ddi, std::uint16_t elementNumber);
+	// Element work state management these act like master / override for actual sections
+	void set_element_work_state(std::uint16_t elementNumber, bool isWorking);
+	bool get_element_work_state(std::uint16_t elementNumber, bool &isWorking) const;
 
 private:
 	isobus::DeviceDescriptorObjectPool pool; ///< The device descriptor object pool (DDOP) for the TC
@@ -59,6 +63,7 @@ private:
 	std::vector<std::uint8_t> sectionActualStates; // 2 bits per section (0 = off, 1 = on, 2 = error, 3 = not installed)
 	bool setpointWorkState = false; ///< The overall work state desired
 	bool actualWorkState = false; ///< The overall work state actual
+	std::map<std::uint16_t, bool> elementWorkStates; ///< Work state per element (element number -> is working)
 	bool isSectionControlEnabled = false; ///< Stores auto vs manual mode setting
 };
 

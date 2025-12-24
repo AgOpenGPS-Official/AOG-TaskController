@@ -135,6 +135,22 @@ void ClientState::set_element_number_for_ddi(isobus::DataDescriptionIndex ddi, s
 	ddiToElementNumber[ddi] = elementNumber;
 }
 
+void ClientState::set_element_work_state(std::uint16_t elementNumber, bool isWorking)
+{
+	elementWorkStates[elementNumber] = isWorking;
+}
+
+bool ClientState::get_element_work_state(std::uint16_t elementNumber, bool &isWorking) const
+{
+	auto it = elementWorkStates.find(elementNumber);
+	if (it != elementWorkStates.end())
+	{
+		isWorking = it->second;
+		return true;
+	}
+	return false;
+}
+
 MyTCServer::MyTCServer(std::shared_ptr<isobus::InternalControlFunction> internalControlFunction) :
   TaskControllerServer(internalControlFunction,
                        1, // AOG limits to 1 boom
@@ -327,9 +343,33 @@ bool MyTCServer::on_value_command(std::shared_ptr<isobus::ControlFunction> partn
 		{
 			std::uint8_t sectionIndexOffset = NUMBER_SECTIONS_PER_CONDENSED_MESSAGE * static_cast<std::uint8_t>(dataDescriptionIndex - static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState1_16));
 
+			// Check if ActualWorkState is off (0) for either the current element or element 0 (main implement)
+			// If either is off, all sections should be treated as off
+			bool workStateOff = false;
+			auto &clientState = clients[partner];
+			// Check if the current element's work state is off
+			bool currentElementWorkState;
+			if (clientState.get_element_work_state(elementNumber, currentElementWorkState) && !currentElementWorkState)
+			{
+				workStateOff = true;
+				//std::cout << "Element " << elementNumber << " work state is OFF, forcing sections to OFF" << std::endl;
+			}
+			// Check if element 0's work state is off (main implement)
+			bool mainElementWorkState;
+			if (clientState.get_element_work_state(0, mainElementWorkState))
+			{
+				if (!mainElementWorkState)
+				{
+					workStateOff = true;
+					//std::cout << "Element 0 work state is OFF, forcing sections to OFF" << std::endl;
+				}
+			}
 			for (std::uint_fast8_t i = 0; i < NUMBER_SECTIONS_PER_CONDENSED_MESSAGE; i++)
 			{
-				clients[partner].set_section_actual_state(i + sectionIndexOffset, (processDataValue >> (2 * i)) & 0x03);
+				// When work state is off, force all sections to off state
+				// Otherwise, use the actual values from the implement
+				std::uint8_t sectionState = workStateOff ? SectionState::OFF : ((processDataValue >> (2 * i)) & 0x03);
+				clients[partner].set_section_actual_state(i + sectionIndexOffset, sectionState);
 			}
 		}
 		break;
@@ -342,7 +382,8 @@ bool MyTCServer::on_value_command(std::shared_ptr<isobus::ControlFunction> partn
 
 		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualWorkState):
 		{
-			clients[partner].set_setpoint_work_state(processDataValue == 1);
+			// Store the work state per element rather than globally
+			clients[partner].set_element_work_state(elementNumber, processDataValue == 1);
 		}
 	}
 
@@ -394,10 +435,15 @@ void MyTCServer::request_measurement_commands()
 									{
 										// TODO: This is a bit of a hack, but it works for now
 										client.second.set_element_number_for_ddi(static_cast<isobus::DataDescriptionIndex>(processDataObject->get_ddi()), elementObject->get_element_number());
+										const auto &entryB = isobus::DataDictionary::get_entry(processDataObject->get_ddi());
+										std::cout << "Mapped DDI " << processDataObject->get_ddi() << " (" << entryB.to_string() << ") to element "
+												<< elementObject->get_element_number() << std::endl;
 
 										if (processDataObject->has_trigger_method(isobus::task_controller_object::DeviceProcessDataObject::AvailableTriggerMethods::OnChange))
 										{
 											send_change_threshold_measurement_command(client.first, processDataObject->get_ddi(), elementObject->get_element_number(), 1);
+											std::cout << "Subscribed (OnChange) to DDI " << processDataObject->get_ddi() << " (" << entryB.to_string() << ") for element "
+													<< elementObject->get_element_number() << std::endl;
 										}
 										if (processDataObject->has_trigger_method(isobus::task_controller_object::DeviceProcessDataObject::AvailableTriggerMethods::TimeInterval))
 										{
@@ -488,7 +534,7 @@ void MyTCServer::update_section_states(std::vector<bool> &sectionStates)
 		}
 		if (requiresUpdate)
 		{
-			std::uint8_t ddiOffset = state.get_number_of_sections() / NUMBER_SECTIONS_PER_CONDENSED_MESSAGE;
+			std::uint8_t ddiOffset = (state.get_number_of_sections() -1) / NUMBER_SECTIONS_PER_CONDENSED_MESSAGE;
 			send_section_setpoint_states(client.first, ddiOffset);
 		}
 	}
