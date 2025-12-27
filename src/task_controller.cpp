@@ -154,8 +154,8 @@ bool ClientState::try_get_element_work_state(std::uint16_t elementNumber, bool &
 MyTCServer::MyTCServer(std::shared_ptr<isobus::InternalControlFunction> internalControlFunction) :
   TaskControllerServer(internalControlFunction,
                        1, // AOG limits to 1 boom
-                       16, // AOG limits to 16 sections of unique width
-                       16, // 16 channels for position based control
+                       64, // AOG limits to 16 sections of unique width but with zones it can be 64
+                       64, // 64 channels for position based control
                        isobus::TaskControllerOptions()
                          .with_implement_section_control(), // We support section control
                        TaskControllerVersion::SecondEditionDraft)
