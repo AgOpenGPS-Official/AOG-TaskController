@@ -82,13 +82,15 @@ bool Application::initialize()
 	// Create TECU control function
 	// TODO: Should we wait between this and TC?
 	// TODO: If there's already a TECU on the bus we should not create ours
-	if (tcCF) { // Only create TECU if TC was created
+	if (tcCF)
+	{ // Only create TECU if TC was created
 		std::cout << "[Init] Creating Tractor ECU control function..." << std::endl;
 		tecuCF = isobus::CANNetworkManager::CANNetwork.create_internal_control_function(tecuNAME, 0, isobus::preferred_addresses::IndustryGroup2::TractorECU);
 		std::cout << "[Init] Tractor ECU control function created, waiting 1.5 seconds..." << std::endl;
 
 		// Update the network manager to process TECU CF claiming
-		for (int i = 0; i < 15; i++) {
+		for (int i = 0; i < 15; i++)
+		{
 			std::this_thread::sleep_for(std::chrono::milliseconds(100));
 			isobus::CANNetworkManager::CANNetwork.update();
 		}
@@ -102,7 +104,7 @@ bool Application::initialize()
 	tcServer->set_task_totals_active(true); // TODO: make this dynamic based on status in AOG
 
 	// Initialize speed and distance messages
-	if(tecuCF)
+	if (tecuCF)
 	{
 		std::cout << "[Init] Creating Speed Messages Interface on TECU..." << std::endl;
 		speedMessagesInterface = std::make_unique<isobus::SpeedMessagesInterface>(tecuCF, true, true, true, false); //TODO: make configurable whether to send these messages
@@ -119,7 +121,7 @@ bool Application::initialize()
 		nmea2000MessageInterface->set_enable_sending_cog_sog_cyclically(true); // TODO: make configurable whether to send these messages
 		std::cout << "[Init] NMEA2000 Message Interface created and initialized." << std::endl;
 	}
-	else 
+	else
 	{
 		std::cout << "[Warning] TECU Control Function not available, Speed/NMEA interfaces not created" << std::endl;
 	}
@@ -160,7 +162,8 @@ bool Application::initialize()
 			{
 				std::uint16_t speed = std::abs(value);
 				auto direction = value < 0 ? isobus::SpeedMessagesInterface::MachineDirection::Reverse : isobus::SpeedMessagesInterface::MachineDirection::Forward;
-				if(speedMessagesInterface) {
+				if (speedMessagesInterface)
+				{
 					speedMessagesInterface->groundBasedSpeedTransmitData.set_machine_direction_of_travel(direction);
 					speedMessagesInterface->wheelBasedSpeedTransmitData.set_machine_direction_of_travel(direction);
 					speedMessagesInterface->machineSelectedSpeedTransmitData.set_machine_direction_of_travel(direction);
@@ -173,10 +176,11 @@ bool Application::initialize()
 					speedMessagesInterface->wheelBasedSpeedTransmitData.set_machine_distance(0); // TODO: Implement distance
 					speedMessagesInterface->machineSelectedSpeedTransmitData.set_machine_distance(0); // TODO: Implement distance
 				}
-				if(nmea2000MessageInterface){
+				if (nmea2000MessageInterface)
+				{
 					auto &cog_sog_message = nmea2000MessageInterface->get_cog_sog_transmit_message();
 					cog_sog_message.set_sequence_id(nmea2000SequenceIdentifier++);
-					cog_sog_message.set_speed_over_ground(speed/10);
+					cog_sog_message.set_speed_over_ground(speed / 10);
 					cog_sog_message.set_course_over_ground(0); // TODO: Implement course
 					cog_sog_message.set_course_over_ground_reference(isobus::NMEA2000Messages::CourseOverGroundSpeedOverGroundRapidUpdate::CourseOverGroundReference::NotApplicableOrNull);
 				}
@@ -234,8 +238,10 @@ bool Application::update()
 
 	tcServer->request_measurement_commands();
 	tcServer->update();
-	if(speedMessagesInterface) speedMessagesInterface->update();
-	if(nmea2000MessageInterface) nmea2000MessageInterface->update();
+	if (speedMessagesInterface)
+		speedMessagesInterface->update();
+	if (nmea2000MessageInterface)
+		nmea2000MessageInterface->update();
 
 	if (isobus::SystemTiming::time_expired_ms(lastHeartbeatTransmit, 100))
 	{
