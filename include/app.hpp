@@ -35,6 +35,7 @@ private:
 
 	std::shared_ptr<isobus::CANHardwarePlugin> canDriver;
 	std::shared_ptr<MyTCServer> tcServer;
+	std::shared_ptr<isobus::InternalControlFunction> tecuCF = nullptr;
 	std::unique_ptr<isobus::SpeedMessagesInterface> speedMessagesInterface;
 	std::unique_ptr<isobus::NMEA2000MessageInterface> nmea2000MessageInterface;
 	std::uint8_t nmea2000SequenceIdentifier = 0;
