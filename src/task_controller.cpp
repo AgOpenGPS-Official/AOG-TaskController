@@ -135,6 +135,11 @@ void ClientState::set_element_number_for_ddi(isobus::DataDescriptionIndex ddi, s
 	ddiToElementNumber[ddi] = elementNumber;
 }
 
+bool ClientState::has_element_number_for_ddi(isobus::DataDescriptionIndex ddi) const
+{
+	return ddiToElementNumber.find(ddi) != ddiToElementNumber.end();
+}
+
 void ClientState::set_element_work_state(std::uint16_t elementNumber, bool isWorking)
 {
 	elementWorkStates[elementNumber] = isWorking;
@@ -482,10 +487,18 @@ void MyTCServer::request_measurement_commands()
 									{
 										// TODO: This is a bit of a hack, but it works for now
 										client.second.set_element_number_for_ddi(static_cast<isobus::DataDescriptionIndex>(processDataObject->get_ddi()), elementObject->get_element_number());
+										const auto &entryB = isobus::DataDictionary::get_entry(processDataObject->get_ddi());
 
 										if (processDataObject->has_trigger_method(isobus::task_controller_object::DeviceProcessDataObject::AvailableTriggerMethods::OnChange))
 										{
 											send_change_threshold_measurement_command(client.first, processDataObject->get_ddi(), elementObject->get_element_number(), 1);
+											std::cout << "Subscribed (OnChange) to DDI " << processDataObject->get_ddi() << " (" << entryB.to_string() << ") for element "
+										          << elementObject->get_element_number() << std::endl;
+										}
+										else
+										{
+											std::cout << "Mapped (no OnChange) DDI " << processDataObject->get_ddi() << " (" << entryB.to_string() << ") to element "
+										          << elementObject->get_element_number() << std::endl;
 										}
 									}
 								}
@@ -563,7 +576,7 @@ void MyTCServer::send_section_setpoint_states(std::shared_ptr<isobus::ControlFun
 
 	// Modern ECU? (DDI 290  SetpointCondensedWorkState1_16 exists)
 	std::uint16_t ddiTarget = static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SetpointCondensedWorkState1_16) + ddiOffset;
-	if (clients[client].get_element_number_for_ddi(static_cast<isobus::DataDescriptionIndex>(ddiTarget)) != 0)
+	if (clients[client].has_element_number_for_ddi(static_cast<isobus::DataDescriptionIndex>(ddiTarget)))
 	{
 		std::uint16_t elementNumber = clients[client].get_element_number_for_ddi(static_cast<isobus::DataDescriptionIndex>(ddiTarget));
 		send_set_value(client, ddiTarget, elementNumber, value);
@@ -577,7 +590,7 @@ void MyTCServer::send_section_setpoint_states(std::shared_ptr<isobus::ControlFun
 		return;
 	}
 	ddiTarget = static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState1_16) + ddiOffset;
-	if (clients[client].get_element_number_for_ddi(static_cast<isobus::DataDescriptionIndex>(ddiTarget)) != 0)
+	if (clients[client].has_element_number_for_ddi(static_cast<isobus::DataDescriptionIndex>(ddiTarget)))
 	{
 		send_set_value(client, ddiTarget, clients[client].get_element_number_for_ddi(static_cast<isobus::DataDescriptionIndex>(ddiTarget)), value);
 		return;
