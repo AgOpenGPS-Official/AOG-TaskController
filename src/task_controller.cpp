@@ -493,12 +493,12 @@ void MyTCServer::request_measurement_commands()
 										{
 											send_change_threshold_measurement_command(client.first, processDataObject->get_ddi(), elementObject->get_element_number(), 1);
 											std::cout << "Subscribed (OnChange) to DDI " << processDataObject->get_ddi() << " (" << entryB.to_string() << ") for element "
-										          << elementObject->get_element_number() << std::endl;
+											          << elementObject->get_element_number() << std::endl;
 										}
 										else
 										{
 											std::cout << "Mapped (no OnChange) DDI " << processDataObject->get_ddi() << " (" << entryB.to_string() << ") to element "
-										          << elementObject->get_element_number() << std::endl;
+											          << elementObject->get_element_number() << std::endl;
 										}
 									}
 								}
