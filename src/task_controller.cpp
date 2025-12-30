@@ -416,7 +416,7 @@ bool MyTCServer::on_value_command(std::shared_ptr<isobus::ControlFunction> partn
 		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState241_256):
 		{
 			std::uint8_t sectionIndexOffset = NUMBER_SECTIONS_PER_CONDENSED_MESSAGE * static_cast<std::uint8_t>(dataDescriptionIndex - static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState1_16));
-			
+
 			for (std::uint_fast8_t i = 0; i < NUMBER_SECTIONS_PER_CONDENSED_MESSAGE; i++)
 			{
 				std::uint8_t sectionState = ((processDataValue >> (2 * i)) & 0x03);
@@ -642,7 +642,7 @@ void MyTCServer::send_section_setpoint_states(std::shared_ptr<isobus::ControlFun
 		{
 			std::cout << "[TC Server] DDI 289 (SetpointWorkState) not available!" << std::endl;
 		}
-	} 
+	}
 	else if (clients[client].has_element_number_for_ddi(static_cast<isobus::DataDescriptionIndex>(ddiTargetLegacy)))
 	{
 		if (is_ddi_settable(client, ddiTargetLegacy))
@@ -654,7 +654,7 @@ void MyTCServer::send_section_setpoint_states(std::shared_ptr<isobus::ControlFun
 			std::cout << "[TC Server] Legacy DDI " << ddiTargetLegacy << " (ActualCondensedWorkState) is not settable!" << std::endl;
 		}
 		return;
-	} 
+	}
 	else
 	{
 		std::cout << "[TC Server] Neither condensed nor controllable-actual work state supported Missing DDI 290 and 141!" << std::endl;
