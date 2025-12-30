@@ -582,7 +582,7 @@ void MyTCServer::send_section_setpoint_states(std::shared_ptr<isobus::ControlFun
 		send_set_value(client, ddiTarget, elementNumber, value);
 
 		bool setpointWorkState = clients[client].is_any_section_setpoint_on();
-		if ((clients[client].get_setpoint_work_state() != setpointWorkState))
+		if ((clients[client].get_setpoint_work_state() != setpointWorkState) && clients[client].has_element_number_for_ddi(isobus::DataDescriptionIndex::SetpointWorkState))
 		{
 			send_set_value(client, static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SetpointWorkState), clients[client].get_element_number_for_ddi(isobus::DataDescriptionIndex::SetpointWorkState), setpointWorkState ? 1 : 0);
 			clients[client].set_setpoint_work_state(setpointWorkState);
