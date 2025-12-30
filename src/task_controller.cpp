@@ -271,7 +271,14 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 				break;
 			}
 		}
-		auto fileName = std::to_string(partnerCF->get_NAME().get_full_name()) + "\\" + std::string(deviceObject->get_localization_label().begin(), deviceObject->get_localization_label().end()) + ".iop";
+
+		auto labelBytes = deviceObject->get_localization_label();
+		std::string label(reinterpret_cast<const char *>(labelBytes.data()), labelBytes.size());
+		// trim at first occurrence of null or ETX (0x03)
+		auto it = std::find_if(label.begin(), label.end(), [](char c) { return c == '\0' || static_cast<unsigned char>(c) == 0x03; });
+		label.erase(it, label.end());
+
+		auto fileName = std::to_string(partnerCF->get_NAME().get_full_name()) + "\\" + label + ".ddop";
 		std::vector<std::uint8_t> binaryPool;
 		if (state.get_pool().generate_binary_object_pool(binaryPool))
 		{
@@ -280,10 +287,11 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 			{
 				outFile.write(reinterpret_cast<const char *>(binaryPool.data()), binaryPool.size());
 				outFile.close();
+				std::cout << "Saved DDOP to file: " << fileName << std::endl;
 			}
 			else
 			{
-				std::cout << "Unable to save DDOP to NVM. (Failed to open file)" << std::endl;
+				std::cout << "Unable to save DDOP to NVM. (Failed to open file) file: " << fileName << std::endl;
 			}
 		}
 		else
