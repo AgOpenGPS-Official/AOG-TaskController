@@ -37,6 +37,8 @@ public:
 	std::uint8_t get_number_of_sections() const;
 	std::uint8_t get_section_setpoint_state(std::uint8_t section) const;
 	std::uint8_t get_section_actual_state(std::uint8_t section) const;
+	std::uint16_t get_element_number_for_section(std::uint8_t section) const;
+	void set_element_number_for_section(std::uint8_t section, std::uint16_t elementNumber);
 	bool is_any_section_setpoint_on() const;
 	bool get_setpoint_work_state() const;
 	void set_setpoint_work_state(bool state);
@@ -50,6 +52,7 @@ public:
 	std::uint16_t get_element_number_for_ddi(isobus::DataDescriptionIndex ddi) const;
 	void set_element_number_for_ddi(isobus::DataDescriptionIndex ddi, std::uint16_t elementNumber);
 	bool has_element_number_for_ddi(isobus::DataDescriptionIndex ddi) const;
+	bool is_element_or_parent_off(std::uint16_t elementNumber) const; ///< Recursively checks if element or any parent is off
 	// Element work state management these act like master / override for actual sections
 	void set_element_work_state(std::uint16_t elementNumber, bool isWorking);
 	bool try_get_element_work_state(std::uint16_t elementNumber, bool &isWorking) const;
@@ -62,7 +65,8 @@ private:
 	std::uint8_t numberOfSections;
 	std::vector<std::uint8_t> sectionSetpointStates; // 2 bits per section (0 = off, 1 = on, 2 = error, 3 = not installed)
 	std::vector<std::uint8_t> sectionActualStates; // 2 bits per section (0 = off, 1 = on, 2 = error, 3 = not installed)
-	bool setpointWorkState = false; ///< The overall work state desired
+	std::vector<std::uint16_t> sectionToElementNumber; // Maps section index to element number for hierarchy checking
+	bool setpointWorkState = false; ///< The overall work state desired (DDI 289)
 	bool actualWorkState = false; ///< The overall work state actual
 	std::map<std::uint16_t, bool> elementWorkStates; ///< Work state per element (element number -> is working)
 	bool isSectionControlEnabled = false; ///< Stores auto vs manual mode setting
@@ -97,6 +101,7 @@ public:
 private:
 	void send_section_setpoint_states(std::shared_ptr<isobus::ControlFunction> client, std::uint8_t ddiOffset);
 	void send_section_control_state(std::shared_ptr<isobus::ControlFunction> client, bool enabled);
+	bool is_ddi_settable(std::shared_ptr<isobus::ControlFunction> client, std::uint16_t ddi);
 
 	std::map<std::shared_ptr<isobus::ControlFunction>, ClientState> clients;
 	std::map<std::shared_ptr<isobus::ControlFunction>, std::queue<std::vector<std::uint8_t>>> uploadedPools;

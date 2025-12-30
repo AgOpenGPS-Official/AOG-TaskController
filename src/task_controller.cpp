@@ -21,6 +21,7 @@ void ClientState::set_number_of_sections(std::uint8_t number)
 	numberOfSections = number;
 	sectionSetpointStates.resize(number);
 	sectionActualStates.resize(number);
+	sectionToElementNumber.resize(number, 0); // Initialize all sections mapped to element 0 by default
 }
 
 void ClientState::set_section_setpoint_state(std::uint8_t section, std::uint8_t state)
@@ -36,6 +37,23 @@ void ClientState::set_section_actual_state(std::uint8_t section, std::uint8_t st
 	if (section < numberOfSections)
 	{
 		sectionActualStates[section] = state;
+	}
+}
+
+std::uint16_t ClientState::get_element_number_for_section(std::uint8_t section) const
+{
+	if (section < numberOfSections && section < sectionToElementNumber.size())
+	{
+		return sectionToElementNumber[section];
+	}
+	return 0;
+}
+
+void ClientState::set_element_number_for_section(std::uint8_t section, std::uint16_t elementNumber)
+{
+	if (section < numberOfSections && section < sectionToElementNumber.size())
+	{
+		sectionToElementNumber[section] = elementNumber;
 	}
 }
 
@@ -57,6 +75,12 @@ std::uint8_t ClientState::get_section_actual_state(std::uint8_t section) const
 {
 	if (section < numberOfSections)
 	{
+		// Check if the element or any parent is off
+		std::uint16_t elementNumber = get_element_number_for_section(section);
+		if (is_element_or_parent_off(elementNumber))
+		{
+			return SectionState::OFF;
+		}
 		return sectionActualStates[section];
 	}
 	return SectionState::NOT_INSTALLED;
@@ -138,6 +162,51 @@ void ClientState::set_element_number_for_ddi(isobus::DataDescriptionIndex ddi, s
 bool ClientState::has_element_number_for_ddi(isobus::DataDescriptionIndex ddi) const
 {
 	return ddiToElementNumber.find(ddi) != ddiToElementNumber.end();
+}
+
+bool ClientState::is_element_or_parent_off(std::uint16_t elementNumber) const
+{
+	// Check if this element is off
+	bool elementWorkState;
+	if (try_get_element_work_state(elementNumber, elementWorkState) && !elementWorkState)
+	{
+		return true; // Element is off
+	}
+
+	// Find the parent element(s) by searching through the pool
+	// Use const_cast to access non-const methods on the pool from a const context
+	auto &nonConstPool = const_cast<isobus::DeviceDescriptorObjectPool &>(pool);
+	for (std::uint32_t i = 0; i < nonConstPool.size(); i++)
+	{
+		auto object = nonConstPool.get_object_by_index(i);
+		if (object->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceElement)
+		{
+			auto elementObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceElementObject>(object);
+			// Check if this element has elementNumber as a child
+			for (std::uint16_t childId : elementObject->get_child_object_ids())
+			{
+				// Find the child object
+				for (std::uint32_t j = 0; j < nonConstPool.size(); j++)
+				{
+					auto childObject = nonConstPool.get_object_by_index(j);
+					if (childObject && childObject->get_object_id() == childId)
+					{
+						if (childObject->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceElement)
+						{
+							auto childElementObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceElementObject>(childObject);
+							if (childElementObject && childElementObject->get_element_number() == elementNumber)
+							{
+								// Found the parent, recursively check if parent or its parents are off
+								return is_element_or_parent_off(elementObject->get_element_number());
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return false; // No parent found or no parents are off
 }
 
 void ClientState::set_element_work_state(std::uint16_t elementNumber, bool isWorking)
@@ -347,34 +416,12 @@ bool MyTCServer::on_value_command(std::shared_ptr<isobus::ControlFunction> partn
 		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState241_256):
 		{
 			std::uint8_t sectionIndexOffset = NUMBER_SECTIONS_PER_CONDENSED_MESSAGE * static_cast<std::uint8_t>(dataDescriptionIndex - static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState1_16));
-
-			// Check if ActualWorkState is off (0) for either the current element or element 0 (main implement)
-			// If either is off, all sections should be treated as off
-			bool workStateOff = false;
-			auto &clientState = clients[partner];
-			// Check if the current element's work state is off
-			bool currentElementWorkState;
-			if (clientState.try_get_element_work_state(elementNumber, currentElementWorkState) && !currentElementWorkState)
-			{
-				workStateOff = true;
-				//std::cout << "Element " << elementNumber << " work state is OFF, forcing sections to OFF" << std::endl;
-			}
-			// Check if element 0's work state is off (main implement)
-			bool mainElementWorkState;
-			if (clientState.try_get_element_work_state(0, mainElementWorkState))
-			{
-				if (!mainElementWorkState)
-				{
-					workStateOff = true;
-					//std::cout << "Element 0 work state is OFF, forcing sections to OFF" << std::endl;
-				}
-			}
+			
 			for (std::uint_fast8_t i = 0; i < NUMBER_SECTIONS_PER_CONDENSED_MESSAGE; i++)
 			{
-				// When work state is off, force all sections to off state
-				// Otherwise, use the actual values from the implement
-				std::uint8_t sectionState = workStateOff ? SectionState::OFF : ((processDataValue >> (2 * i)) & 0x03);
+				std::uint8_t sectionState = ((processDataValue >> (2 * i)) & 0x03);
 				clients[partner].set_section_actual_state(i + sectionIndexOffset, sectionState);
+				clients[partner].set_element_number_for_section(i + sectionIndexOffset, elementNumber);
 			}
 		}
 		break;
@@ -425,7 +472,9 @@ void MyTCServer::request_measurement_commands()
 					auto processDataObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceProcessDataObject>(object);
 					if (processDataObject->get_ddi() == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualWorkState) ||
 					    (processDataObject->get_ddi() >= static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState1_16) &&
-					     processDataObject->get_ddi() <= static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState241_256)))
+					     processDataObject->get_ddi() <= static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState241_256)) ||
+					    (processDataObject->get_ddi() >= static_cast<std::uint16_t>(isobus::DataDescriptionIndex::CondensedSectionOverrideState1_16) &&
+					     processDataObject->get_ddi() <= static_cast<std::uint16_t>(isobus::DataDescriptionIndex::CondensedSectionOverrideState241_256)))
 					{
 						// Loop over all objects to find the elements that are the parents of the actual condensed work state objects
 						for (std::uint32_t j = 0; j < client.second.get_pool().size(); j++)
@@ -576,6 +625,8 @@ void MyTCServer::send_section_setpoint_states(std::shared_ptr<isobus::ControlFun
 
 	// Modern ECU? (DDI 290  SetpointCondensedWorkState1_16 exists)
 	std::uint16_t ddiTarget = static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SetpointCondensedWorkState1_16) + ddiOffset;
+	// Legacy ECU? (DDI 161  ActualCondensedWorkState1_16 exists and Settable)
+	std::uint16_t ddiTargetLegacy = static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState1_16) + ddiOffset;
 	if (clients[client].has_element_number_for_ddi(static_cast<isobus::DataDescriptionIndex>(ddiTarget)))
 	{
 		std::uint16_t elementNumber = clients[client].get_element_number_for_ddi(static_cast<isobus::DataDescriptionIndex>(ddiTarget));
@@ -587,19 +638,47 @@ void MyTCServer::send_section_setpoint_states(std::shared_ptr<isobus::ControlFun
 			send_set_value(client, static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SetpointWorkState), clients[client].get_element_number_for_ddi(isobus::DataDescriptionIndex::SetpointWorkState), setpointWorkState ? 1 : 0);
 			clients[client].set_setpoint_work_state(setpointWorkState);
 		}
-		return;
-	}
-	ddiTarget = static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState1_16) + ddiOffset;
-	if (clients[client].has_element_number_for_ddi(static_cast<isobus::DataDescriptionIndex>(ddiTarget)))
+		else if (!clients[client].has_element_number_for_ddi(isobus::DataDescriptionIndex::SetpointWorkState))
+		{
+			std::cout << "[TC Server] DDI 289 (SetpointWorkState) not available!" << std::endl;
+		}
+	} 
+	else if (clients[client].has_element_number_for_ddi(static_cast<isobus::DataDescriptionIndex>(ddiTargetLegacy)))
 	{
-		send_set_value(client, ddiTarget, clients[client].get_element_number_for_ddi(static_cast<isobus::DataDescriptionIndex>(ddiTarget)), value);
+		if (is_ddi_settable(client, ddiTargetLegacy))
+		{
+			send_set_value(client, ddiTargetLegacy, clients[client].get_element_number_for_ddi(static_cast<isobus::DataDescriptionIndex>(ddiTargetLegacy)), value);
+		}
+		else
+		{
+			std::cout << "[TC Server] Legacy DDI " << ddiTargetLegacy << " (ActualCondensedWorkState) is not settable!" << std::endl;
+		}
 		return;
+	} 
+	else
+	{
+		std::cout << "[TC Server] Neither condensed nor controllable-actual work state supported Missing DDI 290 and 141!" << std::endl;
 	}
-
-	std::cout << "[TC Server] Neither condensed nor controllable-actual work state supported Missing DDI 290 and 141!" << std::endl;
 }
 
 void MyTCServer::send_section_control_state(std::shared_ptr<isobus::ControlFunction> client, bool enabled)
 {
 	send_set_value(client, static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SectionControlState), clients[client].get_element_number_for_ddi(isobus::DataDescriptionIndex::SectionControlState), enabled ? 1 : 0);
+}
+
+bool MyTCServer::is_ddi_settable(std::shared_ptr<isobus::ControlFunction> client, std::uint16_t ddi)
+{
+	for (std::uint32_t i = 0; i < clients[client].get_pool().size(); i++)
+	{
+		auto object = clients[client].get_pool().get_object_by_index(i);
+		if (object->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceProcessData)
+		{
+			auto processDataObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceProcessDataObject>(object);
+			if (processDataObject->get_ddi() == ddi)
+			{
+				return processDataObject->has_property(isobus::task_controller_object::DeviceProcessDataObject::PropertiesBit::Settable);
+			}
+		}
+	}
+	return false;
 }
