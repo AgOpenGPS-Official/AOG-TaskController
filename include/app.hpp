@@ -39,4 +39,6 @@ private:
 	std::unique_ptr<isobus::SpeedMessagesInterface> speedMessagesInterface;
 	std::unique_ptr<isobus::NMEA2000MessageInterface> nmea2000MessageInterface;
 	std::uint8_t nmea2000SequenceIdentifier = 0;
+	std::uint32_t lastJ1939SpeedTransmit = 0;
+	std::int32_t lastSpeedValue = 0;
 };

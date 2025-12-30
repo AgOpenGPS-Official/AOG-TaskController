@@ -160,6 +160,7 @@ bool Application::initialize()
 			std::int32_t value = data[2] | (data[3] << 8) | (data[4] << 16) | (data[5] << 24);
 			if (identifier == isobus::DataDescriptionIndex::ActualSpeed)
 			{
+				lastSpeedValue = value; // Store the full precision value
 				std::uint16_t speed = std::abs(value);
 				auto direction = value < 0 ? isobus::SpeedMessagesInterface::MachineDirection::Reverse : isobus::SpeedMessagesInterface::MachineDirection::Forward;
 				if (speedMessagesInterface)
@@ -267,6 +268,23 @@ bool Application::update()
 			udpConnections->send(0x80, 0xF0, data);
 		}
 		lastHeartbeatTransmit = isobus::SystemTiming::get_timestamp_ms();
+	}
+
+	// Send J1939 PGN 65256 every 100ms (0.1 seconds)
+	if (isobus::SystemTiming::time_expired_ms(lastJ1939SpeedTransmit, 100) && tecuCF)
+	{
+		std::uint16_t speed_j1939 = (static_cast<std::uint32_t>(std::abs(lastSpeedValue)) * 576u + 312u) / 625u; // mm/s -> (km/h)*256
+		std::array<std::uint8_t, 8> j1939_speed_data = {
+			0xFF, 0xFF, // Compass Bearing (SPN 165)
+			static_cast<std::uint8_t>(speed_j1939 & 0xFF), // Machine Speed LSB (byte 2)
+			static_cast<std::uint8_t>((speed_j1939 >> 8) & 0xFF), // Machine Speed MSB (byte 3)
+			0xFF, 0xFF, // Pitch (SPN 583)
+			0xFF, 0xFF  // Altitude (SPN 580)
+		};
+		if (isobus::CANNetworkManager::CANNetwork.send_can_message(0xFEE8, j1939_speed_data.data(), j1939_speed_data.size(), tecuCF))
+		{
+			lastJ1939SpeedTransmit = isobus::SystemTiming::get_timestamp_ms();
+		}
 	}
 
 	return true;
