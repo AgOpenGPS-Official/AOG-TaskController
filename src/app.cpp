@@ -104,7 +104,7 @@ bool Application::initialize()
 	tcServer->set_task_totals_active(true); // TODO: make this dynamic based on status in AOG
 
 	// Initialize speed and distance messages
-	if (tecuCF)
+	if (tecuCF && tecuCF->get_address_valid())
 	{
 		std::cout << "[Init] Creating Speed Messages Interface on TECU..." << std::endl;
 		speedMessagesInterface = std::make_unique<isobus::SpeedMessagesInterface>(tecuCF, true, true, true, false); //TODO: make configurable whether to send these messages
@@ -271,7 +271,7 @@ bool Application::update()
 	}
 
 	// Send J1939 PGN 65256 every 100ms (0.1 seconds)
-	if (isobus::SystemTiming::time_expired_ms(lastJ1939SpeedTransmit, 100) && tecuCF)
+	if (isobus::SystemTiming::time_expired_ms(lastJ1939SpeedTransmit, 100) && tecuCF && tecuCF->get_address_valid())
 	{
 		std::uint16_t speed_j1939 = (static_cast<std::uint32_t>(std::abs(lastSpeedValue)) * 576u + 312u) / 625u; // mm/s -> (km/h)*256
 		std::array<std::uint8_t, 8> j1939_speed_data = {
