@@ -134,19 +134,16 @@ bool Application::initialize()
 	static std::uint32_t lastXteTransmit = 0;
 
 	auto packetHandler = [this, tcCF](std::uint8_t src, std::uint8_t pgn, std::span<std::uint8_t> data) {
-		if (src == 0x7F && pgn == 0xFE) // 254 - Steer Data
+		if (src == 0x7F && pgn == 0xE5) // 229 - 64 sections PGN
 		{
-			// TODO: hack to get desired section states. probably want to make a new pgn later when we need more than 16 sections
 			std::vector<bool> sectionStates;
-			for (std::uint8_t i = 0; i < 8; i++)
+			for (std::uint8_t j = 0; j < 8; j++)
 			{
-				sectionStates.push_back(data[6] & (1 << i));
+				for (std::uint8_t i = 0; i < 8; i++)
+				{
+					sectionStates.push_back(data[j] & (1 << i));
+				}
 			}
-			for (std::uint8_t i = 0; i < 8; i++)
-			{
-				sectionStates.push_back(data[7] & (1 << i));
-			}
-
 			tcServer->update_section_states(sectionStates);
 		}
 		else if (src == 0x7F && pgn == 0xF1) // 241 - Section Control
