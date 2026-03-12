@@ -29,7 +29,7 @@ FetchContent_MakeAvailable(Boost)
 FetchContent_Declare(
   isobus
   GIT_REPOSITORY https://github.com/Open-Agriculture/AgIsoStack-plus-plus.git
-  GIT_TAG 495eba6653010449d6202165240da7623243f416
+  GIT_TAG 935a3bc16881922c73af5aeddb7f25105f67c1c3
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(isobus)
 
