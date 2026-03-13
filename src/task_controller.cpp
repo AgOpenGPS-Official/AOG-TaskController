@@ -12,6 +12,7 @@
 #include "isobus/isobus/isobus_device_descriptor_object_pool_helpers.hpp"
 #include "isobus/isobus/isobus_task_controller_server.hpp"
 
+#include <algorithm>
 #include <bitset>
 #include <fstream>
 #include <iostream>
@@ -145,23 +146,41 @@ void ClientState::mark_measurement_commands_sent()
 
 std::uint16_t ClientState::get_element_number_for_ddi(isobus::DataDescriptionIndex ddi) const
 {
-	auto it = ddiToElementNumber.find(ddi);
-	if (it != ddiToElementNumber.end())
+	auto it = ddiToElementNumbers.find(ddi);
+	if (it != ddiToElementNumbers.end() && !it->second.empty())
 	{
-		return it->second;
+		return it->second.front(); // Return first element for backwards compatibility
 	}
 	std::cout << "Cached element number not found for DDI " << static_cast<int>(ddi) << std::endl;
 	return 0;
 }
 
-void ClientState::set_element_number_for_ddi(isobus::DataDescriptionIndex ddi, std::uint16_t elementNumber)
+static const std::vector<std::uint16_t> emptyElementNumbers;
+
+const std::vector<std::uint16_t> &ClientState::get_element_numbers_for_ddi(isobus::DataDescriptionIndex ddi) const
 {
-	ddiToElementNumber[ddi] = elementNumber;
+	auto it = ddiToElementNumbers.find(ddi);
+	if (it != ddiToElementNumbers.end())
+	{
+		return it->second;
+	}
+	return emptyElementNumbers;
+}
+
+void ClientState::add_element_number_for_ddi(isobus::DataDescriptionIndex ddi, std::uint16_t elementNumber)
+{
+	auto &elements = ddiToElementNumbers[ddi];
+	// Avoid duplicates
+	if (std::find(elements.begin(), elements.end(), elementNumber) == elements.end())
+	{
+		elements.push_back(elementNumber);
+	}
 }
 
 bool ClientState::has_element_number_for_ddi(isobus::DataDescriptionIndex ddi) const
 {
-	return ddiToElementNumber.find(ddi) != ddiToElementNumber.end();
+	auto it = ddiToElementNumbers.find(ddi);
+	return it != ddiToElementNumbers.end() && !it->second.empty();
 }
 
 bool ClientState::is_element_or_parent_off(std::uint16_t elementNumber) const
@@ -496,7 +515,7 @@ void MyTCServer::request_measurement_commands()
 									if (elementObjectChild == processDataObject->get_object_id())
 									{
 										// TODO: This is a bit of a hack, but it works for now
-										client.second.set_element_number_for_ddi(static_cast<isobus::DataDescriptionIndex>(processDataObject->get_ddi()), elementObject->get_element_number());
+										client.second.add_element_number_for_ddi(static_cast<isobus::DataDescriptionIndex>(processDataObject->get_ddi()), elementObject->get_element_number());
 										const auto &entryB = isobus::DataDictionary::get_entry(processDataObject->get_ddi());
 										std::cout << "Mapped DDI " << processDataObject->get_ddi() << " (" << entryB.to_string() << ") to element "
 										          << elementObject->get_element_number() << std::endl;
@@ -543,7 +562,7 @@ void MyTCServer::request_measurement_commands()
 									if (elementObjectChild == processDataObject->get_object_id())
 									{
 										// TODO: This is a bit of a hack, but it works for now
-										client.second.set_element_number_for_ddi(static_cast<isobus::DataDescriptionIndex>(processDataObject->get_ddi()), elementObject->get_element_number());
+										client.second.add_element_number_for_ddi(static_cast<isobus::DataDescriptionIndex>(processDataObject->get_ddi()), elementObject->get_element_number());
 										const auto &entryB = isobus::DataDictionary::get_entry(processDataObject->get_ddi());
 
 										if (processDataObject->has_trigger_method(isobus::task_controller_object::DeviceProcessDataObject::AvailableTriggerMethods::OnChange))
@@ -595,7 +614,17 @@ void MyTCServer::update_section_states(std::vector<bool> &sectionStates)
 
 			if (i < sectionStates.size())
 			{
-				if (sectionStates[i] != (state.get_section_setpoint_state(i) == SectionState::ON))
+				// Only control sections that are installed (actual state != NOT_INSTALLED)
+				if (state.get_section_actual_state(i) == SectionState::NOT_INSTALLED)
+				{
+					// Ensure setpoint also reflects NOT_INSTALLED
+					if (state.get_section_setpoint_state(i) != SectionState::NOT_INSTALLED)
+					{
+						state.set_section_setpoint_state(i, SectionState::NOT_INSTALLED);
+						requiresUpdate = true;
+					}
+				}
+				else if (sectionStates[i] != (state.get_section_setpoint_state(i) == SectionState::ON))
 				{
 					state.set_section_setpoint_state(i, sectionStates[i] ? SectionState::ON : SectionState::OFF);
 					requiresUpdate = true;
@@ -635,15 +664,23 @@ void MyTCServer::send_section_setpoint_states(std::shared_ptr<isobus::ControlFun
 	std::uint16_t ddiTarget = static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SetpointCondensedWorkState1_16) + ddiOffset;
 	// Legacy ECU? (DDI 161  ActualCondensedWorkState1_16 exists and Settable)
 	std::uint16_t ddiTargetLegacy = static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState1_16) + ddiOffset;
+
 	if (clients[client].has_element_number_for_ddi(static_cast<isobus::DataDescriptionIndex>(ddiTarget)))
 	{
-		std::uint16_t elementNumber = clients[client].get_element_number_for_ddi(static_cast<isobus::DataDescriptionIndex>(ddiTarget));
-		send_set_value(client, ddiTarget, elementNumber, value);
+		// Send to ALL elements that have this DDI (supports multiple booms)
+		for (std::uint16_t elementNumber : clients[client].get_element_numbers_for_ddi(static_cast<isobus::DataDescriptionIndex>(ddiTarget)))
+		{
+			send_set_value(client, ddiTarget, elementNumber, value);
+		}
 
 		bool setpointWorkState = clients[client].is_any_section_setpoint_on();
 		if ((clients[client].get_setpoint_work_state() != setpointWorkState) && clients[client].has_element_number_for_ddi(isobus::DataDescriptionIndex::SetpointWorkState))
 		{
-			send_set_value(client, static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SetpointWorkState), clients[client].get_element_number_for_ddi(isobus::DataDescriptionIndex::SetpointWorkState), setpointWorkState ? 1 : 0);
+			// Send SetpointWorkState to all elements that have it
+			for (std::uint16_t elementNumber : clients[client].get_element_numbers_for_ddi(isobus::DataDescriptionIndex::SetpointWorkState))
+			{
+				send_set_value(client, static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SetpointWorkState), elementNumber, setpointWorkState ? 1 : 0);
+			}
 			clients[client].set_setpoint_work_state(setpointWorkState);
 		}
 		else if (!clients[client].has_element_number_for_ddi(isobus::DataDescriptionIndex::SetpointWorkState))
@@ -655,7 +692,11 @@ void MyTCServer::send_section_setpoint_states(std::shared_ptr<isobus::ControlFun
 	{
 		if (is_ddi_settable(client, ddiTargetLegacy))
 		{
-			send_set_value(client, ddiTargetLegacy, clients[client].get_element_number_for_ddi(static_cast<isobus::DataDescriptionIndex>(ddiTargetLegacy)), value);
+			// Send to ALL elements that have this legacy DDI
+			for (std::uint16_t elementNumber : clients[client].get_element_numbers_for_ddi(static_cast<isobus::DataDescriptionIndex>(ddiTargetLegacy)))
+			{
+				send_set_value(client, ddiTargetLegacy, elementNumber, value);
+			}
 		}
 		else
 		{
@@ -671,7 +712,11 @@ void MyTCServer::send_section_setpoint_states(std::shared_ptr<isobus::ControlFun
 
 void MyTCServer::send_section_control_state(std::shared_ptr<isobus::ControlFunction> client, bool enabled)
 {
-	send_set_value(client, static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SectionControlState), clients[client].get_element_number_for_ddi(isobus::DataDescriptionIndex::SectionControlState), enabled ? 1 : 0);
+	// Send SectionControlState to all elements that have it
+	for (std::uint16_t elementNumber : clients[client].get_element_numbers_for_ddi(isobus::DataDescriptionIndex::SectionControlState))
+	{
+		send_set_value(client, static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SectionControlState), elementNumber, enabled ? 1 : 0);
+	}
 }
 
 bool MyTCServer::is_ddi_settable(std::shared_ptr<isobus::ControlFunction> client, std::uint16_t ddi)
