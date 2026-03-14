@@ -321,12 +321,13 @@ void GnssReceiver::parse_heading_FE45(const isobus::CANMessageFrame &frame)
 	if (raw_heading == 0xFFFF)
 		return;
 
-	double heading = raw_heading * 0.0078125; // 1/128 degree per bit
+	// Deere proprietary scale: raw / 27.5 degrees (confirmed via RE capture)
+	double heading = raw_heading / 27.5;
 
 	std::lock_guard<std::mutex> lock(dataMutex);
 	if (!data.has_heading)
 	{
-		std::cout << "[GnssReceiver] *** HEADING set by PGN 0xFE45 *** " << heading << " deg" << std::endl;
+		std::cout << "[GnssReceiver] *** HEADING set by PGN 0xFE45 *** " << heading << " deg (raw=" << raw_heading << ")" << std::endl;
 	}
 	data.heading_deg = heading;
 	data.has_heading = true;
