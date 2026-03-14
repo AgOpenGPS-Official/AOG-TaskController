@@ -15,6 +15,7 @@
 #include "isobus/isobus/isobus_speed_distance_messages.hpp"
 #include "isobus/isobus/nmea2000_message_interface.hpp"
 
+#include "gnss_receiver.hpp"
 #include "settings.hpp"
 #include "task_controller.hpp"
 #include "udp_connections.hpp"
@@ -38,6 +39,7 @@ private:
 	std::shared_ptr<isobus::InternalControlFunction> tecuCF = nullptr;
 	std::unique_ptr<isobus::SpeedMessagesInterface> speedMessagesInterface;
 	std::unique_ptr<isobus::NMEA2000MessageInterface> nmea2000MessageInterface;
+	std::unique_ptr<GnssReceiver> gnssReceiver;
 	std::uint8_t nmea2000SequenceIdentifier = 0;
 	std::uint32_t lastJ1939SpeedTransmit = 0;
 	std::int32_t lastSpeedValue = 0;

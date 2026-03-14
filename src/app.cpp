@@ -223,6 +223,9 @@ bool Application::initialize()
 	udpConnections->set_packet_handler(packetHandler);
 	udpConnections->open();
 
+	gnssReceiver = std::make_unique<GnssReceiver>();
+	gnssReceiver->initialize();
+
 	std::cout << "UDP connections opened." << std::endl;
 
 	return true;
@@ -235,6 +238,9 @@ bool Application::update()
 
 	udpConnections->handle_address_detection();
 	udpConnections->handle_incoming_packets();
+
+	if (gnssReceiver)
+		gnssReceiver->send_panda_if_ready(udpConnections);
 
 	tcServer->request_measurement_commands();
 	tcServer->update();

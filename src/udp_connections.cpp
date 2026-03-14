@@ -280,3 +280,22 @@ bool UdpConnections::send(std::uint8_t src, std::uint8_t pgn, std::span<std::uin
 	}
 	return true;
 }
+
+bool UdpConnections::send_raw(std::string_view text)
+{
+	auto subnet = settings->get_subnet();
+	boost::asio::ip::address_v4 broadcast_address = boost::asio::ip::make_address_v4(std::to_string(subnet[0]) + "." +
+	                                                                                 std::to_string(subnet[1]) + "." +
+	                                                                                 std::to_string(subnet[2]) + ".255");
+
+	udp::endpoint broadcast_endpoint(broadcast_address, 9999);
+	try
+	{
+		udpConnection.send_to(boost::asio::buffer(text.data(), text.size()), broadcast_endpoint);
+	}
+	catch (const boost::system::system_error &e)
+	{
+		return false;
+	}
+	return true;
+}

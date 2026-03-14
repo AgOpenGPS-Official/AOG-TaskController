@@ -11,6 +11,7 @@
 
 #include <boost/asio.hpp>
 #include <span>
+#include <string_view>
 #include "settings.hpp"
 
 using boost::asio::ip::udp;
@@ -68,6 +69,13 @@ public:
      * @return True if the packet was sent successfully, false otherwise
      */
 	bool send(std::uint8_t src, std::uint8_t pgn, std::span<std::uint8_t> data);
+
+	/**
+     * @brief Send raw text to AOG (no binary framing)
+     * @param text The raw text to send (e.g. an NMEA sentence)
+     * @return True if the text was sent successfully, false otherwise
+     */
+	bool send_raw(std::string_view text);
 
 private:
 	static const std::size_t MAX_PACKET_SIZE = 512; // Mostly arbitrary, but should be large enough to hold any packet
