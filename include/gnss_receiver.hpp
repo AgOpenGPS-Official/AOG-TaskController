@@ -87,7 +87,7 @@ private:
 	void log_frame_raw(std::uint32_t pgn, std::uint8_t sa, const isobus::CANMessageFrame &frame);
 	void log_frame_csv(std::uint32_t pgn, std::uint8_t sa, const isobus::CANMessageFrame &frame);
 
-	std::string build_panda(const GnssData &snapshot) const;
+	std::string build_gga(const GnssData &snapshot) const;
 
 	static constexpr std::uint8_t SF3000_SOURCE_ADDRESS = 0x9A;
 

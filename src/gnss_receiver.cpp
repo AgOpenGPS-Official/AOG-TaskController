@@ -137,21 +137,10 @@ void GnssReceiver::on_can_frame(const isobus::CANMessageFrame &frame)
 			log_frame_csv(pgn, sa, frame);
 		}
 
-		// Dispatch to parsers for known/candidate PGNs
+		// Dispatch to parsers for SF3000 proprietary PGNs
 		switch (pgn)
 		{
-			// Standard J1939 PGNs (may or may not be present)
-			case 0xFEF3:
-				parse_position_standard(frame);
-				break;
-			case 0xFEF0:
-				parse_time_date_standard(frame);
-				break;
-			case 0xFEF2:
-				parse_altitude_standard(frame);
-				break;
-
-			// Confirmed candidate: heading
+			// Confirmed: heading
 			case 0xFE45:
 				parse_heading_FE45(frame);
 				break;
@@ -194,10 +183,24 @@ void GnssReceiver::on_can_frame(const isobus::CANMessageFrame &frame)
 		parse_candidate_ACFF(frame);
 	}
 
-	// Speed PGN from any source address (standard J1939)
-	if (pgn == 0xFEF1)
+	// Standard J1939 GNSS PGNs - accept from ANY source address
+	// (SF3000 at SA=0x9A uses proprietary PGNs, but other ECUs on the bus may broadcast these)
+	switch (pgn)
 	{
-		parse_speed_standard(frame);
+		case 0xFEF3:
+			parse_position_standard(frame);
+			break;
+		case 0xFEF0:
+			parse_time_date_standard(frame);
+			break;
+		case 0xFEF2:
+			parse_altitude_standard(frame);
+			break;
+		case 0xFEF1:
+			parse_speed_standard(frame);
+			break;
+		default:
+			break;
 	}
 }
 
@@ -312,22 +315,24 @@ void GnssReceiver::parse_speed_standard(const isobus::CANMessageFrame &frame)
 
 void GnssReceiver::parse_heading_FE45(const isobus::CANMessageFrame &frame)
 {
-	if (frame.dataLength < 2)
+	if (frame.dataLength < 3)
 		return;
 
-	std::uint16_t raw_heading = static_cast<std::uint16_t>(
+	std::uint16_t raw_coarse = static_cast<std::uint16_t>(
 	  static_cast<std::uint16_t>(frame.data[0]) | (static_cast<std::uint16_t>(frame.data[1]) << 8));
 
-	if (raw_heading == 0xFFFF)
+	if (raw_coarse == 0xFFFF)
 		return;
 
-	// Deere proprietary scale: raw / 27.5 degrees (confirmed via RE capture)
-	double heading = raw_heading / 27.5;
+	double coarse = raw_coarse * 0.02807;
+	double fraction = frame.data[2] / 256.0;
+	double heading = coarse + fraction;
 
 	std::lock_guard<std::mutex> lock(dataMutex);
 	if (!data.has_heading)
 	{
-		std::cout << "[GnssReceiver] *** HEADING set by PGN 0xFE45 *** " << heading << " deg (raw=" << raw_heading << ")" << std::endl;
+		std::cout << "[GnssReceiver] *** HEADING set by PGN 0xFE45 *** " << heading
+		          << " deg (coarse_raw=" << raw_coarse << " frac_byte=" << static_cast<int>(frame.data[2]) << ")" << std::endl;
 	}
 	data.heading_deg = heading;
 	data.has_heading = true;
@@ -586,21 +591,19 @@ void GnssReceiver::send_panda_if_ready(std::shared_ptr<UdpConnections> udp)
 		return;
 	}
 
-	std::string sentence = build_panda(snapshot);
+	std::string sentence = build_gga(snapshot);
 
 	if (!pandaSending)
 	{
-		std::cout << "[GnssReceiver] Sending first $PANDA sentence: " << sentence.substr(0, sentence.size() - 2) << std::endl;
+		std::cout << "[GnssReceiver] Sending first $GPGGA sentence: " << sentence.substr(0, sentence.size() - 2) << std::endl;
 		pandaSending = true;
 	}
 
 	if (isobus::SystemTiming::time_expired_ms(lastPandaLog, 10000))
 	{
-		std::cout << "[GnssReceiver] $PANDA: lat=" << snapshot.latitude_deg
+		std::cout << "[GnssReceiver] GGA: lat=" << snapshot.latitude_deg
 		          << " lon=" << snapshot.longitude_deg
 		          << " alt=" << snapshot.altitude_m
-		          << " hdg=" << snapshot.heading_deg
-		          << " spd=" << snapshot.speed_kmh << "km/h"
 		          << std::endl;
 		lastPandaLog = isobus::SystemTiming::get_timestamp_ms();
 	}
@@ -609,7 +612,7 @@ void GnssReceiver::send_panda_if_ready(std::shared_ptr<UdpConnections> udp)
 	lastPandaSend = isobus::SystemTiming::get_timestamp_ms();
 }
 
-std::string GnssReceiver::build_panda(const GnssData &snapshot) const
+std::string GnssReceiver::build_gga(const GnssData &snapshot) const
 {
 	// --- Time: HHMMSS.CC ---
 	std::uint8_t ss = (snapshot.minute_ms / 1000) % 60;
@@ -636,35 +639,19 @@ std::string GnssReceiver::build_panda(const GnssData &snapshot) const
 
 	// --- Altitude ---
 	char altStr[16];
-	std::snprintf(altStr, sizeof(altStr), "%.2f", snapshot.has_altitude ? snapshot.altitude_m : 0.0);
+	std::snprintf(altStr, sizeof(altStr), "%.1f", snapshot.has_altitude ? snapshot.altitude_m : 0.0);
 
-	// --- Speed (km/h -> knots) ---
-	double speedKnots = snapshot.has_speed ? snapshot.speed_kmh / 1.852 : 0.0;
-	char speedStr[16];
-	std::snprintf(speedStr, sizeof(speedStr), "%.2f", speedKnots);
-
-	// --- Heading ---
-	char headingStr[16];
-	std::snprintf(headingStr, sizeof(headingStr), "%.1f", snapshot.has_heading ? snapshot.heading_deg : 0.0);
-
-	// --- Assemble body (everything between $ and *) ---
+	// --- Assemble body: GPGGA,time,lat,N,lon,E,fix,sats,hdop,alt,M,geoidSep,M,ageDGPS,refStation ---
 	char body[256];
 	std::snprintf(body, sizeof(body),
-	              "PANDA,%s,%s,%c,%s,%c,%d,%d,%.1f,%s,%.1f,%s,%s,%.1f,%.1f,%.1f",
+	              "GPGGA,%s,%s,%c,%s,%c,%d,%02d,%.1f,%s,M,0.0,M,,",
 	              timeStr,
 	              latStr, latHemi,
 	              lonStr, lonHemi,
-	              4,   // fixType (RTK default)
-	              18,  // satellites default
-	              0.8, // HDOP default
-	              altStr,
-	              0.0, // ageDGPS
-	              speedStr,
-	              headingStr,
-	              0.0, // roll
-	              0.0, // pitch
-	              0.0  // yawRate
-	);
+	              4,   // fix quality (4=RTK)
+	              18,  // satellites
+	              0.8, // HDOP
+	              altStr);
 
 	// --- Checksum: XOR of all chars in body ---
 	std::uint8_t cs = 0;
@@ -676,7 +663,6 @@ std::string GnssReceiver::build_panda(const GnssData &snapshot) const
 	char checksum[4];
 	std::snprintf(checksum, sizeof(checksum), "%02X", cs);
 
-	// --- Final sentence ---
 	std::string sentence = "$";
 	sentence += body;
 	sentence += "*";
