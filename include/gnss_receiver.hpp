@@ -69,4 +69,7 @@ private:
 	std::mutex dataMutex;
 	isobus::EventCallbackHandle canFrameHandle = 0;
 	std::uint32_t lastPandaSend = 0;
+	std::uint32_t lastPandaLog = 0;
+	std::uint32_t lastWaitingLog = 0;
+	bool pandaSending = false;
 };

@@ -103,9 +103,16 @@ void GnssReceiver::parse_position(const isobus::CANMessageFrame &frame)
 	double lon = raw_lon * 1e-7;
 
 	if (lat < -90.0 || lat > 90.0 || lon < -180.0 || lon > 180.0)
+	{
+		std::cout << "[GnssReceiver] PGN 0xFEF3 position out of range: lat=" << lat << " lon=" << lon << std::endl;
 		return;
+	}
 
 	std::lock_guard<std::mutex> lock(dataMutex);
+	if (!data.has_position)
+	{
+		std::cout << "[GnssReceiver] First position fix received: lat=" << lat << " lon=" << lon << std::endl;
+	}
 	data.latitude_deg = lat;
 	data.longitude_deg = lon;
 	data.has_position = true;
@@ -124,6 +131,11 @@ void GnssReceiver::parse_time_date(const isobus::CANMessageFrame &frame)
 		return;
 
 	std::lock_guard<std::mutex> lock(dataMutex);
+	if (!data.has_time)
+	{
+		std::cout << "[GnssReceiver] First time/date received: "
+		          << static_cast<int>(hr) << ":" << static_cast<int>(min) << " (" << ms_of_minute << "ms)" << std::endl;
+	}
 	data.hour = hr;
 	data.minute = min;
 	data.minute_ms = ms_of_minute;
@@ -143,6 +155,10 @@ void GnssReceiver::parse_altitude(const isobus::CANMessageFrame &frame)
 		return;
 
 	std::lock_guard<std::mutex> lock(dataMutex);
+	if (!data.has_altitude)
+	{
+		std::cout << "[GnssReceiver] First altitude received: " << (raw_alt * 0.01) << " m" << std::endl;
+	}
 	data.altitude_m = raw_alt * 0.01;
 	data.has_altitude = true;
 }
@@ -158,6 +174,10 @@ void GnssReceiver::parse_heading(const isobus::CANMessageFrame &frame)
 		return;
 
 	std::lock_guard<std::mutex> lock(dataMutex);
+	if (!data.has_heading)
+	{
+		std::cout << "[GnssReceiver] First heading received: " << (raw_heading * 0.0078125) << " deg" << std::endl;
+	}
 	data.heading_deg = raw_heading * 0.0078125; // 1/128 degree per bit
 	data.has_heading = true;
 }
@@ -174,6 +194,11 @@ void GnssReceiver::parse_speed(const isobus::CANMessageFrame &frame)
 		return;
 
 	std::lock_guard<std::mutex> lock(dataMutex);
+	if (!data.has_speed)
+	{
+		std::cout << "[GnssReceiver] First speed received: " << (raw_speed / 256.0) << " km/h (SA=0x"
+		          << std::hex << static_cast<int>(frame.identifier & 0xFF) << std::dec << ")" << std::endl;
+	}
 	data.speed_kmh = raw_speed / 256.0;
 	data.has_speed = true;
 }
@@ -190,9 +215,40 @@ void GnssReceiver::send_panda_if_ready(std::shared_ptr<UdpConnections> udp)
 	}
 
 	if (!snapshot.has_position || !snapshot.has_time)
+	{
+		if (isobus::SystemTiming::time_expired_ms(lastWaitingLog, 5000))
+		{
+			std::cout << "[GnssReceiver] Waiting for GNSS data... position="
+			          << (snapshot.has_position ? "OK" : "MISSING")
+			          << " time=" << (snapshot.has_time ? "OK" : "MISSING")
+			          << " altitude=" << (snapshot.has_altitude ? "OK" : "no")
+			          << " heading=" << (snapshot.has_heading ? "OK" : "no")
+			          << " speed=" << (snapshot.has_speed ? "OK" : "no")
+			          << std::endl;
+			lastWaitingLog = isobus::SystemTiming::get_timestamp_ms();
+		}
 		return;
+	}
 
 	std::string sentence = build_panda(snapshot);
+
+	if (!pandaSending)
+	{
+		std::cout << "[GnssReceiver] Sending first $PANDA sentence: " << sentence.substr(0, sentence.size() - 2) << std::endl;
+		pandaSending = true;
+	}
+
+	if (isobus::SystemTiming::time_expired_ms(lastPandaLog, 10000))
+	{
+		std::cout << "[GnssReceiver] $PANDA: lat=" << snapshot.latitude_deg
+		          << " lon=" << snapshot.longitude_deg
+		          << " alt=" << snapshot.altitude_m
+		          << " hdg=" << snapshot.heading_deg
+		          << " spd=" << snapshot.speed_kmh << "km/h"
+		          << std::endl;
+		lastPandaLog = isobus::SystemTiming::get_timestamp_ms();
+	}
+
 	udp->send_raw(sentence);
 	lastPandaSend = isobus::SystemTiming::get_timestamp_ms();
 }
