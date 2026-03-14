@@ -88,19 +88,20 @@ void GnssReceiver::parse_position(const isobus::CANMessageFrame &frame)
 	if (frame.dataLength < 8)
 		return;
 
-	auto raw_lat = static_cast<std::int32_t>(
+	// J1939 PGN 65267: latitude/longitude are uint32, resolution 1e-7 deg/bit, offset -210 deg
+	std::uint32_t raw_lat =
 	  static_cast<std::uint32_t>(frame.data[0]) | (static_cast<std::uint32_t>(frame.data[1]) << 8) |
-	  (static_cast<std::uint32_t>(frame.data[2]) << 16) | (static_cast<std::uint32_t>(frame.data[3]) << 24));
-	auto raw_lon = static_cast<std::int32_t>(
+	  (static_cast<std::uint32_t>(frame.data[2]) << 16) | (static_cast<std::uint32_t>(frame.data[3]) << 24);
+	std::uint32_t raw_lon =
 	  static_cast<std::uint32_t>(frame.data[4]) | (static_cast<std::uint32_t>(frame.data[5]) << 8) |
-	  (static_cast<std::uint32_t>(frame.data[6]) << 16) | (static_cast<std::uint32_t>(frame.data[7]) << 24));
+	  (static_cast<std::uint32_t>(frame.data[6]) << 16) | (static_cast<std::uint32_t>(frame.data[7]) << 24);
 
-	// 0x7FFFFFFF = "not available" in J1939
-	if (raw_lat == 0x7FFFFFFF || raw_lon == 0x7FFFFFFF)
+	// 0xFFFFFFFF = "not available" in J1939 for unsigned parameters
+	if (raw_lat == 0xFFFFFFFF || raw_lon == 0xFFFFFFFF)
 		return;
 
-	double lat = raw_lat * 1e-7;
-	double lon = raw_lon * 1e-7;
+	double lat = raw_lat * 1e-7 - 210.0;
+	double lon = raw_lon * 1e-7 - 210.0;
 
 	if (lat < -90.0 || lat > 90.0 || lon < -180.0 || lon > 180.0)
 	{
