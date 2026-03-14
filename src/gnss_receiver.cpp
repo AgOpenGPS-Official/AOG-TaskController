@@ -140,12 +140,15 @@ void GnssReceiver::on_can_frame(const isobus::CANMessageFrame &frame)
 		// Dispatch to parsers for SF3000 proprietary PGNs
 		switch (pgn)
 		{
-			// Confirmed: heading
-			case 0xFE45:
-				parse_heading_FE45(frame);
+			// Confirmed: heading (scale 0.336 derived from drive log)
+			case 0xFE48:
+				parse_heading_FE48(frame);
 				break;
 
 			// Proprietary Deere PGNs - candidate parsers
+			case 0xFE45:
+				parse_candidate_FE45(frame);
+				break;
 			case 0xFE43:
 				parse_candidate_FE43(frame);
 				break;
@@ -309,10 +312,40 @@ void GnssReceiver::parse_speed_standard(const isobus::CANMessageFrame &frame)
 }
 
 // ============================================================================
-// Confirmed/candidate: PGN 0xFE45 - Heading
+// Confirmed: PGN 0xFE48 - Heading (scale 0.336, derived from drive log)
 // ============================================================================
 
-void GnssReceiver::parse_heading_FE45(const isobus::CANMessageFrame &frame)
+void GnssReceiver::parse_heading_FE48(const isobus::CANMessageFrame &frame)
+{
+	if (frame.dataLength < 2)
+		return;
+
+	std::uint16_t raw = static_cast<std::uint16_t>(
+	  frame.data[0] | (frame.data[1] << 8));
+
+	if (raw == 0xFFFF)
+		return;
+
+	double heading = raw * 0.336;
+
+	if (heading >= 360.0)
+		heading -= 360.0;
+
+	std::lock_guard<std::mutex> lock(dataMutex);
+	if (!data.has_heading)
+	{
+		std::cout << "[GnssReceiver] *** HEADING set by PGN 0xFE48 *** "
+		          << heading << " deg (raw=" << raw << ")" << std::endl;
+	}
+	data.heading_deg = heading;
+	data.has_heading = true;
+}
+
+// ============================================================================
+// Demoted candidate: PGN 0xFE45 - old heading (kept for RE logging)
+// ============================================================================
+
+void GnssReceiver::parse_candidate_FE45(const isobus::CANMessageFrame &frame)
 {
 	if (frame.dataLength < 3)
 		return;
@@ -327,14 +360,13 @@ void GnssReceiver::parse_heading_FE45(const isobus::CANMessageFrame &frame)
 	double fraction = frame.data[2] / 256.0;
 	double heading = coarse + fraction;
 
-	std::lock_guard<std::mutex> lock(dataMutex);
-	if (!data.has_heading)
+	static bool logged = false;
+	if (!logged)
 	{
-		std::cout << "[GnssReceiver] *** HEADING set by PGN 0xFE45 *** " << heading
-		          << " deg (coarse_raw=" << raw_coarse << " frac_byte=" << static_cast<int>(frame.data[2]) << ")" << std::endl;
+		std::cout << "[GnssReceiver] PGN 0xFE45 candidate (demoted): heading=" << heading
+		          << " deg (coarse_raw=" << raw_coarse << " frac=" << static_cast<int>(frame.data[2]) << ")" << std::endl;
+		logged = true;
 	}
-	data.heading_deg = heading;
-	data.has_heading = true;
 }
 
 // ============================================================================
@@ -447,31 +479,63 @@ void GnssReceiver::parse_candidate_F022(const isobus::CANMessageFrame &frame)
 
 void GnssReceiver::parse_candidate_FFFA(const isobus::CANMessageFrame &frame)
 {
-	// PGN 0xFFFA (65530) - Deere proprietary, possibly GNSS position or extended data
+	// PGN 0xFFFA (65530) - Deere proprietary, ~22 Hz, heading candidate
 	if (frame.dataLength < 8)
 		return;
 
-	// Try interpreting as two uint32 position fields (same encoding as PGN 0xFEF3)
-	std::uint32_t dw0 =
-	  static_cast<std::uint32_t>(frame.data[0]) | (static_cast<std::uint32_t>(frame.data[1]) << 8) |
-	  (static_cast<std::uint32_t>(frame.data[2]) << 16) | (static_cast<std::uint32_t>(frame.data[3]) << 24);
-	std::uint32_t dw1 =
-	  static_cast<std::uint32_t>(frame.data[4]) | (static_cast<std::uint32_t>(frame.data[5]) << 8) |
-	  (static_cast<std::uint32_t>(frame.data[6]) << 16) | (static_cast<std::uint32_t>(frame.data[7]) << 24);
+	// Extract all word-sized fields for heading analysis
+	std::uint16_t w0 = static_cast<std::uint16_t>(frame.data[0]) | (static_cast<std::uint16_t>(frame.data[1]) << 8);
+	std::uint16_t w1 = static_cast<std::uint16_t>(frame.data[2]) | (static_cast<std::uint16_t>(frame.data[3]) << 8);
+	std::uint16_t w2 = static_cast<std::uint16_t>(frame.data[4]) | (static_cast<std::uint16_t>(frame.data[5]) << 8);
+	std::uint16_t w3 = static_cast<std::uint16_t>(frame.data[6]) | (static_cast<std::uint16_t>(frame.data[7]) << 8);
 
-	double as_lat = dw0 * 1e-7 - 210.0;
-	double as_lon = dw1 * 1e-7 - 210.0;
+	// Try many heading scales on each word pair — target ≈ 278°
+	// FE45-style: raw * 0.02807
+	double w0_fe45 = w0 * 0.02807;
+	double w1_fe45 = w1 * 0.02807;
+	double w2_fe45 = w2 * 0.02807;
+	double w3_fe45 = w3 * 0.02807;
 
-	static bool logged = false;
-	if (!logged)
+	// J1939 SPN 584 (Vehicle Heading): raw * (1/128) deg
+	double w0_128 = w0 / 128.0;
+	double w1_128 = w1 / 128.0;
+	double w2_128 = w2 / 128.0;
+	double w3_128 = w3 / 128.0;
+
+	// 0.01 deg scale
+	double w0_001 = w0 * 0.01;
+	double w1_001 = w1 * 0.01;
+	double w2_001 = w2 * 0.01;
+	double w3_001 = w3 * 0.01;
+
+	// Log periodically (every 5s) for live RE monitoring
+	static std::uint32_t lastFFFALog = 0;
+	static bool firstLog = true;
+	if (firstLog || isobus::SystemTiming::time_expired_ms(lastFFFALog, 5000))
 	{
-		std::cout << "[GnssReceiver] PGN 0xFFFA candidate: dw0=0x" << std::hex << dw0
-		          << " dw1=0x" << dw1 << std::dec
-		          << " as_lat=" << as_lat
-		          << " as_lon=" << as_lon
-		          << " dw0_as_alt_cm=" << (dw0 * 0.01)
-		          << std::endl;
-		logged = true;
+		std::cout << "[GnssReceiver] PGN 0xFFFA RE dump: ["
+		          << std::hex << std::setw(2) << std::setfill('0') << std::uppercase;
+		for (int i = 0; i < 8; i++)
+		{
+			if (i > 0) std::cout << " ";
+			std::cout << std::setw(2) << static_cast<int>(frame.data[i]);
+		}
+		std::cout << "]" << std::dec << std::endl;
+
+		std::cout << "  w0=0x" << std::hex << w0 << " w1=0x" << w1
+		          << " w2=0x" << w2 << " w3=0x" << w3 << std::dec << std::endl;
+
+		std::cout << "  FE45-scale(*0.02807): w0=" << std::fixed << std::setprecision(2)
+		          << w0_fe45 << " w1=" << w1_fe45 << " w2=" << w2_fe45 << " w3=" << w3_fe45 << std::endl;
+
+		std::cout << "  1/128-scale:          w0=" << w0_128 << " w1=" << w1_128
+		          << " w2=" << w2_128 << " w3=" << w3_128 << std::endl;
+
+		std::cout << "  0.01-scale:           w0=" << w0_001 << " w1=" << w1_001
+		          << " w2=" << w2_001 << " w3=" << w3_001 << std::endl;
+
+		lastFFFALog = isobus::SystemTiming::get_timestamp_ms();
+		firstLog = false;
 	}
 }
 

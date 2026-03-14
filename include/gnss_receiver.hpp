@@ -73,7 +73,8 @@ private:
 	void parse_speed_standard(const isobus::CANMessageFrame &frame);
 
 	// Confirmed/candidate parsers for proprietary Deere PGNs
-	void parse_heading_FE45(const isobus::CANMessageFrame &frame);
+	void parse_heading_FE48(const isobus::CANMessageFrame &frame);
+	void parse_candidate_FE45(const isobus::CANMessageFrame &frame);
 	void parse_candidate_FE43(const isobus::CANMessageFrame &frame);
 	void parse_candidate_FE12(const isobus::CANMessageFrame &frame);
 	void parse_candidate_FE13(const isobus::CANMessageFrame &frame);
