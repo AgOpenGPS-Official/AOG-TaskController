@@ -215,17 +215,11 @@ void GnssReceiver::send_panda_if_ready(std::shared_ptr<UdpConnections> udp)
 		snapshot = data;
 	}
 
-	if (!snapshot.has_position || !snapshot.has_time)
+	if (!snapshot.has_position)
 	{
 		if (isobus::SystemTiming::time_expired_ms(lastWaitingLog, 5000))
 		{
-			std::cout << "[GnssReceiver] Waiting for GNSS data... position="
-			          << (snapshot.has_position ? "OK" : "MISSING")
-			          << " time=" << (snapshot.has_time ? "OK" : "MISSING")
-			          << " altitude=" << (snapshot.has_altitude ? "OK" : "no")
-			          << " heading=" << (snapshot.has_heading ? "OK" : "no")
-			          << " speed=" << (snapshot.has_speed ? "OK" : "no")
-			          << std::endl;
+			std::cout << "[GnssReceiver] Waiting for GNSS position fix..." << std::endl;
 			lastWaitingLog = isobus::SystemTiming::get_timestamp_ms();
 		}
 		return;
