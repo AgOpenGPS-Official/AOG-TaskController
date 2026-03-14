@@ -185,6 +185,8 @@ void GnssReceiver::on_can_frame(const isobus::CANMessageFrame &frame)
 
 	// Standard J1939 GNSS PGNs - accept from ANY source address
 	// (SF3000 at SA=0x9A uses proprietary PGNs, but other ECUs on the bus may broadcast these)
+	// NOTE: PGN 0xFEF2 (65266) is "Fuel Economy" in J1939, NOT altitude.
+	//       Altitude source from SF3000 proprietary PGNs is TBD.
 	switch (pgn)
 	{
 		case 0xFEF3:
@@ -192,9 +194,6 @@ void GnssReceiver::on_can_frame(const isobus::CANMessageFrame &frame)
 			break;
 		case 0xFEF0:
 			parse_time_date_standard(frame);
-			break;
-		case 0xFEF2:
-			parse_altitude_standard(frame);
 			break;
 		case 0xFEF1:
 			parse_speed_standard(frame);
