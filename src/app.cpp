@@ -224,7 +224,7 @@ bool Application::initialize()
 	udpConnections->open();
 
 	gnssReceiver = std::make_unique<GnssReceiver>();
-	gnssReceiver->initialize();
+	gnssReceiver->initialize(true); // RE mode: log all SF3000 frames to CSV
 
 	std::cout << "UDP connections opened." << std::endl;
 
