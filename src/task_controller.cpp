@@ -587,8 +587,8 @@ void MyTCServer::update_section_states(std::vector<bool> &sectionStates)
 			continue;
 		}
 
-		// Skip clients that don't support section control (e.g., tractors or other non-implement devices)
-		if (!state.has_element_number_for_ddi(isobus::DataDescriptionIndex::SectionControlState))
+		// Skip clients that don't have any sections configured (e.g., tractors or other non-implement devices)
+		if (state.get_number_of_sections() == 0)
 		{
 			continue;
 		}
