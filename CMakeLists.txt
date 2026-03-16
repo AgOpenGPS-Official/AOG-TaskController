@@ -7,6 +7,31 @@ set(PROJECT_VERSION
     "${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}.${PROJECT_VERSION_PATCH}"
 )
 
+find_package(Git QUIET)
+if(GIT_FOUND)
+  execute_process(
+    COMMAND ${GIT_EXECUTABLE} describe --tags --exact-match HEAD
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    OUTPUT_VARIABLE GIT_TAG
+    ERROR_QUIET OUTPUT_STRIP_TRAILING_WHITESPACE)
+  if(GIT_TAG MATCHES "^v([0-9]+)\\.([0-9]+)\\.([0-9]+)(-beta\\.[0-9]+)?$")
+    set(PROJECT_VERSION_MAJOR ${CMAKE_MATCH_1})
+    set(PROJECT_VERSION_MINOR ${CMAKE_MATCH_2})
+    set(PROJECT_VERSION_PATCH ${CMAKE_MATCH_3})
+    if(CMAKE_MATCH_4)
+      set(PROJECT_VERSION
+          "${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}.${PROJECT_VERSION_PATCH}${CMAKE_MATCH_4}"
+      )
+    else()
+      set(PROJECT_VERSION
+          "${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}.${PROJECT_VERSION_PATCH}"
+      )
+    endif()
+    message(
+      STATUS "Building from git tag: ${GIT_TAG}, version: ${PROJECT_VERSION}")
+  endif()
+endif()
+
 set(BUILD_EXAMPLES OFF)
 set(BUILD_TESTING OFF)
 
