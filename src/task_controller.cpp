@@ -340,7 +340,7 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 	}
 
 	clients[partnerCF] = state;
-	std::cout << "[TC Server] Client " << partnerCF->get_NAME().get_full_name() << " registered successfully with " 
+	std::cout << "[TC Server] Client " << partnerCF->get_NAME().get_full_name() << " registered successfully with "
 	          << static_cast<int>(state.get_number_of_sections()) << " sections." << std::endl;
 	return true;
 }
