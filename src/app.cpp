@@ -136,6 +136,13 @@ bool Application::initialize()
 	auto packetHandler = [this, tcCF](std::uint8_t src, std::uint8_t pgn, std::span<std::uint8_t> data) {
 		if (src == 0x7F && pgn == 0xE5) // 229 - 64 sections PGN
 		{
+			if (data.size() < 8)
+			{
+				std::cout << "[Warning] Received PGN 0xE5 packet with insufficient length (" << data.size()
+				          << "), expected at least 8 bytes. Ignoring packet." << std::endl;
+				return;
+			}
+
 			std::vector<bool> sectionStates;
 			for (std::uint8_t j = 0; j < 8; j++)
 			{
