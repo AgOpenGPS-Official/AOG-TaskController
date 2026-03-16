@@ -25,7 +25,7 @@ Then, you can run the following commands:
 
 ```bash
 mkdir build
-cmake -S . -B build -DBUILD_EXAMPLES=OFF -DBUILD_TESTING=OFF -Wno-dev
+cmake -S . -B build -DBUILD_EXAMPLES=OFF -DCMAKE_POLICY_VERSION_MINIMUM="3.16" -DBUILD_TESTING=OFF -Wno-dev
 cmake --build build --config Release --target package
 ```
 

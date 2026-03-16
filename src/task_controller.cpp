@@ -238,6 +238,7 @@ MyTCServer::MyTCServer(std::shared_ptr<isobus::InternalControlFunction> internal
 
 bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> partnerCF, ObjectPoolActivationError &, ObjectPoolErrorCodes &, std::uint16_t &, std::uint16_t &)
 {
+	std::cout << "[TC Server] Client " << partnerCF->get_NAME().get_full_name() << " requesting object pool activation" << std::endl;
 	// Safety check to make sure partnerCF has uploaded a DDOP
 	if (uploadedPools.find(partnerCF) == uploadedPools.end())
 	{
@@ -339,6 +340,8 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 	}
 
 	clients[partnerCF] = state;
+	std::cout << "[TC Server] Client " << partnerCF->get_NAME().get_full_name() << " registered successfully with " 
+	          << static_cast<int>(state.get_number_of_sections()) << " sections." << std::endl;
 	return true;
 }
 
@@ -385,6 +388,7 @@ void MyTCServer::identify_task_controller(std::uint8_t)
 void MyTCServer::on_client_timeout(std::shared_ptr<isobus::ControlFunction> partner)
 {
 	// Cleanup the client state
+	std::cout << "[TC Server] Client " << partner->get_NAME().get_full_name() << " has timed out!" << std::endl;
 	clients.erase(partner);
 }
 
@@ -452,6 +456,7 @@ bool MyTCServer::on_value_command(std::shared_ptr<isobus::ControlFunction> partn
 
 bool MyTCServer::store_device_descriptor_object_pool(std::shared_ptr<isobus::ControlFunction> partnerCF, const std::vector<std::uint8_t> &binaryPool, bool appendToPool)
 {
+	std::cout << "[TC Server] Client " << partnerCF->get_NAME().get_full_name() << " requesting object pool transfer of " << binaryPool.size() << " bytes" << std::endl;
 	if (uploadedPools.find(partnerCF) == uploadedPools.end())
 	{
 		uploadedPools[partnerCF] = std::queue<std::vector<std::uint8_t>>();
@@ -582,6 +587,12 @@ void MyTCServer::update_section_states(std::vector<bool> &sectionStates)
 			return;
 		}
 
+		// Skip clients that don't support section control (e.g., tractors or other non-implement devices)
+		if (!state.has_element_number_for_ddi(isobus::DataDescriptionIndex::SectionControlState))
+		{
+			continue;
+		}
+
 		bool requiresUpdate = false;
 		for (std::uint8_t i = 0; i < state.get_number_of_sections(); i++)
 		{
@@ -614,6 +625,12 @@ void MyTCServer::update_section_control_enabled(bool enabled)
 {
 	for (auto &client : clients)
 	{
+		// Skip clients that don't support section control (e.g., tractors or other non-implement devices)
+		if (!client.second.has_element_number_for_ddi(isobus::DataDescriptionIndex::SectionControlState))
+		{
+			continue;
+		}
+
 		if (client.second.is_section_control_enabled() != enabled)
 		{
 			client.second.set_section_control_enabled(enabled);
