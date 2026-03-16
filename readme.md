@@ -32,14 +32,20 @@ cmake --build build --config Release --target package
 The installer will be generated in the `build` directory.
 
 Before committing it's better to run these commands: (requires the LLVM project to be installed)
+ ```powershell
 git ls-files | Select-String '\.(c|cc|cpp|cxx|h|hh|hpp|hxx|proto)$' | ForEach-Object {
     clang-format -i $_.ToString()
 }
+```
 
-(Install cmake-format with: 
+Install cmake-format with: 
+```powershell
 python -m pip install --upgrade pip
 pip install cmake-format pyyaml
-)
+```
+Then execute with:
+```powershell
 Get-ChildItem -Recurse -Filter CMakeLists.txt | ForEach-Object {
     python -m cmakelang.format -i $_.FullName
 }
+```

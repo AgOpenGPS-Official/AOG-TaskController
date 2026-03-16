@@ -584,7 +584,7 @@ void MyTCServer::update_section_states(std::vector<bool> &sectionStates)
 		if (!state.is_section_control_enabled())
 		{
 			// According to standard, the section setpoint states should only be sent when in auto mode
-			return;
+			continue;
 		}
 
 		// Skip clients that don't support section control (e.g., tractors or other non-implement devices)
