@@ -39,6 +39,8 @@ jobs:
 
       - name: Decide prerelease flag
         shell: bash
+        # Pattern must match vMAJOR.MINOR.PATCH-beta.N; keep in sync with the
+        # regex used in CMakeLists.txt for git-tag-based version extraction.
         run: |
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
@@ -60,6 +62,9 @@ jobs:
         run: cmake --build build --config Release --target package
 
       - name: Find installer
+        # CPack places the generated installer under this fixed directory when
+        # targeting the NSIS generator on Windows (win64).  The same path is
+        # used in build.yml's upload-artifact step.
         shell: pwsh
         run: |
           $installer = Get-ChildItem -Path "build/_CPack_Packages/win64/NSIS" -Filter *.exe -Recurse | Select-Object -First 1
