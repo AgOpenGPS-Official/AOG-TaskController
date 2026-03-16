@@ -625,15 +625,16 @@ void MyTCServer::update_section_control_enabled(bool enabled)
 {
 	for (auto &client : clients)
 	{
-		// Skip clients that don't support section control (e.g., tractors or other non-implement devices)
-		if (!client.second.has_element_number_for_ddi(isobus::DataDescriptionIndex::SectionControlState))
-		{
-			continue;
-		}
-
+		// Always update the local flag
 		if (client.second.is_section_control_enabled() != enabled)
 		{
 			client.second.set_section_control_enabled(enabled);
+		}
+
+		// Only send ISOBUS command to clients that support SectionControlState DDI and have sections
+		if (client.second.has_element_number_for_ddi(isobus::DataDescriptionIndex::SectionControlState) &&
+		    client.second.get_number_of_sections() > 0)
+		{
 			send_section_control_state(client.first, enabled);
 		}
 	}
