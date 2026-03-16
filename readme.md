@@ -31,6 +31,27 @@ cmake --build build --config Release --target package
 
 The installer will be generated in the `build` directory.
 
+## Configuration
+
+AOG-TaskController reads its configuration from a `settings.json` file located in:
+
+- **Windows:** `%APPDATA%\AOG-Taskcontroller\settings.json`
+
+One of the available options is the `tecuEnabled` flag:
+
+- **Key:** `tecuEnabled`
+- **Default:** `true`
+- **Description:** Enables communication with the Tractor ECU (TECU) over ISOBUS/CAN.
+- **When to disable:** Set to `false` if your tractor or simulator does not provide TECU messages, if you do not need TECU-related data, or if you are troubleshooting TECU-related issues on the CAN bus.
+
+Example `settings.json` snippet:
+
+```json
+{
+  "tecuEnabled": true
+}
+```
+
 Before committing it's better to run these commands: (requires the LLVM project to be installed)
  ```powershell
 git ls-files | Select-String '\.(c|cc|cpp|cxx|h|hh|hpp|hxx|proto)$' | ForEach-Object {
