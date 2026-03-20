@@ -44,6 +44,23 @@ bool Settings::load()
 		configuredSubnet = DEFAULT_SUBNET; // Key not found, use default
 	}
 
+	if (data.contains("tecuEnabled"))
+	{
+		try
+		{
+			tecuEnabled = data["tecuEnabled"].get<bool>();
+		}
+		catch (const nlohmann::json::exception &e)
+		{
+			std::cout << "Error parsing 'tecuEnabled': " << e.what() << std::endl;
+			tecuEnabled = DEFAULT_TECU_ENABLED; // Fallback to default
+		}
+	}
+	else
+	{
+		tecuEnabled = DEFAULT_TECU_ENABLED; // Key not found, use default
+	}
+
 	return true;
 }
 
@@ -51,6 +68,7 @@ bool Settings::save() const
 {
 	json data;
 	data["subnet"] = configuredSubnet;
+	data["tecuEnabled"] = tecuEnabled;
 
 	std::ofstream file(get_filename_path("settings.json"));
 	if (!file.is_open())
@@ -75,6 +93,21 @@ std::string Settings::get_subnet_string() const
 bool Settings::set_subnet(std::array<std::uint8_t, 3> subnet, bool save)
 {
 	configuredSubnet = subnet;
+	if (save)
+	{
+		return this->save();
+	}
+	return true;
+}
+
+bool Settings::is_tecu_enabled() const
+{
+	return tecuEnabled;
+}
+
+bool Settings::set_tecu_enabled(bool enabled, bool save)
+{
+	tecuEnabled = enabled;
 	if (save)
 	{
 		return this->save();

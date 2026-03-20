@@ -49,6 +49,20 @@ public:
 	bool set_subnet(std::array<std::uint8_t, 3> subnet, bool save = true);
 
 	/**
+	 * @brief Check if Tractor ECU is enabled
+	 * @return True if TECU is enabled, false otherwise
+	 */
+	bool is_tecu_enabled() const;
+
+	/**
+	 * @brief Set the Tractor ECU enabled state
+	 * @param enabled Whether to enable the Tractor ECU
+	 * @param save Whether or not to save the settings to file
+	 * @return True if the setting was set successfully, false otherwise
+	 */
+	bool set_tecu_enabled(bool enabled, bool save = true);
+
+	/**
 	 * @brief Get the absolute path to the settings file
 	 * @param filename The filename to get the path for
 	 * @return The absolute path to the settings file
@@ -57,5 +71,7 @@ public:
 
 private:
 	constexpr static std::array<std::uint8_t, 3> DEFAULT_SUBNET = { 192, 168, 5 };
+	constexpr static bool DEFAULT_TECU_ENABLED = true;
 	std::array<std::uint8_t, 3> configuredSubnet = DEFAULT_SUBNET;
+	bool tecuEnabled = DEFAULT_TECU_ENABLED;
 };
