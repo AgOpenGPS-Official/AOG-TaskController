@@ -191,6 +191,7 @@ bool ClientState::is_element_or_parent_off(std::uint16_t elementNumber) const
 					auto childObject = nonConstPool.get_object_by_index(j);
 					if (childObject && childObject->get_object_id() == childId)
 					{
+						// Check if child is a DeviceElement with matching element number
 						if (childObject->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceElement)
 						{
 							auto childElementObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceElementObject>(childObject);
@@ -198,6 +199,20 @@ bool ClientState::is_element_or_parent_off(std::uint16_t elementNumber) const
 							{
 								// Found the parent, recursively check if parent or its parents are off
 								return is_element_or_parent_off(elementObject->get_element_number());
+							}
+						}
+						// Check if child is a DeviceProcessData whose DDI is mapped to the target element number
+						else if (childObject->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceProcessData)
+						{
+							auto processDataObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceProcessDataObject>(childObject);
+							if (processDataObject)
+							{
+								auto ddi = static_cast<isobus::DataDescriptionIndex>(processDataObject->get_ddi());
+								if (has_element_number_for_ddi(ddi) && get_element_number_for_ddi(ddi) == elementNumber)
+								{
+									// Found the parent, recursively check if parent or its parents are off
+									return is_element_or_parent_off(elementObject->get_element_number());
+								}
 							}
 						}
 					}
