@@ -208,10 +208,13 @@ bool ClientState::is_element_or_parent_off(std::uint16_t elementNumber) const
 							if (processDataObject)
 							{
 								auto ddi = static_cast<isobus::DataDescriptionIndex>(processDataObject->get_ddi());
-								if (has_element_number_for_ddi(ddi) && get_element_number_for_ddi(ddi) == elementNumber)
+								auto parentElementNumber = elementObject->get_element_number();
+								if (has_element_number_for_ddi(ddi) &&
+								    get_element_number_for_ddi(ddi) == elementNumber &&
+								    parentElementNumber != elementNumber)
 								{
-									// Found the parent, recursively check if parent or its parents are off
-									return is_element_or_parent_off(elementObject->get_element_number());
+									// Found a different parent element, recursively check if it or its parents are off
+									return is_element_or_parent_off(parentElementNumber);
 								}
 							}
 						}
