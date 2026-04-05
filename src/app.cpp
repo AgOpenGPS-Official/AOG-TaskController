@@ -331,6 +331,8 @@ bool Application::update()
 
 	tcServer->request_measurement_commands();
 	tcServer->update();
+	if (tecuFunctionalities)
+		tecuFunctionalities->update();
 	if (speedMessagesInterface)
 		speedMessagesInterface->update();
 	if (nmea2000MessageInterface)

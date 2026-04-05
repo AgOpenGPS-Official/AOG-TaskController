@@ -1,4 +1,5 @@
 build/
+.qoder/
 .vscode/
 .vs/
 out/
