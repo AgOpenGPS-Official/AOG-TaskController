@@ -338,8 +338,11 @@ bool Application::update()
 	if (nmea2000MessageInterface)
 		nmea2000MessageInterface->update();
 
+	// Send section control heartbeat to AOG every 100ms (PGN 0xF0, source 0x80)
+	// When no clients with sections, send 0 sections as heartbeat so AOG knows TC is alive
 	if (isobus::SystemTiming::time_expired_ms(lastHeartbeatTransmit, 100))
 	{
+		bool anyClientWithSections = false;
 		for (auto &client : tcServer->get_clients())
 		{
 			auto &state = client.second;
@@ -350,6 +353,7 @@ bool Application::update()
 				continue;
 			}
 
+			anyClientWithSections = true;
 			std::vector<uint8_t> data = { state.is_section_control_enabled(), state.get_number_of_sections() };
 
 			std::uint8_t sectionIndex = 0;
@@ -368,6 +372,14 @@ bool Application::update()
 			}
 			udpConnections->send(0x80, 0xF0, data);
 		}
+
+		// If no clients with sections, send heartbeat with 0 sections
+		if (!anyClientWithSections)
+		{
+			std::vector<uint8_t> heartbeatData = { 0, 0 }; // section control disabled, 0 sections
+			udpConnections->send(0x80, 0xF0, heartbeatData);
+		}
+
 		lastHeartbeatTransmit = isobus::SystemTiming::get_timestamp_ms();
 	}
 

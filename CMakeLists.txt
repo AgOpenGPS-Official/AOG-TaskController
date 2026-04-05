@@ -17,7 +17,7 @@ list(APPEND CAN_DRIVER "SYS_TEC")
 
 include(FetchContent)
 
-set(BOOST_INCLUDE_LIBRARIES asio)
+set(BOOST_INCLUDE_LIBRARIES asio align)
 set(BOOST_ENABLE_CMAKE ON)
 FetchContent_Declare(
   Boost
