@@ -18,8 +18,11 @@
 #include "task_controller.hpp"
 
 #include <chrono>
+#include <ctime>
+#include <future>
 #include <iomanip>
 #include <sstream>
+#include <thread>
 
 using boost::asio::ip::udp;
 
@@ -438,14 +441,15 @@ void Application::send_task_controller_status_message()
 
 	// Send to global destination (0xFF) - broadcast to all nodes
 	// Using 4-arg version: PGN, data, length, source CF (destination is implicit in PGN for broadcast)
-	if (isobus::CANNetworkManager::CANNetwork.send_can_message(0xCB00, tcStatusData.data(), tcStatusData.size(), tcCF))
-	{
-		lastTCStatusTransmit = isobus::SystemTiming::get_timestamp_ms();
-	}
-	else
+	const auto transmitAttemptTimestamp = isobus::SystemTiming::get_timestamp_ms();
+	if (!isobus::CANNetworkManager::CANNetwork.send_can_message(0xCB00, tcStatusData.data(), tcStatusData.size(), tcCF))
 	{
 		std::cout << "[" << get_timestamp() << "] [TC Status] Failed to send TC Status message!" << std::endl;
 	}
+
+	// Update the transmit timestamp for every send attempt so failed sends
+	// still respect the minimum 2-second transmit period.
+	lastTCStatusTransmit = transmitAttemptTimestamp;
 }
 
 void Application::stop()
