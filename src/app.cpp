@@ -182,6 +182,18 @@ bool Application::initialize()
 	// Initialize speed and distance messages
 	if (tecuCF && tecuCF->get_address_valid())
 	{
+		std::cout << "[" << get_timestamp() << "] [Init] Creating TECU Control Function Functionalities..." << std::endl;
+		tecuFunctionalities = std::make_unique<isobus::ControlFunctionFunctionalities>(tecuCF);
+		// Announce as Basic Tractor ECU Server Class 1 (ISO 11783-9 compliance)
+		tecuFunctionalities->set_functionality_is_supported(
+		  isobus::ControlFunctionFunctionalities::Functionalities::BasicTractorECUServer,
+		  2, // Generation 2 (Version 2)
+		  true);
+		tecuFunctionalities->set_basic_tractor_ECU_server_option_state(
+		  isobus::ControlFunctionFunctionalities::BasicTractorECUOptions::Class1NoOptions,
+		  true);
+		std::cout << "[" << get_timestamp() << "] [Init] TECU announced as Class 1 Tractor ECU (PGN 64654)" << std::endl;
+
 		std::cout << "[" << get_timestamp() << "] [Init] Creating Speed Messages Interface on TECU..." << std::endl;
 		speedMessagesInterface = std::make_unique<isobus::SpeedMessagesInterface>(tecuCF, true, true, true, false); //TODO: make configurable whether to send these messages
 		speedMessagesInterface->initialize();

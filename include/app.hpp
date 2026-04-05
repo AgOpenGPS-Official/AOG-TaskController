@@ -12,6 +12,7 @@
 #include <memory>
 
 #include "isobus/hardware_integration/can_hardware_plugin.hpp"
+#include "isobus/isobus/isobus_functionalities.hpp"
 #include "isobus/isobus/isobus_speed_distance_messages.hpp"
 #include "isobus/isobus/nmea2000_message_interface.hpp"
 
@@ -42,6 +43,7 @@ private:
 	std::shared_ptr<isobus::InternalControlFunction> tecuCF = nullptr;
 	std::unique_ptr<isobus::SpeedMessagesInterface> speedMessagesInterface;
 	std::unique_ptr<isobus::NMEA2000MessageInterface> nmea2000MessageInterface;
+	std::unique_ptr<isobus::ControlFunctionFunctionalities> tecuFunctionalities;
 	std::uint8_t nmea2000SequenceIdentifier = 0;
 	std::uint32_t lastJ1939SpeedTransmit = 0;
 	std::uint32_t lastTCStatusTransmit = 0;
