@@ -7,35 +7,15 @@
  * @copyright 2025 Daan Steenbergen
  */
 #include "task_controller.hpp"
+#include "logging_utils.hpp"
 #include "settings.hpp"
 
 #include "isobus/isobus/isobus_device_descriptor_object_pool_helpers.hpp"
 #include "isobus/isobus/isobus_task_controller_server.hpp"
 
 #include <bitset>
-#include <chrono>
 #include <fstream>
-#include <iomanip>
 #include <iostream>
-#include <sstream>
-
-// Utility function to get current timestamp string (HH:MM:SS.mmm)
-static std::string get_timestamp()
-{
-	auto now = std::chrono::system_clock::now();
-	auto time_t_now = std::chrono::system_clock::to_time_t(now);
-	auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
-
-	std::tm localTime;
-	localtime_s(&localTime, &time_t_now);
-
-	std::ostringstream oss;
-	oss << std::setfill('0') << std::setw(2) << localTime.tm_hour << ":"
-	    << std::setfill('0') << std::setw(2) << localTime.tm_min << ":"
-	    << std::setfill('0') << std::setw(2) << localTime.tm_sec << "."
-	    << std::setfill('0') << std::setw(3) << ms.count();
-	return oss.str();
-}
 
 void ClientState::set_number_of_sections(std::uint8_t number)
 {

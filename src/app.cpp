@@ -17,32 +17,9 @@
 
 #include "task_controller.hpp"
 
-#include <chrono>
-#include <ctime>
-#include <future>
-#include <iomanip>
-#include <sstream>
 #include <thread>
 
 using boost::asio::ip::udp;
-
-// Utility function to get current timestamp string (HH:MM:SS.mmm)
-std::string get_timestamp()
-{
-	auto now = std::chrono::system_clock::now();
-	auto time_t_now = std::chrono::system_clock::to_time_t(now);
-	auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
-
-	std::tm localTime;
-	localtime_s(&localTime, &time_t_now);
-
-	std::ostringstream oss;
-	oss << std::setfill('0') << std::setw(2) << localTime.tm_hour << ":"
-	    << std::setfill('0') << std::setw(2) << localTime.tm_min << ":"
-	    << std::setfill('0') << std::setw(2) << localTime.tm_sec << "."
-	    << std::setfill('0') << std::setw(3) << ms.count();
-	return oss.str();
-}
 
 Application::Application(std::shared_ptr<isobus::CANHardwarePlugin> canDriver) :
   canDriver(canDriver)
@@ -91,32 +68,41 @@ bool Application::initialize()
 	std::cout << "[" << get_timestamp() << "] [Init] Creating Task Controller control function..." << std::endl;
 	tcCF = isobus::CANNetworkManager::CANNetwork.create_internal_control_function(tcNAME, 0, isobus::preferred_addresses::IndustryGroup2::TaskController_MappingComputer); // The preferred address for a TC is defined in ISO 11783
 
-	// Wait for TC address claim with minimum 250ms delay per J1939-81 section 4.4.4.1
+	// Wait for TC address claim with bounded wait loop (no async to avoid blocking on destruction)
+	// Also implements minimum 250ms delay per J1939-81 section 4.4.4.1
 	// CAs with addresses in range 128-247 must wait 250ms after claiming before sending other messages
 	static constexpr std::uint32_t MINIMUM_ADDRESS_CLAIM_DELAY_MS = 250;
-	auto tcClaimStartTime = isobus::SystemTiming::get_timestamp_ms();
-	auto tcAddressClaimedFuture = std::async(std::launch::async, [this]() {
-		while (!this->tcCF->get_address_valid())
-		{
-			std::this_thread::sleep_for(std::chrono::milliseconds(10));
-			isobus::CANNetworkManager::CANNetwork.update();
-		}
-	});
+	static constexpr std::uint32_t MAX_ADDRESS_CLAIM_WAIT_MS = 5000;
+	auto tcClaimWaitStart = isobus::SystemTiming::get_timestamp_ms();
+	bool tcAddressClaimed = false;
 
-	// If this fails, probably the update thread is not started
-	tcAddressClaimedFuture.wait_for(std::chrono::seconds(5));
-	if (!tcCF->get_address_valid())
+	while (isobus::SystemTiming::get_time_elapsed_ms(tcClaimWaitStart) < MAX_ADDRESS_CLAIM_WAIT_MS)
+	{
+		isobus::CANNetworkManager::CANNetwork.update();
+		if (tcCF->get_address_valid())
+		{
+			tcAddressClaimed = true;
+			break;
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+
+	if (!tcAddressClaimed)
 	{
 		std::cout << "[" << get_timestamp() << "] Failed to claim address for TC server. The control function might be invalid." << std::endl;
 		return false;
 	}
 
+	// Record when the address was actually claimed for the 250ms delay calculation
+	auto tcAddressClaimedTime = isobus::SystemTiming::get_timestamp_ms();
+	std::cout << "[" << get_timestamp() << "] [Init] TC claimed address " << static_cast<int>(tcCF->get_address()) << std::endl;
+
 	// Ensure minimum 250ms delay after address claim per J1939-81
-	auto tcClaimElapsedMs = isobus::SystemTiming::get_time_elapsed_ms(tcClaimStartTime);
+	auto tcClaimElapsedMs = isobus::SystemTiming::get_time_elapsed_ms(tcAddressClaimedTime);
 	if (tcClaimElapsedMs < MINIMUM_ADDRESS_CLAIM_DELAY_MS)
 	{
 		auto remainingDelay = MINIMUM_ADDRESS_CLAIM_DELAY_MS - tcClaimElapsedMs;
-		std::cout << "[" << get_timestamp() << "] [Init] TC claimed address " << static_cast<int>(tcCF->get_address()) << ", waiting " << remainingDelay << "ms (J1939-81 250ms rule)..." << std::endl;
+		std::cout << "[" << get_timestamp() << "] [Init] Waiting " << remainingDelay << "ms after address claim (J1939-81 250ms rule)..." << std::endl;
 		// Process CAN messages during the delay to prevent timeouts
 		auto delayStart = isobus::SystemTiming::get_timestamp_ms();
 		while (isobus::SystemTiming::get_time_elapsed_ms(delayStart) < remainingDelay)
@@ -124,10 +110,6 @@ bool Application::initialize()
 			isobus::CANNetworkManager::CANNetwork.update();
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
 		}
-	}
-	else
-	{
-		std::cout << "[" << get_timestamp() << "] [Init] TC claimed address " << static_cast<int>(tcCF->get_address()) << " (250ms delay already satisfied)" << std::endl;
 	}
 
 	// Create TECU control function
@@ -152,15 +134,20 @@ bool Application::initialize()
 			tecuClaimAttempts++;
 		}
 
-		// Check if TECU successfully claimed its address
-		if (tecuCF->get_address_valid())
+		// Check if TECU successfully claimed its FIXED address (128)
+		// TECU is non-arbitrary-address-capable and MUST use address 128
+		if (tecuCF->get_address_valid() && tecuCF->get_address() == isobus::preferred_addresses::IndustryGroup2::TractorECU)
 		{
+			// Record when the address was actually claimed for the 250ms delay calculation
+			auto tecuAddressClaimedTime = isobus::SystemTiming::get_timestamp_ms();
+			std::cout << "[" << get_timestamp() << "] [Init] TECU claimed address " << static_cast<int>(tecuCF->get_address()) << std::endl;
+
 			// Ensure minimum 250ms delay after address claim per J1939-81
-			auto tecuClaimElapsedMs = isobus::SystemTiming::get_time_elapsed_ms(tecuClaimStartTime);
+			auto tecuClaimElapsedMs = isobus::SystemTiming::get_time_elapsed_ms(tecuAddressClaimedTime);
 			if (tecuClaimElapsedMs < MINIMUM_ADDRESS_CLAIM_DELAY_MS)
 			{
 				auto remainingDelay = MINIMUM_ADDRESS_CLAIM_DELAY_MS - tecuClaimElapsedMs;
-				std::cout << "[" << get_timestamp() << "] [Init] Tractor ECU claimed address " << static_cast<int>(tecuCF->get_address()) << ", waiting " << remainingDelay << "ms (J1939-81 250ms rule)..." << std::endl;
+				std::cout << "[" << get_timestamp() << "] [Init] Waiting " << remainingDelay << "ms after TECU address claim (J1939-81 250ms rule)..." << std::endl;
 				// Process CAN messages during the delay to prevent timeouts
 				auto delayStart = isobus::SystemTiming::get_timestamp_ms();
 				while (isobus::SystemTiming::get_time_elapsed_ms(delayStart) < remainingDelay)
@@ -169,14 +156,17 @@ bool Application::initialize()
 					std::this_thread::sleep_for(std::chrono::milliseconds(10));
 				}
 			}
-			else
-			{
-				std::cout << "[" << get_timestamp() << "] [Init] Tractor ECU claimed address " << static_cast<int>(tecuCF->get_address()) << " (250ms delay already satisfied)" << std::endl;
-			}
 		}
 		else
 		{
-			std::cout << "[" << get_timestamp() << "] [Warning] TECU failed to claim address 128! Another TECU may be on the bus." << std::endl;
+			if (tecuCF->get_address_valid())
+			{
+				std::cout << "[" << get_timestamp() << "] [Warning] TECU claimed unexpected address " << static_cast<int>(tecuCF->get_address()) << " instead of 128!" << std::endl;
+			}
+			else
+			{
+				std::cout << "[" << get_timestamp() << "] [Warning] TECU failed to claim address 128! Another TECU may be on the bus." << std::endl;
+			}
 			std::cout << "[" << get_timestamp() << "] [Warning] TECU functionality will be disabled." << std::endl;
 			tecuCF.reset(); // Release the failed control function
 		}

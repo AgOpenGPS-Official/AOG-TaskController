@@ -10,18 +10,15 @@
 
 #include <boost/asio.hpp>
 #include <memory>
-#include <string>
 
 #include "isobus/hardware_integration/can_hardware_plugin.hpp"
 #include "isobus/isobus/isobus_speed_distance_messages.hpp"
 #include "isobus/isobus/nmea2000_message_interface.hpp"
 
+#include "logging_utils.hpp"
 #include "settings.hpp"
 #include "task_controller.hpp"
 #include "udp_connections.hpp"
-
-// Utility function to get current timestamp string (HH:MM:SS.mmm)
-std::string get_timestamp();
 
 class Application
 {
