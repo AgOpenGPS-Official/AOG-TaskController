@@ -121,7 +121,6 @@ bool Application::initialize()
 		tecuCF = isobus::CANNetworkManager::CANNetwork.create_internal_control_function(tecuNAME, 0, isobus::preferred_addresses::IndustryGroup2::TractorECU);
 
 		// Wait for TECU address claim with minimum 250ms delay per J1939-81 section 4.4.4.1
-		auto tecuClaimStartTime = isobus::SystemTiming::get_timestamp_ms();
 		std::cout << "[" << get_timestamp() << "] [Init] Tractor ECU control function created, waiting for address claim..." << std::endl;
 
 		// Update the network manager to process TECU CF claiming
@@ -324,7 +323,6 @@ bool Application::initialize()
 bool Application::update()
 {
 	static std::uint32_t lastHeartbeatTransmit = 0;
-	static std::uint32_t lastTECUStatusTransmit = 0;
 
 	udpConnections->handle_address_detection();
 	udpConnections->handle_incoming_packets();
