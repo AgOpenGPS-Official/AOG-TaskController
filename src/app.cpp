@@ -374,7 +374,7 @@ bool Application::update()
 		}
 
 		// If no clients with sections, send heartbeat with 0 sections
-		if (!anyClientWithSections)
+		if (settings->is_aog_heartbeat_enabled() && !anyClientWithSections)
 		{
 			std::vector<uint8_t> heartbeatData = { 0, 0 }; // section control disabled, 0 sections
 			udpConnections->send(0x80, 0xF0, heartbeatData);

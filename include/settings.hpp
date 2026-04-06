@@ -63,6 +63,20 @@ public:
 	bool set_tecu_enabled(bool enabled, bool save = true);
 
 	/**
+	 * @brief Check if AOG heartbeat is enabled
+	 * @return True if heartbeat is enabled, false otherwise
+	 */
+	bool is_aog_heartbeat_enabled() const;
+
+	/**
+	 * @brief Set the AOG heartbeat enabled state
+	 * @param enabled Whether to enable the AOG heartbeat
+	 * @param save Whether or not to save the settings to file
+	 * @return True if the setting was set successfully, false otherwise
+	 */
+	bool set_aog_heartbeat_enabled(bool enabled, bool save = true);
+
+	/**
 	 * @brief Get the absolute path to the settings file
 	 * @param filename The filename to get the path for
 	 * @return The absolute path to the settings file
@@ -72,6 +86,8 @@ public:
 private:
 	constexpr static std::array<std::uint8_t, 3> DEFAULT_SUBNET = { 192, 168, 5 };
 	constexpr static bool DEFAULT_TECU_ENABLED = true;
+	constexpr static bool DEFAULT_AOG_HEARTBEAT_ENABLED = true;
 	std::array<std::uint8_t, 3> configuredSubnet = DEFAULT_SUBNET;
 	bool tecuEnabled = DEFAULT_TECU_ENABLED;
+	bool aogHeartbeatEnabled = DEFAULT_AOG_HEARTBEAT_ENABLED;
 };

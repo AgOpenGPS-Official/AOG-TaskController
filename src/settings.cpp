@@ -61,6 +61,23 @@ bool Settings::load()
 		tecuEnabled = DEFAULT_TECU_ENABLED; // Key not found, use default
 	}
 
+	if (data.contains("aogHeartbeatEnabled"))
+	{
+		try
+		{
+			aogHeartbeatEnabled = data["aogHeartbeatEnabled"].get<bool>();
+		}
+		catch (const nlohmann::json::exception &e)
+		{
+			std::cout << "Error parsing 'aogHeartbeatEnabled': " << e.what() << std::endl;
+			aogHeartbeatEnabled = DEFAULT_AOG_HEARTBEAT_ENABLED; // Fallback to default
+		}
+	}
+	else
+	{
+		aogHeartbeatEnabled = DEFAULT_AOG_HEARTBEAT_ENABLED; // Key not found, use default
+	}
+
 	return true;
 }
 
@@ -69,6 +86,7 @@ bool Settings::save() const
 	json data;
 	data["subnet"] = configuredSubnet;
 	data["tecuEnabled"] = tecuEnabled;
+	data["aogHeartbeatEnabled"] = aogHeartbeatEnabled;
 
 	std::ofstream file(get_filename_path("settings.json"));
 	if (!file.is_open())
@@ -108,6 +126,21 @@ bool Settings::is_tecu_enabled() const
 bool Settings::set_tecu_enabled(bool enabled, bool save)
 {
 	tecuEnabled = enabled;
+	if (save)
+	{
+		return this->save();
+	}
+	return true;
+}
+
+bool Settings::is_aog_heartbeat_enabled() const
+{
+	return aogHeartbeatEnabled;
+}
+
+bool Settings::set_aog_heartbeat_enabled(bool enabled, bool save)
+{
+	aogHeartbeatEnabled = enabled;
 	if (save)
 	{
 		return this->save();
