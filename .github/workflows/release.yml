@@ -1,0 +1,82 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows_release:
+    name: Windows Release (NSIS)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Ensure tag commit is on develop
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin develop:refs/remotes/origin/develop
+
+          TAG_SHA="$(git rev-list -n 1 "$GITHUB_REF")"
+          echo "Tag ref: $GITHUB_REF"
+          echo "Tag SHA: $TAG_SHA"
+
+          if git merge-base --is-ancestor "$TAG_SHA" "origin/develop"; then
+            echo "OK: Tag commit is reachable from origin/develop"
+          else
+            echo "::error::Tag commit is NOT on develop. Refusing to release."
+            exit 1
+          fi
+
+      - name: Decide prerelease flag
+        shell: bash
+        # Pattern must match vMAJOR.MINOR.PATCH-beta.N; keep in sync with the
+        # regex used in CMakeLists.txt for git-tag-based version extraction.
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]; then
+            IS_PRERELEASE=true
+          else
+            IS_PRERELEASE=false
+          fi
+          echo "PRERELEASE=${IS_PRERELEASE}" >> "$GITHUB_ENV"
+          echo "Tag: ${TAG}, Prerelease: ${IS_PRERELEASE}"
+
+      - name: Install NSIS
+        run: choco install nsis -y
+
+      - name: Configure (CMake)
+        run: cmake -S . -B build -DBUILD_EXAMPLES=OFF -DBUILD_TESTING=OFF -Wno-dev
+
+      - name: Build + Package (CPack/NSIS)
+        run: cmake --build build --config Release --target package
+
+      - name: Find installer
+        # CPack places the generated installer under this fixed directory when
+        # targeting the NSIS generator on Windows (win64).  The same path is
+        # used in build.yml's upload-artifact step.
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -Path "build/_CPack_Packages/win64/NSIS" -Filter *.exe -Recurse | Select-Object -First 1
+          if (-not $installer) { throw "Installer .exe not found" }
+          "INSTALLER_PATH=$($installer.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "Found installer: $($installer.FullName)"
+
+      - name: Create GitHub Release and upload NSIS installer
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          prerelease: ${{ env.PRERELEASE }}
+          files: ${{ env.INSTALLER_PATH }}
