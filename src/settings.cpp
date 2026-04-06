@@ -7,6 +7,7 @@
  * @copyright 2025 Daan Steenbergen
  */
 #include "settings.hpp"
+#include "logging_utils.hpp"
 
 #include <ShlObj_core.h>
 #include <fstream>
@@ -35,7 +36,7 @@ bool Settings::load()
 		}
 		catch (const nlohmann::json::exception &e)
 		{
-			std::cout << "Error parsing 'subnet': " << e.what() << std::endl;
+			std::cout << "[" << get_timestamp() << "] Error parsing 'subnet': " << e.what() << std::endl;
 			configuredSubnet = DEFAULT_SUBNET; // Fallback to default
 		}
 	}
@@ -52,7 +53,7 @@ bool Settings::load()
 		}
 		catch (const nlohmann::json::exception &e)
 		{
-			std::cout << "Error parsing 'tecuEnabled': " << e.what() << std::endl;
+			std::cout << "[" << get_timestamp() << "] Error parsing 'tecuEnabled': " << e.what() << std::endl;
 			tecuEnabled = DEFAULT_TECU_ENABLED; // Fallback to default
 		}
 	}
@@ -69,7 +70,7 @@ bool Settings::load()
 		}
 		catch (const nlohmann::json::exception &e)
 		{
-			std::cout << "Error parsing 'aogHeartbeatEnabled': " << e.what() << std::endl;
+			std::cout << "[" << get_timestamp() << "] Error parsing 'aogHeartbeatEnabled': " << e.what() << std::endl;
 			aogHeartbeatEnabled = DEFAULT_AOG_HEARTBEAT_ENABLED; // Fallback to default
 		}
 	}

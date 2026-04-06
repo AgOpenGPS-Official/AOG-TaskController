@@ -406,10 +406,10 @@ void MyTCServer::identify_task_controller(std::uint8_t tcNumber)
 	//
 	// Since this is a console application without GUI, we log to console
 	// In a GUI application, this would display the TC number visually
-	std::cout << "[" << get_timestamp() << "] ========================================" << std::endl;
-	std::cout << "[" << get_timestamp() << "] === TC NUMBER " << static_cast<int>(tcNumber) << " IDENTIFIED ===" << std::endl;
-	std::cout << "[" << get_timestamp() << "] === Displaying for 3 seconds... ===" << std::endl;
-	std::cout << "[" << get_timestamp() << "] ========================================" << std::endl;
+	auto timestamp = get_timestamp();
+	std::cout << "[" << timestamp << "] ========================================" << std::endl;
+	std::cout << "[" << timestamp << "] === TC NUMBER " << static_cast<int>(tcNumber) << " IDENTIFIED ===" << std::endl;
+	std::cout << "[" << timestamp << "] ========================================" << std::endl;
 }
 
 void MyTCServer::on_client_timeout(std::shared_ptr<isobus::ControlFunction> partner)

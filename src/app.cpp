@@ -436,7 +436,7 @@ void Application::send_task_controller_status_message()
 	// Byte 8: Reserved
 
 	std::uint8_t statusByte = 0x00;
-	if (taskTotalsActive)
+	if (tcServer && tcServer->get_task_totals_active())
 	{
 		statusByte |= 0x01; // Bit 1: Task totals active
 	}
