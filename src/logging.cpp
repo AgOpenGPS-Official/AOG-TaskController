@@ -4,8 +4,10 @@
 
 #include <ctime>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <settings.hpp>
+#include <sstream>
 #include <string>
 
 class TeeStreambuf : public std::streambuf
@@ -48,6 +50,20 @@ protected:
 
 static std::unique_ptr<TeeStreambuf> teeStream;
 
+static std::string get_timestamp()
+{
+	std::time_t now = std::time(nullptr);
+	std::tm localTime;
+	localtime_s(&localTime, &now);
+
+	std::ostringstream oss;
+	oss << std::setfill('0')
+	    << std::setw(2) << localTime.tm_hour << ":"
+	    << std::setw(2) << localTime.tm_min << ":"
+	    << std::setw(2) << localTime.tm_sec;
+	return oss.str();
+}
+
 static void setup_file_logging()
 {
 	// Generate timestamped filename
@@ -74,6 +90,7 @@ public:
 
 	void sink_CAN_stack_log(CANStackLogger::LoggingLevel level, const std::string &text) override
 	{
+		std::cout << "[" << get_timestamp() << "]";
 		switch (level)
 		{
 			case LoggingLevel::Debug:

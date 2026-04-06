@@ -50,7 +50,8 @@ public:
 	bool are_measurement_commands_sent() const;
 	void mark_measurement_commands_sent();
 	std::uint16_t get_element_number_for_ddi(isobus::DataDescriptionIndex ddi) const;
-	void set_element_number_for_ddi(isobus::DataDescriptionIndex ddi, std::uint16_t elementNumber);
+	const std::vector<std::uint16_t> &get_element_numbers_for_ddi(isobus::DataDescriptionIndex ddi) const;
+	void add_element_number_for_ddi(isobus::DataDescriptionIndex ddi, std::uint16_t elementNumber);
 	bool has_element_number_for_ddi(isobus::DataDescriptionIndex ddi) const;
 	bool is_element_or_parent_off(std::uint16_t elementNumber) const; ///< Recursively checks if element or any parent is off
 	// Element work state management these act like master / override for actual sections
@@ -60,7 +61,7 @@ public:
 private:
 	isobus::DeviceDescriptorObjectPool pool; ///< The device descriptor object pool (DDOP) for the TC
 	bool areMeasurementCommandsSent = false; ///< Whether or not the measurement commands have been sent
-	std::map<isobus::DataDescriptionIndex, std::uint16_t> ddiToElementNumber; ///< Mapping of DDI to element number // TODO: better way to do this?
+	std::map<isobus::DataDescriptionIndex, std::vector<std::uint16_t>> ddiToElementNumbers; ///< Mapping of DDI to element numbers (supports multiple booms)
 
 	std::uint8_t numberOfSections;
 	std::vector<std::uint8_t> sectionSetpointStates; // 2 bits per section (0 = off, 1 = on, 2 = error, 3 = not installed)
