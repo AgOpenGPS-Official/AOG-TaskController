@@ -1,12 +1,9 @@
 #include "isobus/isobus/can_stack_logger.hpp"
+#include "logging_utils.hpp"
 
-#include <iostream>
-
-#include <ctime>
 #include <fstream>
 #include <iostream>
 #include <settings.hpp>
-#include <string>
 
 class TeeStreambuf : public std::streambuf
 {
@@ -74,6 +71,7 @@ public:
 
 	void sink_CAN_stack_log(CANStackLogger::LoggingLevel level, const std::string &text) override
 	{
+		std::cout << "[" << get_timestamp() << "] ";
 		switch (level)
 		{
 			case LoggingLevel::Debug:

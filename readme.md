@@ -37,20 +37,46 @@ AOG-TaskController reads its configuration from a `settings.json` file located i
 
 - **Windows:** `%APPDATA%\AOG-Taskcontroller\settings.json`
 
-One of the available options is the `tecuEnabled` flag:
+### Available Settings
 
-- **Key:** `tecuEnabled`
+#### `tecuEnabled`
+- **Type:** Boolean
 - **Default:** `true`
-- **Description:** Enables communication with the Tractor ECU (TECU) over ISOBUS/CAN.
-- **When to disable:** Set to `false` if your tractor or simulator does not provide TECU messages, if you do not need TECU-related data, or if you are troubleshooting TECU-related issues on the CAN bus.
+- **Description:** Enables the internal Tractor ECU (TECU) simulator. When enabled, AOG-TaskController broadcasts TECU speed messages on the ISOBUS.
+- **⚠️ Important:** 
+  - Disable if your tractor already has a TECU to avoid conflicts (two TECUs on the same bus will cause issues)
+  - Enable when your tractor lacks a TECU
+- **TECU Speed Messages Provided (when enabled):**
+  - **Ground-based Speed** (PGN 65256, 0xFEE8) - 100ms interval
+  - **Wheel-based Speed** (PGN 65256, 0xFEE8) - 100ms interval  
+  - **Machine Selected Speed** (PGN 65256, 0xFEE8) - 100ms interval
+  - **Control Function Functionalities** (PGN 64654, 0xFC8E) - Announces TECU Class 1 capability (no control functions)
+  - **NMEA2000 COG/SOG** - Optional navigation data
 
-Example `settings.json` snippet:
+#### `aogHeartbeatEnabled`
+- **Type:** Boolean  
+- **Default:** `true`
+- **Description:** Enables the heartbeat message sent to AgOpenGPS every 100ms. This allows AOG to detect when the ISOBUS TC is running and display the ISOBUS button status.
+- **⚠️ Important:** If using AgOpenGPS **pre-v6.8.2 beta 5**, set this to `false` to avoid compatibility issues. Newer versions of AOG can properly handle the heartbeat message.
+
+### Example `settings.json`
 
 ```json
 {
-  "tecuEnabled": true
+  "subnet": [192, 168, 5],
+  "tecuEnabled": true,
+  "aogHeartbeatEnabled": true
 }
 ```
+
+## Task Controller Capabilities
+
+- **ISO 11783-10 Version:** 2 (Second Edition)
+- **Maximum Booms:** 1
+- **Maximum Sections:** 64 (supports both individual sections and zone-based control)
+- **Section Control:** Generation 1 (TC-SC) with support for DDI 160/161/290
+
+## Contributing
 
 Before committing it's better to run these commands: (requires the LLVM project to be installed)
  ```powershell

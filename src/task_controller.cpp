@@ -7,6 +7,7 @@
  * @copyright 2025 Daan Steenbergen
  */
 #include "task_controller.hpp"
+#include "logging_utils.hpp"
 #include "settings.hpp"
 
 #include "isobus/isobus/isobus_device_descriptor_object_pool_helpers.hpp"
@@ -150,7 +151,7 @@ std::uint16_t ClientState::get_element_number_for_ddi(isobus::DataDescriptionInd
 	{
 		return it->second;
 	}
-	std::cout << "Cached element number not found for DDI " << static_cast<int>(ddi) << std::endl;
+	std::cout << "[" << get_timestamp() << "] Cached element number not found for DDI " << static_cast<int>(ddi) << std::endl;
 	return 0;
 }
 
@@ -256,7 +257,7 @@ MyTCServer::MyTCServer(std::shared_ptr<isobus::InternalControlFunction> internal
 
 bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> partnerCF, ObjectPoolActivationError &, ObjectPoolErrorCodes &, std::uint16_t &, std::uint16_t &)
 {
-	std::cout << "[TC Server] Client " << partnerCF->get_NAME().get_full_name() << " requesting object pool activation" << std::endl;
+	std::cout << "[" << get_timestamp() << "] [TC Server] Client " << partnerCF->get_NAME().get_full_name() << " requesting object pool activation" << std::endl;
 	// Safety check to make sure partnerCF has uploaded a DDOP
 	if (uploadedPools.find(partnerCF) == uploadedPools.end())
 	{
@@ -277,7 +278,7 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 	}
 	if (deserialized)
 	{
-		std::cout << "Successfully deserialized device descriptor object pool." << std::endl;
+		std::cout << "[" << get_timestamp() << "] Successfully deserialized device descriptor object pool." << std::endl;
 
 		// Save to NVM
 		std::shared_ptr<isobus::task_controller_object::DeviceObject> deviceObject;
@@ -306,16 +307,16 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 			{
 				outFile.write(reinterpret_cast<const char *>(binaryPool.data()), binaryPool.size());
 				outFile.close();
-				std::cout << "Saved DDOP to file: " << fileName << std::endl;
+				std::cout << "[" << get_timestamp() << "] Saved DDOP to file: " << fileName << std::endl;
 			}
 			else
 			{
-				std::cout << "Unable to save DDOP to NVM. (Failed to open file) file: " << fileName << std::endl;
+				std::cout << "[" << get_timestamp() << "] Unable to save DDOP to NVM. (Failed to open file) file: " << fileName << std::endl;
 			}
 		}
 		else
 		{
-			std::cout << "Unable to save DDOP to NVM. (Failed to generate binary object pool)" << std::endl;
+			std::cout << "[" << get_timestamp() << "] Unable to save DDOP to NVM. (Failed to generate binary object pool)" << std::endl;
 		}
 
 		auto implement = isobus::DeviceDescriptorObjectPoolHelper::get_implement_geometry(state.get_pool());
@@ -353,12 +354,12 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 	}
 	else
 	{
-		std::cout << "Failed to deserialize device descriptor object pool." << std::endl;
+		std::cout << "[" << get_timestamp() << "] Failed to deserialize device descriptor object pool." << std::endl;
 		return false;
 	}
 
 	clients[partnerCF] = state;
-	std::cout << "[TC Server] Client " << partnerCF->get_NAME().get_full_name() << " registered successfully with "
+	std::cout << "[" << get_timestamp() << "] [TC Server] Client " << partnerCF->get_NAME().get_full_name() << " registered successfully with "
 	          << static_cast<int>(state.get_number_of_sections()) << " sections." << std::endl;
 	return true;
 }
@@ -397,16 +398,24 @@ bool MyTCServer::get_is_enough_memory_available(std::uint32_t)
 	return true;
 }
 
-void MyTCServer::identify_task_controller(std::uint8_t)
+void MyTCServer::identify_task_controller(std::uint8_t tcNumber)
 {
-	// When this is called, the TC is supposed to display its TC number for 3 seconds if possible (which is passed into this function).
-	// Your TC's number is your function code + 1, in the range of 1-32.
+	// ISO 11783-10 B.5.4/B.5.5: Identify Task Controller message
+	// When this is called, the TC shall display its TC number for 3 seconds
+	// TC Number = Function Instance + 1 (range 1-32)
+	//
+	// Since this is a console application without GUI, we log to console
+	// In a GUI application, this would display the TC number visually
+	auto timestamp = get_timestamp();
+	std::cout << "[" << timestamp << "] ========================================" << std::endl;
+	std::cout << "[" << timestamp << "] === TC NUMBER " << static_cast<int>(tcNumber) << " IDENTIFIED ===" << std::endl;
+	std::cout << "[" << timestamp << "] ========================================" << std::endl;
 }
 
 void MyTCServer::on_client_timeout(std::shared_ptr<isobus::ControlFunction> partner)
 {
 	// Cleanup the client state
-	std::cout << "[TC Server] Client " << partner->get_NAME().get_full_name() << " has timed out!" << std::endl;
+	std::cout << "[" << get_timestamp() << "] [TC Server] Client " << partner->get_NAME().get_full_name() << " has timed out!" << std::endl;
 	clients.erase(partner);
 }
 
@@ -417,7 +426,7 @@ void MyTCServer::on_process_data_acknowledge(std::shared_ptr<isobus::ControlFunc
                                              ProcessDataCommands processDataCommand)
 {
 	// This callback lets you know when a client sends a process data acknowledge (PDACK) message to you
-	std::cout << "Received process data acknowledge from client " << int(partner->get_address()) << " for DDI " << dataDescriptionIndex << " element " << elementNumber << " with error codes " << std::bitset<8>(errorCodesFromClient) << " and command " << static_cast<int>(processDataCommand) << std::endl;
+	std::cout << "[" << get_timestamp() << "] Received process data acknowledge from client " << int(partner->get_address()) << " for DDI " << dataDescriptionIndex << " element " << elementNumber << " with error codes " << std::bitset<8>(errorCodesFromClient) << " and command " << static_cast<int>(processDataCommand) << std::endl;
 }
 
 bool MyTCServer::on_value_command(std::shared_ptr<isobus::ControlFunction> partner,
@@ -474,7 +483,7 @@ bool MyTCServer::on_value_command(std::shared_ptr<isobus::ControlFunction> partn
 
 bool MyTCServer::store_device_descriptor_object_pool(std::shared_ptr<isobus::ControlFunction> partnerCF, const std::vector<std::uint8_t> &binaryPool, bool appendToPool)
 {
-	std::cout << "[TC Server] Client " << partnerCF->get_NAME().get_full_name() << " requesting object pool transfer of " << binaryPool.size() << " bytes" << std::endl;
+	std::cout << "[" << get_timestamp() << "] [TC Server] Client " << partnerCF->get_NAME().get_full_name() << " requesting object pool transfer of " << binaryPool.size() << " bytes" << std::endl;
 	if (uploadedPools.find(partnerCF) == uploadedPools.end())
 	{
 		uploadedPools[partnerCF] = std::queue<std::vector<std::uint8_t>>();
@@ -588,7 +597,7 @@ void MyTCServer::request_measurement_commands()
 				}
 			}
 
-			std::cout << "Measurement commands sent." << std::endl;
+			std::cout << "[" << get_timestamp() << "] Measurement commands sent." << std::endl;
 			client.second.mark_measurement_commands_sent();
 		}
 	}
@@ -684,7 +693,7 @@ void MyTCServer::send_section_setpoint_states(std::shared_ptr<isobus::ControlFun
 		}
 		else if (!clients[client].has_element_number_for_ddi(isobus::DataDescriptionIndex::SetpointWorkState))
 		{
-			std::cout << "[TC Server] DDI 289 (SetpointWorkState) not available!" << std::endl;
+			std::cout << "[" << get_timestamp() << "] [TC Server] DDI 289 (SetpointWorkState) not available!" << std::endl;
 		}
 	}
 	else if (clients[client].has_element_number_for_ddi(static_cast<isobus::DataDescriptionIndex>(ddiTargetLegacy)))
@@ -695,13 +704,13 @@ void MyTCServer::send_section_setpoint_states(std::shared_ptr<isobus::ControlFun
 		}
 		else
 		{
-			std::cout << "[TC Server] Legacy DDI " << ddiTargetLegacy << " (ActualCondensedWorkState) is not settable!" << std::endl;
+			std::cout << "[" << get_timestamp() << "] [TC Server] Legacy DDI " << ddiTargetLegacy << " (ActualCondensedWorkState) is not settable!" << std::endl;
 		}
 		return;
 	}
 	else
 	{
-		std::cout << "[TC Server] Neither condensed nor controllable-actual work state supported Missing DDI 290 and 141!" << std::endl;
+		std::cout << "[" << get_timestamp() << "] [TC Server] Neither condensed nor controllable-actual work state supported Missing DDI 290 and 141!" << std::endl;
 	}
 }
 
