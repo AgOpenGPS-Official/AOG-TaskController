@@ -97,6 +97,27 @@ bool Application::initialize()
 	auto tcAddressClaimedTime = isobus::SystemTiming::get_timestamp_ms();
 	std::cout << "[" << get_timestamp() << "] [Init] TC claimed address " << static_cast<int>(tcCF->get_address()) << std::endl;
 
+	// Print existing ECUs on the bus with their NAMEs
+	auto existingControlFunctions = isobus::CANNetworkManager::CANNetwork.get_control_functions(false);
+	if (!existingControlFunctions.empty())
+	{
+		std::cout << "[" << get_timestamp() << "] [Init] Existing ECUs on the bus:" << std::endl;
+		for (const auto &cf : existingControlFunctions)
+		{
+			if (cf && cf->get_address_valid())
+			{
+				const auto &name = cf->get_NAME();
+				std::cout << "[" << get_timestamp() << "] [Init]   Address " << static_cast<int>(cf->get_address())
+				          << " - NAME 0x" << std::hex << name.get_full_name() << std::dec
+				          << " [Fn:" << static_cast<int>(name.get_function_code())
+				          << "/IG:" << static_cast<int>(name.get_industry_group())
+				          << "/Cls:" << static_cast<int>(name.get_device_class()) << "]"
+				          << " - Mfg:" << name.get_manufacturer_code()
+				          << " (" << cf->get_type_string() << ")" << std::endl;
+			}
+		}
+	}
+
 	// Ensure minimum 250ms delay after address claim per J1939-81
 	auto tcClaimElapsedMs = isobus::SystemTiming::get_time_elapsed_ms(tcAddressClaimedTime);
 	if (tcClaimElapsedMs < MINIMUM_ADDRESS_CLAIM_DELAY_MS)
