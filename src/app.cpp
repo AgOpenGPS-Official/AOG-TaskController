@@ -10,13 +10,16 @@
 
 #include "isobus/hardware_integration/available_can_drivers.hpp"
 #include "isobus/hardware_integration/can_hardware_interface.hpp"
+#include "isobus/isobus/can_general_parameter_group_numbers.hpp"
 #include "isobus/isobus/can_network_manager.hpp"
 #include "isobus/isobus/isobus_preferred_addresses.hpp"
 #include "isobus/isobus/isobus_standard_data_description_indices.hpp"
+#include "isobus/isobus/isobus_task_controller_server.hpp"
 #include "isobus/utility/system_timing.hpp"
 
 #include "task_controller.hpp"
 
+#include <iomanip>
 #include <thread>
 
 using boost::asio::ip::udp;
@@ -192,12 +195,49 @@ bool Application::initialize()
 		}
 	}
 
-	tcServer = std::make_shared<MyTCServer>(tcCF);
+	// Map settings version to TaskControllerVersion enum
+	isobus::TaskControllerServer::TaskControllerVersion tcVersionEnum;
+	switch (settings->get_tc_version())
+	{
+		case 0:
+			tcVersionEnum = isobus::TaskControllerServer::TaskControllerVersion::DraftInternationalStandard;
+			break;
+		case 1:
+			tcVersionEnum = isobus::TaskControllerServer::TaskControllerVersion::FinalDraftInternationalStandardFirstEdition;
+			break;
+		case 2:
+			tcVersionEnum = isobus::TaskControllerServer::TaskControllerVersion::FirstPublishedEdition;
+			break;
+		case 3:
+			tcVersionEnum = isobus::TaskControllerServer::TaskControllerVersion::SecondEditionDraft;
+			break;
+		case 4:
+		default:
+			tcVersionEnum = isobus::TaskControllerServer::TaskControllerVersion::SecondPublishedEdition;
+			break;
+	}
+	std::cout << "[" << get_timestamp() << "] [Init] TC version set to " << static_cast<int>(settings->get_tc_version()) << " ("
+	          << static_cast<int>(tcVersionEnum) << ")" << std::endl;
+
+	tcServer = std::make_shared<MyTCServer>(tcCF, tcVersionEnum);
 	auto &languageInterface = tcServer->get_language_command_interface();
-	languageInterface.set_language_code("en"); // This is the default, but you can change it if you want
-	languageInterface.set_country_code("US"); // This is the default, but you can change it if you want
+	languageInterface.set_language_code(settings->get_language_code());
+	languageInterface.set_country_code(settings->get_country_code());
 	tcServer->initialize();
 	tcServer->set_task_totals_active(true); // TODO: make this dynamic based on status in AOG
+
+	// Register CAN callbacks to log WorkingSetMaster and ProcessData for diagnostics
+	isobus::CANNetworkManager::CANNetwork.add_any_control_function_parameter_group_number_callback(
+	  static_cast<std::uint32_t>(isobus::CANLibParameterGroupNumber::WorkingSetMaster),
+	  Application::log_can_working_set_master,
+	  this);
+	isobus::CANNetworkManager::CANNetwork.add_any_control_function_parameter_group_number_callback(
+	  static_cast<std::uint32_t>(isobus::CANLibParameterGroupNumber::ProcessData),
+	  Application::log_can_process_data,
+	  this);
+
+	tcInitializedTimestampMs = isobus::SystemTiming::get_timestamp_ms();
+	std::cout << "[" << get_timestamp() << "] [Init] TC server initialized, sending startup status burst..." << std::endl;
 
 	// Initialize speed and distance messages
 	if (tecuCF && tecuCF->get_address_valid())
@@ -422,6 +462,13 @@ bool Application::update()
 		}
 	}
 
+	// Send startup TC Status burst to help late-joining implements detect the TC
+	// ISO 11783-10 allows up to 5 Hz (200ms interval) for TC Status
+	if (!tcStatusBurstSent && tcCF && tcCF->get_address_valid())
+	{
+		send_tc_status_burst();
+	}
+
 	// Send Task Controller Status message every 2 seconds (ISO 11783-10 B.8.1)
 	if (isobus::SystemTiming::time_expired_ms(lastTCStatusTransmit, 2000) && tcCF && tcCF->get_address_valid())
 	{
@@ -432,6 +479,16 @@ bool Application::update()
 			std::cout << "[" << get_timestamp() << "] [TC Status] First TC Status message sent (PGN 0xCB00)" << std::endl;
 			firstStatusSent = true;
 		}
+	}
+
+	// Update connection tracker state
+	update_connection_tracker();
+
+	// Dump connection diagnostics table every 30 seconds
+	if (isobus::SystemTiming::time_expired_ms(lastConnectionTableDumpMs, 30000))
+	{
+		dump_connection_table();
+		lastConnectionTableDumpMs = isobus::SystemTiming::get_timestamp_ms();
 	}
 
 	return true;
@@ -485,6 +542,227 @@ void Application::send_task_controller_status_message()
 	// Update the transmit timestamp for every send attempt so failed sends
 	// still respect the minimum 2-second transmit period.
 	lastTCStatusTransmit = transmitAttemptTimestamp;
+}
+
+void Application::send_tc_status_burst()
+{
+	// ISO 11783-10 allows TC Status up to 5 Hz (200ms minimum interval).
+	// Send a burst of 5 messages at 200ms intervals right after TC initialization
+	// to maximize the chance that late-joining implements detect the TC.
+	static std::uint8_t burstCount = 0;
+	static std::uint32_t lastBurstTransmit = 0;
+
+	if (burstCount == 0)
+	{
+		lastBurstTransmit = tcInitializedTimestampMs;
+	}
+
+	if (isobus::SystemTiming::time_expired_ms(lastBurstTransmit, 200))
+	{
+		send_task_controller_status_message();
+		burstCount++;
+		lastBurstTransmit = isobus::SystemTiming::get_timestamp_ms();
+		std::cout << "[" << get_timestamp() << "] [TC Status] Startup burst message " << static_cast<int>(burstCount) << "/5 sent" << std::endl;
+
+		if (burstCount >= 5)
+		{
+			tcStatusBurstSent = true;
+			burstCount = 0;
+			std::cout << "[" << get_timestamp() << "] [TC Status] Startup burst complete" << std::endl;
+		}
+	}
+}
+
+void Application::dump_connection_table()
+{
+	auto now = isobus::SystemTiming::get_timestamp_ms();
+	std::cout << "[" << get_timestamp() << "] === Client Connection Diagnostics Table ===" << std::endl;
+	std::cout << std::left << std::setw(18) << "NAME"
+	          << std::setw(10) << "Address"
+	          << std::setw(8) << "WSM"
+	          << std::setw(8) << "ReqVer"
+	          << std::setw(8) << "VerSent"
+	          << std::setw(8) << "ReqSent"
+	          << std::setw(8) << "ClTask"
+	          << std::setw(8) << "Reg"
+	          << std::setw(12) << "Type"
+	          << std::setw(10) << "Age(s)"
+	          << std::endl;
+	std::cout << std::string(98, '-') << std::endl;
+
+	for (const auto &entry : connectionTracker)
+	{
+		const auto &info = entry.second;
+		std::stringstream nameStream;
+		nameStream << "0x" << std::hex << info.nameFull << std::dec;
+		std::string nameStr = nameStream.str();
+
+		std::cout << std::left << std::setw(18) << nameStr.substr(0, 17)
+		          << std::setw(10) << static_cast<int>(info.address)
+		          << std::setw(8) << (info.workingSetMasterReceived ? "Y" : "N")
+		          << std::setw(8) << (info.requestVersionReceived ? "Y" : "N")
+		          << std::setw(8) << (info.versionResponseSent ? "Y" : "N")
+		          << std::setw(8) << (info.requestVersionSent ? "Y" : "N")
+		          << std::setw(8) << (info.clientTaskReceived ? "Y" : "N")
+		          << std::setw(8) << (info.registeredAsClient ? "Y" : "N")
+		          << std::setw(12) << info.typeString.substr(0, 11)
+		          << std::setw(10) << static_cast<int>((now - info.firstSeenMs) / 1000)
+		          << std::endl;
+	}
+
+	if (connectionTracker.empty())
+	{
+		std::cout << "[" << get_timestamp() << "] No clients seen on the bus yet." << std::endl;
+	}
+	std::cout << "[" << get_timestamp() << "] === End Connection Table ===" << std::endl;
+}
+
+void Application::update_connection_tracker()
+{
+	auto now = isobus::SystemTiming::get_timestamp_ms();
+
+	// Sync registered clients from tcServer
+	if (tcServer)
+	{
+		for (auto &client : tcServer->get_clients())
+		{
+			auto nameFull = client.first->get_NAME().get_full_name();
+			auto it = connectionTracker.find(nameFull);
+			if (it != connectionTracker.end())
+			{
+				it->second.registeredAsClient = true;
+				it->second.address = client.first->get_address();
+			}
+		}
+	}
+
+	// Scan all control functions on the bus and add any we haven't seen yet
+	auto allCFs = isobus::CANNetworkManager::CANNetwork.get_control_functions(false);
+	for (const auto &cf : allCFs)
+	{
+		if (cf && cf->get_address_valid())
+		{
+			auto nameFull = cf->get_NAME().get_full_name();
+			if (connectionTracker.find(nameFull) == connectionTracker.end())
+			{
+				ClientConnectionInfo info;
+				info.nameFull = nameFull;
+				info.address = cf->get_address();
+				info.typeString = cf->get_type_string();
+				info.firstSeenMs = now;
+				connectionTracker[nameFull] = info;
+				std::cout << "[" << get_timestamp() << "] [ConnectionTracker] New CF detected: NAME 0x" << std::hex << nameFull << std::dec
+				          << " @ address " << static_cast<int>(cf->get_address())
+				          << " (" << info.typeString << ")" << std::endl;
+			}
+		}
+	}
+}
+
+void Application::log_can_working_set_master(const isobus::CANMessage &message, void *parent)
+{
+	if (nullptr == parent)
+	{
+		return;
+	}
+	auto *app = static_cast<Application *>(parent);
+	auto source = message.get_source_control_function();
+	if (nullptr == source)
+	{
+		return;
+	}
+
+	auto now = isobus::SystemTiming::get_timestamp_ms();
+	auto nameFull = source->get_NAME().get_full_name();
+	auto &info = app->connectionTracker[nameFull];
+	info.nameFull = nameFull;
+	info.address = source->get_address();
+	info.typeString = source->get_type_string();
+	if (info.firstSeenMs == 0)
+	{
+		info.firstSeenMs = now;
+	}
+	info.workingSetMasterReceived = true;
+	info.lastWorkingSetMasterMs = now;
+
+	std::uint8_t numberOfMembers = message.get_data().empty() ? 0 : message.get_data()[0];
+	std::cout << "[" << get_timestamp() << "] [CAN] WorkingSetMaster from NAME 0x" << std::hex << nameFull << std::dec
+	          << " @ " << static_cast<int>(source->get_address())
+	          << " - members=" << static_cast<int>(numberOfMembers) << std::endl;
+}
+
+void Application::log_can_process_data(const isobus::CANMessage &message, void *parent)
+{
+	if (nullptr == parent)
+	{
+		return;
+	}
+	auto *app = static_cast<Application *>(parent);
+	auto source = message.get_source_control_function();
+	if (nullptr == source)
+	{
+		return;
+	}
+
+	const auto &data = message.get_data();
+	if (data.empty())
+	{
+		return;
+	}
+
+	std::uint8_t command = data[0] & 0x0F;
+	std::uint8_t subcommand = data[0] >> 4;
+	auto now = isobus::SystemTiming::get_timestamp_ms();
+	auto nameFull = source->get_NAME().get_full_name();
+	auto &info = app->connectionTracker[nameFull];
+	info.nameFull = nameFull;
+	info.address = source->get_address();
+	info.typeString = source->get_type_string();
+	if (info.firstSeenMs == 0)
+	{
+		info.firstSeenMs = now;
+	}
+
+	// Log RequestVersion (command 0x00, subcommand 0x00)
+	if (command == 0x00 && subcommand == 0x00)
+	{
+		info.requestVersionReceived = true;
+		info.lastRequestVersionMs = now;
+
+		// Bidirectional version exchange: if a client asks our version, ask theirs too
+		// This makes a V3-reporting TC behave like V4 for clients that expect it
+		if (!info.requestVersionSent && app->tcCF && app->tcCF->get_address_valid())
+		{
+			std::array<std::uint8_t, 8> requestVersionPayload = {
+				0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF
+			};
+			if (isobus::CANNetworkManager::CANNetwork.send_can_message(
+			        0xCB00, requestVersionPayload.data(), requestVersionPayload.size(), app->tcCF, source))
+			{
+				info.requestVersionSent = true;
+				std::cout << "[" << get_timestamp() << "] [CAN] Sent RequestVersion to NAME 0x" << std::hex << nameFull << std::dec << std::endl;
+			}
+		}
+
+		std::cout << "[" << get_timestamp() << "] [CAN] RequestVersion from NAME 0x" << std::hex << nameFull << std::dec
+		          << " @ " << static_cast<int>(source->get_address()) << std::endl;
+	}
+	// Log ParameterVersion response (command 0x00, subcommand 0x01) - only if destination is the TC
+	else if (command == 0x00 && subcommand == 0x01)
+	{
+		if (message.get_destination_control_function() == source)
+		{
+			// This is actually a Version response FROM the TC TO the client,
+			// but if we see it going TO a client, it means the TC responded.
+			info.versionResponseSent = true;
+		}
+	}
+	// Log ClientTask (command 0x0F)
+	else if (command == 0x0F)
+	{
+		info.clientTaskReceived = true;
+		info.lastClientTaskMs = now;
+	}
 }
 
 void Application::stop()

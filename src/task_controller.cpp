@@ -10,6 +10,8 @@
 #include "logging_utils.hpp"
 #include "settings.hpp"
 
+#include <windows.h>
+
 #include "isobus/isobus/isobus_device_descriptor_object_pool_helpers.hpp"
 #include "isobus/isobus/isobus_task_controller_server.hpp"
 
@@ -244,14 +246,15 @@ bool ClientState::try_get_element_work_state(std::uint16_t elementNumber, bool &
 	return false;
 }
 
-MyTCServer::MyTCServer(std::shared_ptr<isobus::InternalControlFunction> internalControlFunction) :
+MyTCServer::MyTCServer(std::shared_ptr<isobus::InternalControlFunction> internalControlFunction,
+                       isobus::TaskControllerServer::TaskControllerVersion version) :
   TaskControllerServer(internalControlFunction,
                        1, // AOG limits to 1 boom
                        64, // AOG limits to 16 sections of unique width but can be 64 by using zones
                        64, // 64 channels for position based control
                        isobus::TaskControllerOptions()
                          .with_implement_section_control(), // We support section control
-                       TaskControllerVersion::SecondEditionDraft)
+                       version)
 {
 }
 
@@ -376,8 +379,70 @@ bool MyTCServer::deactivate_object_pool(std::shared_ptr<isobus::ControlFunction>
 	return true;
 }
 
+static bool remove_directory_recursive(const std::string &path)
+{
+	WIN32_FIND_DATAA findData;
+	auto searchPath = path + "\\*";
+	auto hFind = FindFirstFileA(searchPath.c_str(), &findData);
+	if (hFind == INVALID_HANDLE_VALUE)
+	{
+		return RemoveDirectoryA(path.c_str()) != 0;
+	}
+
+	do
+	{
+		std::string name = findData.cFileName;
+		if (name == "." || name == "..")
+		{
+			continue;
+		}
+		std::string fullPath = path + "\\" + name;
+		if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+		{
+			remove_directory_recursive(fullPath);
+		}
+		else
+		{
+			DeleteFileA(fullPath.c_str());
+		}
+	} while (FindNextFileA(hFind, &findData));
+
+	FindClose(hFind);
+	return RemoveDirectoryA(path.c_str()) != 0;
+}
+
 bool MyTCServer::delete_device_descriptor_object_pool(std::shared_ptr<isobus::ControlFunction> partnerCF, ObjectPoolDeletionErrors &)
 {
+	auto nameFull = partnerCF->get_NAME().get_full_name();
+	auto folderName = std::to_string(nameFull);
+
+	// Get the directory path where this client's DDOP is stored
+	auto dummyFilePath = Settings::get_filename_path(folderName + "\\dummy.txt");
+	auto currentFolderPath = dummyFilePath.substr(0, dummyFilePath.find_last_of("\\/"));
+	auto parentDirPath = currentFolderPath.substr(0, currentFolderPath.find_last_of("\\/"));
+	auto archiveFolderPath = parentDirPath + "\\" + folderName + "_archive";
+
+	// If archive already exists, delete it first
+	if (GetFileAttributesA(archiveFolderPath.c_str()) != INVALID_FILE_ATTRIBUTES)
+	{
+		if (!remove_directory_recursive(archiveFolderPath))
+		{
+			std::cout << "[" << get_timestamp() << "] [TC Server] Failed to remove old archive folder: " << archiveFolderPath << std::endl;
+		}
+	}
+
+	// Rename current folder to archive
+	if (MoveFileA(currentFolderPath.c_str(), archiveFolderPath.c_str()))
+	{
+		std::cout << "[" << get_timestamp() << "] [TC Server] Archived DDOP folder for NAME " << nameFull
+		          << " to " << archiveFolderPath << std::endl;
+	}
+	else
+	{
+		std::cout << "[" << get_timestamp() << "] [TC Server] Failed to archive DDOP folder for NAME " << nameFull
+		          << " (error " << GetLastError() << ")" << std::endl;
+	}
+
 	clients.erase(partnerCF);
 	uploadedPools.erase(partnerCF);
 	return true;
