@@ -737,7 +737,7 @@ void Application::log_can_process_data(const isobus::CANMessage &message, void *
 				0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF
 			};
 			if (isobus::CANNetworkManager::CANNetwork.send_can_message(
-			        0xCB00, requestVersionPayload.data(), requestVersionPayload.size(), app->tcCF, source))
+			      0xCB00, requestVersionPayload.data(), requestVersionPayload.size(), app->tcCF, source))
 			{
 				info.requestVersionSent = true;
 				std::cout << "[" << get_timestamp() << "] [CAN] Sent RequestVersion to NAME 0x" << std::hex << nameFull << std::dec << std::endl;
