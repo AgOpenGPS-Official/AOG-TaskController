@@ -14,6 +14,12 @@ After installing the desired release of AOG-TaskController, you can run it direc
 
 ![how-to](resources/agopengps-howto.png)
 
+## Raising tickets
+
+Open %APPDATA% folder in explorer.
+Zip all the folders (sometimes we need the ddop found in the subfolders) and the logs.
+Attach them to the ticket.
+
 ## How to package the project
 
 To package the project, you need to have the following tools installed:
