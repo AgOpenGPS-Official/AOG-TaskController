@@ -7,16 +7,29 @@
 
 #include "git.h"
 
-#include <shellapi.h>
-#include <windows.h>
+#include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <thread>
+#include <unordered_map>
+#include <vector>
 
+#if defined(_WIN32)
+#include <shellapi.h>
+#include <windows.h>
 #define TRAY_ICON_ID 1
+#else
+#include <csignal>
+#endif
+
 static std::atomic_bool running = { true };
 
+#if defined(_WIN32)
 // Window procedure to handle messages
 LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
@@ -32,7 +45,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 	return 0;
 }
 
-std::vector<std::string> ParseCommandLine(LPSTR lpCmdLine)
+std::vector<std::string> ParseCommandLine(LPSTR /*lpCmdLine*/)
 {
 	std::vector<std::string> arguments;
 	int argc;
@@ -63,6 +76,23 @@ std::vector<std::string> ParseCommandLine(LPSTR lpCmdLine)
 	LocalFree(argv);
 	return arguments;
 }
+#else
+static void signal_handler(int /*signum*/)
+{
+	running = false;
+}
+
+static std::vector<std::string> ParseCommandLine(int argc, char **argv)
+{
+	std::vector<std::string> arguments;
+	arguments.reserve(argc);
+	for (int i = 0; i < argc; ++i)
+	{
+		arguments.emplace_back(argv[i]);
+	}
+	return arguments;
+}
+#endif
 
 enum class CANAdapter
 {
@@ -71,6 +101,7 @@ enum class CANAdapter
 	ADAPTER_INNOMAKER_USB2CAN,
 	ADAPTER_RUSOKU_TOUCAN,
 	ADAPTER_SYS_TEC_USB2CAN,
+	ADAPTER_SOCKETCAN,
 };
 
 class ArgumentProcessor
@@ -112,20 +143,20 @@ private:
 	{
 		if ("--help" == option)
 		{
-			std::cout << "Usage: AOG-TaskController.exe [options]\n";
+			std::cout << "Usage: AOG-TaskController [options]\n";
 			std::cout << "Options:\n";
 			std::cout << "  --help\t\tShow this help message\n";
 			std::cout << "  --version\t\tShow the version of the application\n";
-			std::cout << "  --can_adapter=<driver>\tSelect the CAN driver\n";
-			std::cout << "  --can_channel=<channel>\tSelect the CAN channel\n";
+			std::cout << "  --can_adapter=<driver>\tSelect the CAN driver (peak-pcan, innomaker-usb2can, rusoku-toucan, sys-tec-usb2can, socketcan)\n";
+			std::cout << "  --can_channel=<channel>\tSelect the CAN channel (numeric, or interface name e.g. can0 for socketcan)\n";
 			std::cout << "  --log_level=<level>\tSet the log level (debug, info, warning, error, critical)\n";
 			std::cout << "  --log2file\t\tLog to file\n";
-			exit(0);
+			std::exit(0);
 		}
 		else if ("--version" == option)
 		{
 			std::cout << std::string(git::Describe()) + (git::AnyUncommittedChanges() ? "-dirty" : "") << std::endl;
-			exit(0);
+			std::exit(0);
 		}
 		else if ("--log2file" == option)
 		{
@@ -155,6 +186,7 @@ private:
 				{ "innomaker-usb2can", CANAdapter::ADAPTER_INNOMAKER_USB2CAN },
 				{ "rusoku-toucan", CANAdapter::ADAPTER_RUSOKU_TOUCAN },
 				{ "sys-tec-usb2can", CANAdapter::ADAPTER_SYS_TEC_USB2CAN },
+				{ "socketcan", CANAdapter::ADAPTER_SOCKETCAN },
 			};
 
 			auto it = adapterMap.find(value);
@@ -212,9 +244,124 @@ private:
 	bool fileLogging = false;
 };
 
+static std::shared_ptr<isobus::CANHardwarePlugin> create_can_driver(const ArgumentProcessor &args)
+{
+	switch (args.get_can_adapter())
+	{
+#if defined(_WIN32)
+		case CANAdapter::ADAPTER_PCAN_USB:
+		{
+			return std::make_shared<isobus::PCANBasicWindowsPlugin>(PCAN_USBBUS1 - 1 + std::stoi(args.get_can_channel()));
+		}
+		case CANAdapter::ADAPTER_INNOMAKER_USB2CAN:
+		{
+			return std::make_shared<isobus::InnoMakerUSB2CANWindowsPlugin>(std::stoi(args.get_can_channel()) - 1);
+		}
+		case CANAdapter::ADAPTER_RUSOKU_TOUCAN:
+		{
+			return std::make_shared<isobus::TouCANPlugin>(std::stoi(args.get_can_channel()), std::stoi(args.get_can_channel()));
+		}
+		case CANAdapter::ADAPTER_SYS_TEC_USB2CAN:
+		{
+			return std::make_shared<isobus::SysTecWindowsPlugin>(static_cast<std::uint8_t>(std::stoi(args.get_can_channel())));
+		}
+#endif
+#if defined(ISOBUS_SOCKETCAN_AVAILABLE)
+		case CANAdapter::ADAPTER_SOCKETCAN:
+		{
+			std::string channel = args.get_can_channel();
+			if (channel.empty())
+			{
+				channel = "can0";
+			}
+			return std::make_shared<isobus::SocketCANInterface>(channel);
+		}
+#endif
+		default:
+		{
+			break;
+		}
+	}
+	std::cout << "No CAN adapter selected (or selected adapter not compiled into this build)." << std::endl;
+	return nullptr;
+}
+
+// Process command-line arguments, set up logging, and create the CAN driver.
+// Returns nullptr on argument-error or driver-creation failure. Note that
+// --help / --version cause the process to exit() inside argument parsing.
+static std::shared_ptr<isobus::CANHardwarePlugin> prepare_application(const std::vector<std::string> &arguments)
+{
+	ArgumentProcessor argumentProcessor(arguments);
+	bool argumentsProcessed = argumentProcessor.process();
+
+	// The sequence is important here: process the arguments first, then check
+	// if file logging is enabled, then log the arguments and version.
+	isobus::CANStackLogger::set_can_stack_logger_sink(&logger);
+	if (argumentProcessor.is_file_logging())
+	{
+		setup_file_logging();
+	}
+
+	for (const std::string &arg : arguments)
+	{
+		std::cout << arg.c_str() << " ";
+	}
+	std::cout << std::endl;
+	std::cout << "AOG-TC version: v" << std::string(git::Describe()) + (git::AnyUncommittedChanges() ? "-dirty" : "") << std::endl;
+
+	if (!argumentsProcessed)
+	{
+		std::cout << "Failed to process arguments, exiting..." << std::endl;
+		return nullptr;
+	}
+
+	return create_can_driver(argumentProcessor);
+}
+
+static int run_application_loop(std::shared_ptr<isobus::CANHardwarePlugin> canDriver)
+{
+	Application app(canDriver);
+	if (!app.initialize())
+	{
+		std::cout << "Failed to initialize application..." << std::endl;
+		return -1;
+	}
+
+	std::cout << "[" << get_timestamp() << "] Press Ctrl+C to stop the application..." << std::endl;
+
+	while (running)
+	{
+#if defined(_WIN32)
+		// Pump the (hidden) message queue with a 1 ms timeout, mirroring the
+		// previous behavior so AOG can still close us via WM_CLOSE.
+		MSG msg;
+		DWORD result = MsgWaitForMultipleObjects(0, NULL, FALSE, 1, QS_ALLINPUT);
+		while (result == WAIT_OBJECT_0 && PeekMessage(&msg, NULL, 0, 0, PM_REMOVE))
+		{
+			TranslateMessage(&msg);
+			DispatchMessage(&msg);
+		}
+#else
+		// On POSIX we have no message loop; just sleep briefly between updates.
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+#endif
+
+		if (!app.update())
+		{
+			std::cout << "Something unexpected happened, stopping application..." << std::endl;
+			break;
+		}
+	}
+
+	std::cout << "[" << get_timestamp() << "] Shutting down..." << std::endl;
+	app.stop();
+	return 0;
+}
+
+#if defined(_WIN32)
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nShowCmd)
 {
-	// Try to attach to the parent process’s console if it exists
+	// Try to attach to the parent process's console if it exists
 	if (AttachConsole(ATTACH_PARENT_PROCESS))
 	{
 		FILE *fp;
@@ -225,63 +372,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 		std::cout << std::endl; // White space
 	}
 
-	std::ofstream logFile;
-	std::shared_ptr<isobus::CANHardwarePlugin> canDriver;
 	auto arguments = ParseCommandLine(lpCmdLine);
-
-	// Print command line string and version to console
-	ArgumentProcessor argumentProcessor(arguments);
-	bool argumentsProcessed = argumentProcessor.process();
-
-	// The sequence is important here, first we process the arguments, then we check if the file logging is enabled, then we log the arguments and version to the console/file.
-	isobus::CANStackLogger::set_can_stack_logger_sink(&logger);
-	if (argumentProcessor.is_file_logging())
+	auto canDriver = prepare_application(arguments);
+	if (!canDriver)
 	{
-		setup_file_logging();
-	}
-
-	// Sent the cmd-line arguments and app-version to the console
-	for (std::string arg : arguments)
-	{
-		std::cout << arg.c_str() << " ";
-	}
-	std::cout << std::endl;
-	std::cout << "AOG-TC version: v" << std::string(git::Describe()) + (git::AnyUncommittedChanges() ? "-dirty" : "") << std::endl;
-
-	if (!argumentsProcessed)
-	{
-		std::cout << "Failed to process arguments, exiting..." << std::endl;
 		return -1;
 	}
 
-	switch (argumentProcessor.get_can_adapter())
-	{
-		case CANAdapter::ADAPTER_PCAN_USB:
-		{
-			canDriver = std::make_shared<isobus::PCANBasicWindowsPlugin>(PCAN_USBBUS1 - 1 + std::stoi(argumentProcessor.get_can_channel()));
-			break;
-		}
-		case CANAdapter::ADAPTER_INNOMAKER_USB2CAN:
-		{
-			canDriver = std::make_shared<isobus::InnoMakerUSB2CANWindowsPlugin>(std::stoi(argumentProcessor.get_can_channel()) - 1);
-			break;
-		}
-		case CANAdapter::ADAPTER_RUSOKU_TOUCAN:
-		{
-			canDriver = std::make_shared<isobus::TouCANPlugin>(std::stoi(argumentProcessor.get_can_channel()), std::stoi(argumentProcessor.get_can_channel()));
-			break;
-		}
-		case CANAdapter::ADAPTER_SYS_TEC_USB2CAN:
-		{
-			canDriver = std::make_shared<isobus::SysTecWindowsPlugin>(static_cast<std::uint8_t>(std::stoi(argumentProcessor.get_can_channel())));
-			break;
-		}
-		default:
-		{
-			std::cout << "No CAN adapter selected, exiting..." << std::endl;
-			return -1;
-		}
-	}
+	// Create a hidden top-level window so AOG/AgIO can still send us WM_CLOSE.
+	// Matches the original ordering: args parsed, CAN driver created, then window.
 	WNDCLASS wc = { 0 };
 	wc.lpfnWndProc = WndProc;
 	wc.hInstance = hInstance;
@@ -295,36 +394,21 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	}
 	ShowWindow(hwnd, SW_SHOWMINNOACTIVE); // Little hack: Keep the window hidden, but still allows AOG (or other applications) to gracefully close it
 
-	Application app(canDriver);
-	if (!app.initialize())
+	return run_application_loop(canDriver);
+}
+#else
+int main(int argc, char **argv)
+{
+	std::signal(SIGINT, signal_handler);
+	std::signal(SIGTERM, signal_handler);
+	std::signal(SIGPIPE, SIG_IGN);
+
+	auto arguments = ParseCommandLine(argc, argv);
+	auto canDriver = prepare_application(arguments);
+	if (!canDriver)
 	{
-		std::cout << "Failed to initialize application..." << std::endl;
 		return -1;
 	}
-
-	MSG msg;
-	while (running)
-	{
-		// This will become the apps main timer.
-		// Wait for a message with a timeout
-		// If a message arrives, process all pending messages
-		// If timeout occurs, continue to app.update()
-		DWORD result = MsgWaitForMultipleObjects(0, NULL, FALSE, 1, QS_ALLINPUT);
-
-		while (result == WAIT_OBJECT_0 && PeekMessage(&msg, NULL, 0, 0, PM_REMOVE))
-		{
-			TranslateMessage(&msg);
-			DispatchMessage(&msg);
-		}
-
-		if (!app.update())
-		{
-			std::cout << "Something unexpected happened, stopping application..." << std::endl;
-			break;
-		}
-	}
-
-	// Clean up
-	app.stop();
-	return 0;
+	return run_application_loop(canDriver);
 }
+#endif

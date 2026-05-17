@@ -29,3 +29,36 @@ jobs:
         with:
           name: 'Windows Installer'
           path: build/_CPack_Packages/win64/NSIS/*.exe
+
+  linux_build:
+    name: Linux Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build
+      - name: Configure (CMake)
+        run: cmake -S . -B build -G Ninja -DBUILD_EXAMPLES=OFF -DBUILD_TESTING=OFF -DCMAKE_BUILD_TYPE=Release -Wno-dev
+      - name: Build
+        run: cmake --build build --config Release
+      - name: Stage tarball
+        run: |
+          set -euo pipefail
+          STAGE="${{ github.workspace }}/stage/AOG-TaskController-linux-x86_64"
+          mkdir -p "$STAGE/bin" "$STAGE/share/AOG-TaskController" "$STAGE/lib/systemd/system"
+          install -m 0755 build/AOG-TaskController "$STAGE/bin/AOG-TaskController"
+          install -m 0644 resources/linux/settings.sample.json "$STAGE/share/AOG-TaskController/settings.sample.json"
+          install -m 0644 resources/linux/aog-taskcontroller.service "$STAGE/lib/systemd/system/aog-taskcontroller.service"
+          cp LICENSE "$STAGE/LICENSE"
+          tar -C "${{ github.workspace }}/stage" -czf AOG-TaskController-linux-x86_64.tar.gz AOG-TaskController-linux-x86_64
+      - name: Upload Linux tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: 'Linux Tarball'
+          path: AOG-TaskController-linux-x86_64.tar.gz

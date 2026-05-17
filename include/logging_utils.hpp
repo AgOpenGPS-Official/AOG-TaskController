@@ -14,7 +14,11 @@ inline std::string get_timestamp()
 	auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
 
 	std::tm localTime;
+#if defined(_WIN32)
 	localtime_s(&localTime, &time_t_now);
+#else
+	localtime_r(&time_t_now, &localTime);
+#endif
 
 	std::ostringstream oss;
 	oss << std::setfill('0') << std::setw(2) << localTime.tm_hour << ":"

@@ -80,3 +80,73 @@ jobs:
           generate_release_notes: true
           prerelease: ${{ env.PRERELEASE }}
           files: ${{ env.INSTALLER_PATH }}
+
+  linux_release:
+    name: Linux Release (tarball)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Ensure tag commit is on develop
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin develop:refs/remotes/origin/develop
+
+          TAG_SHA="$(git rev-list -n 1 "$GITHUB_REF")"
+          if git merge-base --is-ancestor "$TAG_SHA" "origin/develop"; then
+            echo "OK: Tag commit is reachable from origin/develop"
+          else
+            echo "::error::Tag commit is NOT on develop. Refusing to release."
+            exit 1
+          fi
+
+      - name: Decide prerelease flag
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]; then
+            IS_PRERELEASE=true
+          else
+            IS_PRERELEASE=false
+          fi
+          echo "PRERELEASE=${IS_PRERELEASE}" >> "$GITHUB_ENV"
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential cmake ninja-build
+
+      - name: Configure (CMake)
+        run: cmake -S . -B build -G Ninja -DBUILD_EXAMPLES=OFF -DBUILD_TESTING=OFF -DCMAKE_BUILD_TYPE=Release -Wno-dev
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Stage tarball
+        run: |
+          set -euo pipefail
+          STAGE="${{ github.workspace }}/stage/AOG-TaskController-${{ github.ref_name }}-linux-x86_64"
+          mkdir -p "$STAGE/bin" "$STAGE/share/AOG-TaskController" "$STAGE/lib/systemd/system"
+          install -m 0755 build/AOG-TaskController "$STAGE/bin/AOG-TaskController"
+          install -m 0644 resources/linux/settings.sample.json "$STAGE/share/AOG-TaskController/settings.sample.json"
+          install -m 0644 resources/linux/aog-taskcontroller.service "$STAGE/lib/systemd/system/aog-taskcontroller.service"
+          cp LICENSE "$STAGE/LICENSE"
+          TARBALL="AOG-TaskController-${{ github.ref_name }}-linux-x86_64.tar.gz"
+          tar -C "${{ github.workspace }}/stage" -czf "$TARBALL" "AOG-TaskController-${{ github.ref_name }}-linux-x86_64"
+          echo "TARBALL_PATH=$TARBALL" >> "$GITHUB_ENV"
+
+      - name: Attach Linux tarball to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          prerelease: ${{ env.PRERELEASE }}
+          files: ${{ env.TARBALL_PATH }}
