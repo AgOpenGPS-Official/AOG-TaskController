@@ -82,8 +82,16 @@ jobs:
           files: ${{ env.INSTALLER_PATH }}
 
   linux_release:
-    name: Linux Release (tarball)
-    runs-on: ubuntu-latest
+    name: Linux Release (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
 
     steps:
       - name: Checkout (full history)
@@ -132,14 +140,14 @@ jobs:
       - name: Stage tarball
         run: |
           set -euo pipefail
-          STAGE="${{ github.workspace }}/stage/AOG-TaskController-${{ github.ref_name }}-linux-x86_64"
+          STAGE="${{ github.workspace }}/stage/AOG-TaskController-${{ github.ref_name }}-linux-${{ matrix.arch }}"
           mkdir -p "$STAGE/bin" "$STAGE/share/AOG-TaskController" "$STAGE/lib/systemd/system"
           install -m 0755 build/AOG-TaskController "$STAGE/bin/AOG-TaskController"
           install -m 0644 resources/linux/settings.sample.json "$STAGE/share/AOG-TaskController/settings.sample.json"
           install -m 0644 resources/linux/aog-taskcontroller.service "$STAGE/lib/systemd/system/aog-taskcontroller.service"
           cp LICENSE "$STAGE/LICENSE"
-          TARBALL="AOG-TaskController-${{ github.ref_name }}-linux-x86_64.tar.gz"
-          tar -C "${{ github.workspace }}/stage" -czf "$TARBALL" "AOG-TaskController-${{ github.ref_name }}-linux-x86_64"
+          TARBALL="AOG-TaskController-${{ github.ref_name }}-linux-${{ matrix.arch }}.tar.gz"
+          tar -C "${{ github.workspace }}/stage" -czf "$TARBALL" "AOG-TaskController-${{ github.ref_name }}-linux-${{ matrix.arch }}"
           echo "TARBALL_PATH=$TARBALL" >> "$GITHUB_ENV"
 
       - name: Attach Linux tarball to release
