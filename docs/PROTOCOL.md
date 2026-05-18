@@ -1,0 +1,384 @@
+# AOG-TaskController — Protocol Reference
+
+This document describes the interfaces AOG-TaskController exposes to the rest of the system. The intended audience is anyone writing a client — AgOpenGPS (AgIO), AgValoniaGPS, or a generic ISOBUS controller — that needs to talk to the TC.
+
+For Linux deployment of the TC itself (systemd, CAN setup, the daemon footprint), see [LINUX_DAEMON.md](LINUX_DAEMON.md).
+
+---
+
+## 1. Overview
+
+AOG-TaskController sits between two worlds:
+
+```
+   AgIO / AgValonia                 ISOBUS bus (CAN @ 250 kbps)
+       (LAN/UDP)                    (sprayers, planters, TECU)
+            │                                  │
+            ▼                                  ▼
+    ┌───────────────────────────────────────────────┐
+    │           AOG-TaskController                  │
+    │                                               │
+    │  • UDP framing on subnet:8888 / .255:9999     │
+    │  • ISO 11783 TaskController (Section Control) │
+    │  • Optional ISO 11783-9 Tractor ECU (TECU)    │
+    └───────────────────────────────────────────────┘
+```
+
+Three things to understand before reading the rest:
+
+1. **All client traffic is UDP.** The TC speaks an AgIO-style framed UDP protocol on the LAN. There is no TCP, REST, or gRPC interface.
+2. **The TC is the AgIO/AgValonia *peer*, not its client.** AgIO/AgValonia opens its sockets; the TC also opens its sockets; they exchange framed packets. Either can come up first.
+3. **ISO 11783 is the source of truth for the CAN side.** The TC implements the ISOBUS Task Controller (Section Control, Generation 1, ISO 11783-10) using the [AgIsoStack++](https://github.com/Open-Agriculture/AgIsoStack-plus-plus) library. You do not need to know ISOBUS to *talk to the TC* — only to understand what it does on the bus.
+
+---
+
+## 2. UDP wire protocol
+
+### 2.1 Packet framing
+
+Every packet — both directions — uses the same frame:
+
+```
+ Offset  Size  Field        Notes
+ 0       2     Start         0x80 0x81 (big-endian sentinel)
+ 2       1     Source        Sender's logical address (see 2.2)
+ 3       1     PGN           Logical message id (see 2.5/2.6)
+ 4       1     Length        Number of payload bytes (N)
+ 5       N     Payload       N bytes, depends on PGN
+ 5+N     1     Checksum      Sum of bytes [Source .. last payload byte], mod 256
+```
+
+Total wire size is `N + 6` bytes. The maximum payload is currently 250 bytes (limited by the TC's 512-byte receive buffer; in practice the largest PGN in use is 8 bytes).
+
+**Checksum**: the TC currently does **not** validate inbound checksums (the verification code is present but commented out in `udp_connections.cpp`). Clients **should still compute and include a correct checksum** so that future TC versions, or third-party listeners, can validate.
+
+### 2.2 Source addresses
+
+Source byte identifies the logical sender of a frame. The conventions used today:
+
+| Source | Logical sender |
+|---|---|
+| `0x7F` (127) | **AgIO / AgValonia** (the GUI/host application) |
+| `0x80` (128) | **AOG-TaskController** itself |
+
+Other addresses appear on the ISOBUS side but are not used in UDP frames.
+
+### 2.3 Ports and binding
+
+The TC opens two UDP sockets:
+
+| Socket | Bind | Purpose |
+|---|---|---|
+| Main | `<LAN-IP>:8888` | All operational traffic to/from AgIO/AgValonia |
+| Address detection | `0.0.0.0:8888` | Listens for the subnet-detection PGN so AgIO can tell the TC what subnet to use |
+
+Both sockets have `SO_REUSEADDR` set (needed on Linux so the same port can host the specific-IP bind and the wildcard bind simultaneously).
+
+The TC sends to **`<subnet>.255:9999`** as a broadcast. The "subnet" is configured via `settings.json` and can be overridden at runtime by the subnet-detection PGN.
+
+### 2.4 NIC selection
+
+On startup the TC enumerates network interfaces and picks the first IPv4 address whose first three octets match `settings.subnet`:
+
+- **Linux/macOS**: via `getifaddrs(3)`.
+- **Windows**: via the hostname-based Boost.Asio resolver.
+
+If no NIC matches, the TC falls back to loopback (`127.0.0.1`) — useful for local testing but means broadcast to LAN won't work.
+
+### 2.5 PGNs inbound (client → TC)
+
+All PGNs sent **by AgIO/AgValonia to the TC** use source `0x7F`.
+
+| PGN | Name | Length | Payload |
+|---|---|---|---|
+| `0xC9` (201) | Subnet detection | 5 | `[0xC9, 0xC9, IP0, IP1, IP2]` |
+| `0xE5` (229) | Section states (64 sections) | 8 | Bitfield: bit `8·j + i` of byte `j` is section `(8j + i)` ON/OFF |
+| `0xF1` (241) | Section control mode | 1 | `[mode]` where `1` = enabled, `0` = disabled |
+| `0xF2` (242) | Process data | 6 | `[DDI_lo, DDI_hi, val0, val1, val2, val3]` — DDI is little-endian `uint16`; value is little-endian `int32` |
+
+#### `0xC9` — Subnet detection
+
+Tells the TC which `/24` subnet AgIO/AgValonia lives on. The first two payload bytes are `0xC9 0xC9` (a magic to disambiguate from other PGNs that share the source). The next three bytes are the first three octets of AgIO's IP.
+
+On receipt the TC sets `settings.subnet = [IP0, IP1, IP2]`, closes the main socket, re-runs NIC enumeration, and rebinds. Useful for plug-and-play scenarios where the host may move between subnets.
+
+#### `0xE5` — Section states
+
+Reports the *actual* state of up to 64 sections. 8 bytes = 64 bits, one bit per section. The TC forwards these to the connected ISOBUS implement via the appropriate condensed work-state DDIs (DDI 160/161/290).
+
+#### `0xF1` — Section control mode
+
+`1` = automatic (TC drives the implement). `0` = manual (operator drives). The TC logs and propagates this to the implement.
+
+#### `0xF2` — Process data
+
+Wraps a single ISO 11783 DDI/value pair. The TC currently dispatches on these DDIs:
+
+| DDI (decimal) | Name | TC behavior |
+|---|---|---|
+| `156` | Actual speed (mm/s) | Stored. If TECU enabled, broadcast as Ground/Wheel/Machine-selected speed (PGN 65256) + NMEA2000 SOG. Drives forward/reverse direction. Also produces J1939 PGN 65256 every 100 ms. |
+| `597` | Total distance (mm) | Stored. If TECU enabled, populated into Speed Messages distance fields. |
+| Guidance line deviation | XTE (mm) | Converted to metres. Broadcast as NMEA2000 XTE (PGN 0x1F903) at 1 Hz. |
+
+Unknown DDIs are silently ignored (PGN 0xF2 is the generic process-data channel — the TC will gain more DDIs over time).
+
+### 2.6 PGNs outbound (TC → client)
+
+All PGNs sent **by the TC to AgIO/AgValonia** use source `0x80`.
+
+| PGN | Name | Length | Frequency | Payload |
+|---|---|---|---|---|
+| `0xF0` (240) | Section heartbeat / state | 2 + ⌈N/8⌉ | 100 ms | `[mode, num_sections, byte0, byte1, ...]` |
+
+#### `0xF0` — Section heartbeat / state
+
+Sent every 100 ms for each connected ISOBUS implement that has sections. The payload is:
+
+- byte 0: `1` if section control is enabled (auto), `0` if disabled (manual)
+- byte 1: `num_sections` (the implement's section count)
+- bytes 2..: bitfield of *actual* section ON/OFF states (1 bit per section, LSB-first within each byte)
+
+If no implement is currently connected (or none have sections), and `aogHeartbeatEnabled` is `true` in `settings.json`, the TC still sends `0xF0` with `num_sections = 0` and no bitfield — a pure "I'm alive" beacon so AgIO can light up its ISOBUS indicator.
+
+> **Compatibility note:** AgOpenGPS releases **before v6.8.2 beta 5** do not handle the `num_sections = 0` heartbeat correctly. Set `aogHeartbeatEnabled: false` in `settings.json` if pairing with an older AOG. AgValonia and AOG ≥ v6.8.2 beta 5 are fine.
+
+---
+
+## 3. Settings reference
+
+The TC reads `settings.json` from a per-user config directory:
+
+| OS | Path |
+|---|---|
+| Windows | `%APPDATA%\AOG-TaskController\settings.json` |
+| Linux | `$XDG_CONFIG_HOME/AOG-TaskController/settings.json` (or `~/.config/AOG-TaskController/settings.json` if `XDG_CONFIG_HOME` is unset) |
+| macOS | `~/Library/Application Support/AOG-TaskController/settings.json` |
+
+```json
+{
+    "subnet": [192, 168, 5],
+    "tecuEnabled": true,
+    "aogHeartbeatEnabled": true
+}
+```
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `subnet` | `int[3]` | `[192, 168, 5]` | First three octets of the LAN AgIO/AgValonia lives on. Used for NIC selection and broadcast destination. |
+| `tecuEnabled` | `bool` | `true` | If `true`, the TC also impersonates a Tractor ECU on the CAN bus (claims address 128, broadcasts Speed Messages/NMEA2000, announces Class 1 BasicTractorECUServer). Set `false` when the tractor already has a TECU. |
+| `aogHeartbeatEnabled` | `bool` | `true` | Send `0xF0` heartbeat to AgIO/AgValonia every 100 ms even with no implement. Disable for AOG < v6.8.2 beta 5. |
+
+Unknown keys are ignored. The file is rewritten by the TC when the subnet is updated by `0xC9`.
+
+---
+
+## 4. Command-line reference
+
+```
+AOG-TaskController [options]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--help` | — | Print usage and exit. |
+| `--version` | — | Print git-describe version (with `-dirty` suffix on a dirty tree) and exit. |
+| `--can_adapter=<name>` | none | CAN driver. One of: `peak-pcan`, `innomaker-usb2can`, `rusoku-toucan`, `sys-tec-usb2can` (all Windows), `socketcan` (Linux). **Required** — the TC will not start without a driver. |
+| `--can_channel=<id>` | — | Driver-specific channel. Numeric (`1`, `2`, ...) for Windows USB adapters; interface name (`can0`, `vcan0`) for SocketCAN. |
+| `--log_level=<lvl>` | — | One of `debug`, `info`, `warning`, `error`, `critical`. Filters AgIsoStack log output. |
+| `--log2file` | off | Also write all output to `<config>/logs/AOG-TaskController_YYYY-M-D_H-M.log`. |
+
+---
+
+## 5. ISOBUS / CAN side overview
+
+This section is for context. The TC implements the bus side according to ISO 11783 — that standard, plus the AgIsoStack documentation, is the authoritative reference.
+
+### 5.1 What the TC presents on the bus
+
+Two control functions, both claiming addresses via standard J1939-81 address claim (with the 250 ms post-claim quiet period enforced):
+
+| CF | NAME function | Address | Notes |
+|---|---|---|---|
+| Task Controller | `TaskController` (function code 61) | Preferred `233` (ISO 11783-10 MappingComputer). Walks if claimed. | Always present. |
+| Tractor ECU | `TractorECU` (function code 132) | Fixed `128` (non-arbitrary-address-capable per ISO 11783-9). | Only present if `tecuEnabled: true`. |
+
+Common NAME fields: Industry Group `2` (Agricultural), Device Class `0`, Manufacturer Code `1407`, Identity `20`. Override these in `app.cpp` if you fork.
+
+### 5.2 What the TC sends on the bus
+
+| PGN | Cadence | Producer | Purpose |
+|---|---|---|---|
+| `0xCB00` (Process Data) | 2 s | TC | ISO 11783-10 B.8.1 Task Controller Status. Status byte bit 1 = task totals active. |
+| `0x1F903` (NMEA2000 XTE) | 1 Hz | TC | Cross-track error, derived from AOG's guidance-line deviation PGN. |
+| `0xFEE8` (PGN 65256 Speed/Direction) | 100 ms | TECU | Ground/Wheel/Machine-selected speed + machine direction, J1939 format. Only when TECU enabled. |
+| `0xFC8E` (Control Function Functionalities) | At claim + periodic | TECU | Announces Class 1 BasicTractorECUServer (no options). |
+| NMEA2000 COG/SOG | Periodic | TECU | Optional course/speed over ground. |
+
+The TC also receives all ISOBUS Process Data (PGN 0xCB00) and Section Control commands from connected implements.
+
+### 5.3 What the TC handles inbound from implements
+
+- **Device Descriptor Object Pool (DDOP)** uploads from clients (stored per client).
+- **Condensed actual work-state DDIs** (160, 161, 290, plus the extended range 16001–16016 per the standard): mapped into the per-client section model and forwarded to AgIO/AgValonia as PGN `0xF0`.
+- **Section control state DDI**: tracked per client.
+- **Process data acknowledges (PDACK)**: logged.
+
+### 5.4 ISOBUS feature scope
+
+| Capability | Value |
+|---|---|
+| ISO 11783-10 version | 2 (Second Edition) |
+| Generation | 1 (TC-SC) |
+| Max booms | 1 |
+| Max sections | 64 |
+| Supported DDIs | 160 / 161 / 290 (condensed section setpoint and actual states), plus speed/distance/guidance DDIs from the tractor side |
+
+---
+
+## 6. Example clients
+
+These examples talk to a TC listening on subnet `192.168.5.x`. Adjust the broadcast address to your LAN.
+
+### 6.1 Python — minimal heartbeat sender + section reader
+
+```python
+"""
+Sends a subnet-detection packet, then prints every PGN 0xF0 heartbeat
+that the TC broadcasts. Useful for confirming the TC is alive on your LAN.
+"""
+import socket
+import struct
+import threading
+
+TC_HOST_BCAST = ("192.168.5.255", 8888)
+LISTEN_PORT = 9999
+SRC_AGIO = 0x7F
+PGN_SUBNET_DETECT = 0xC9
+PGN_SECTION_HEARTBEAT = 0xF0
+
+def frame(src: int, pgn: int, payload: bytes) -> bytes:
+    header = bytes([0x80, 0x81, src, pgn, len(payload)])
+    crc = sum(header[2:] + payload) & 0xFF
+    return header + payload + bytes([crc])
+
+def announce_subnet():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    # IP0 IP1 IP2 = first three octets of OUR (AgIO/AgValonia) IP
+    payload = bytes([0xC9, 0xC9, 192, 168, 5])
+    s.sendto(frame(SRC_AGIO, PGN_SUBNET_DETECT, payload), TC_HOST_BCAST)
+    s.close()
+
+def listen():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(("0.0.0.0", LISTEN_PORT))
+    while True:
+        data, addr = s.recvfrom(512)
+        if len(data) < 6 or data[0] != 0x80 or data[1] != 0x81:
+            continue
+        src, pgn, length = data[2], data[3], data[4]
+        payload = data[5:5 + length]
+        if pgn == PGN_SECTION_HEARTBEAT:
+            mode = "AUTO" if payload[0] == 1 else "MANUAL"
+            n = payload[1]
+            states = []
+            for i in range(n):
+                byte = payload[2 + (i // 8)]
+                states.append("1" if byte & (1 << (i % 8)) else "0")
+            print(f"{addr[0]}  heartbeat  mode={mode}  sections={n}  bits={''.join(states) or '(none)'}")
+
+threading.Thread(target=listen, daemon=True).start()
+announce_subnet()
+import time; time.sleep(60)
+```
+
+### 6.2 C# — frame builder for AgValonia / .NET
+
+```csharp
+// Reusable AgIO/AgValonia frame builder. Targets .NET 8+.
+// Drop into a System.Net.Sockets.UdpClient and you're done.
+
+using System;
+
+public static class TaskControllerFrame
+{
+    public const byte SrcAgio = 0x7F;
+    public const byte SrcTc   = 0x80;
+
+    public const byte PgnSubnetDetect      = 0xC9;
+    public const byte PgnSectionStates     = 0xE5;
+    public const byte PgnSectionControl    = 0xF1;
+    public const byte PgnProcessData       = 0xF2;
+    public const byte PgnSectionHeartbeat  = 0xF0;
+
+    /// <summary>Build a complete framed packet ready for UdpClient.Send.</summary>
+    public static byte[] Build(byte src, byte pgn, ReadOnlySpan<byte> payload)
+    {
+        if (payload.Length > 250)
+            throw new ArgumentException("payload too large");
+
+        var buf = new byte[6 + payload.Length];
+        buf[0] = 0x80;
+        buf[1] = 0x81;
+        buf[2] = src;
+        buf[3] = pgn;
+        buf[4] = (byte)payload.Length;
+        payload.CopyTo(buf.AsSpan(5));
+
+        int sum = 0;
+        for (int i = 2; i < 5 + payload.Length; i++) sum += buf[i];
+        buf[5 + payload.Length] = (byte)(sum & 0xFF);
+        return buf;
+    }
+
+    /// <summary>Tell the TC which subnet AgValonia lives on.</summary>
+    public static byte[] SubnetDetect(byte ip0, byte ip1, byte ip2) =>
+        Build(SrcAgio, PgnSubnetDetect, new byte[] { 0xC9, 0xC9, ip0, ip1, ip2 });
+
+    /// <summary>Enable (true) or disable (false) automatic section control.</summary>
+    public static byte[] SectionControlMode(bool enabled) =>
+        Build(SrcAgio, PgnSectionControl, new byte[] { (byte)(enabled ? 1 : 0) });
+
+    /// <summary>Set the actual ON/OFF state of up to 64 sections.</summary>
+    public static byte[] SectionStates(ulong bitmap)
+    {
+        var b = new byte[8];
+        for (int i = 0; i < 8; i++) b[i] = (byte)(bitmap >> (i * 8));
+        return Build(SrcAgio, PgnSectionStates, b);
+    }
+
+    /// <summary>Send a single process-data (DDI, value) pair to the TC.</summary>
+    public static byte[] ProcessData(ushort ddi, int value)
+    {
+        var p = new byte[6];
+        p[0] = (byte)(ddi & 0xFF);
+        p[1] = (byte)(ddi >> 8);
+        p[2] = (byte)(value);
+        p[3] = (byte)(value >> 8);
+        p[4] = (byte)(value >> 16);
+        p[5] = (byte)(value >> 24);
+        return Build(SrcAgio, PgnProcessData, p);
+    }
+}
+```
+
+### 6.3 Quick command-line sanity check
+
+```bash
+# Listen for TC heartbeats with a one-liner (Linux/macOS):
+nc -ul 9999 | xxd | head
+
+# Send a subnet-detect packet with socat:
+printf '\x80\x81\x7f\xc9\x05\xc9\xc9\xc0\xa8\x05\x4e' | socat - UDP-DATAGRAM:192.168.5.255:8888,broadcast
+```
+
+(The CRC byte `0x4e` is `0x7F + 0xC9 + 0x05 + 0xC9 + 0xC9 + 0xC0 + 0xA8 + 0x05` mod 256.)
+
+---
+
+## 7. Future direction
+
+- The CRC verification path is in `udp_connections.cpp` but commented out. Clients are encouraged to send a correct checksum even though it is not enforced today.
+- New DDIs are routinely added to PGN `0xF2`. The set in §2.5 is a snapshot — check `src/app.cpp` for the current dispatcher.
+- macOS builds are not in CI yet, but the source compiles cleanly on macOS (with `CAN_DRIVER=MacCANPCAN`) and the config paths follow Apple conventions.
