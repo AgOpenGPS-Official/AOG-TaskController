@@ -443,8 +443,10 @@ bool MyTCServer::delete_device_descriptor_object_pool(std::shared_ptr<isobus::Co
 		          << " (error " << GetLastError() << ")" << std::endl;
 	}
 
-	clients.erase(partnerCF);
-	uploadedPools.erase(partnerCF);
+	{
+		clients.erase(partnerCF);
+		uploadedPools.erase(partnerCF);
+	}
 	return true;
 }
 

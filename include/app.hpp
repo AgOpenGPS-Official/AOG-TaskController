@@ -22,7 +22,9 @@
 #include "task_controller.hpp"
 #include "udp_connections.hpp"
 
+#include <fstream>
 #include <map>
+#include <mutex>
 #include <string>
 
 /// @brief Tracks the connection state of a potential TC client seen on the bus
@@ -60,6 +62,7 @@ private:
 
 	static void log_can_working_set_master(const isobus::CANMessage &message, void *parent);
 	static void log_can_process_data(const isobus::CANMessage &message, void *parent);
+	static void log_all_can_messages(const isobus::CANMessage &message, void *parent);
 
 	std::shared_ptr<Settings> settings = std::make_shared<Settings>();
 	boost::asio::io_context ioContext = boost::asio::io_context();
@@ -72,6 +75,7 @@ private:
 	std::unique_ptr<isobus::SpeedMessagesInterface> speedMessagesInterface;
 	std::unique_ptr<isobus::NMEA2000MessageInterface> nmea2000MessageInterface;
 	std::unique_ptr<isobus::ControlFunctionFunctionalities> tecuFunctionalities;
+	std::unique_ptr<isobus::ControlFunctionFunctionalities> tcFunctionalities;
 	std::uint8_t nmea2000SequenceIdentifier = 0;
 	std::uint32_t lastJ1939SpeedTransmit = 0;
 	std::uint32_t lastTCStatusTransmit = 0;
@@ -82,4 +86,7 @@ private:
 	std::uint32_t lastConnectionTableDumpMs = 0;
 	std::uint32_t tcInitializedTimestampMs = 0;
 	bool tcStatusBurstSent = false;
+
+	// CAN message log file
+	std::ofstream canLogFile;
 };
