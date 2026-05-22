@@ -3,6 +3,7 @@
 #include "settings.hpp"
 
 #include "isobus/hardware_integration/available_can_drivers.hpp"
+#include "aog_can_bridge_plugin.hpp"
 #include "isobus/isobus/can_stack_logger.hpp"
 
 #include "git.h"
@@ -71,6 +72,7 @@ enum class CANAdapter
 	ADAPTER_INNOMAKER_USB2CAN,
 	ADAPTER_RUSOKU_TOUCAN,
 	ADAPTER_SYS_TEC_USB2CAN,
+	ADAPTER_AOG_CAN_BRIDGE,
 };
 
 class ArgumentProcessor
@@ -155,6 +157,7 @@ private:
 				{ "innomaker-usb2can", CANAdapter::ADAPTER_INNOMAKER_USB2CAN },
 				{ "rusoku-toucan", CANAdapter::ADAPTER_RUSOKU_TOUCAN },
 				{ "sys-tec-usb2can", CANAdapter::ADAPTER_SYS_TEC_USB2CAN },
+				{ "aog-can-bridge", CANAdapter::ADAPTER_AOG_CAN_BRIDGE },
 			};
 
 			auto it = adapterMap.find(value);
@@ -274,6 +277,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 		case CANAdapter::ADAPTER_SYS_TEC_USB2CAN:
 		{
 			canDriver = std::make_shared<isobus::SysTecWindowsPlugin>(static_cast<std::uint8_t>(std::stoi(argumentProcessor.get_can_channel())));
+			break;
+		}
+		case CANAdapter::ADAPTER_AOG_CAN_BRIDGE:
+		{
+			canDriver = std::make_shared<AOGCANBridgePlugin>();
 			break;
 		}
 		default:
