@@ -55,8 +55,6 @@ public:
 	void stop();
 
 private:
-	void send_task_controller_status_message();
-	void send_tc_status_burst();
 	void dump_connection_table();
 	void update_connection_tracker();
 
@@ -78,14 +76,12 @@ private:
 	std::unique_ptr<isobus::ControlFunctionFunctionalities> tcFunctionalities;
 	std::uint8_t nmea2000SequenceIdentifier = 0;
 	std::uint32_t lastJ1939SpeedTransmit = 0;
-	std::uint32_t lastTCStatusTransmit = 0;
 	std::int32_t lastSpeedValue = 0;
 
 	// Connection tracking for diagnostics
 	std::map<std::uint64_t, ClientConnectionInfo> connectionTracker;
 	std::uint32_t lastConnectionTableDumpMs = 0;
 	std::uint32_t tcInitializedTimestampMs = 0;
-	bool tcStatusBurstSent = false;
 
 	// CAN message log file
 	std::ofstream canLogFile;
