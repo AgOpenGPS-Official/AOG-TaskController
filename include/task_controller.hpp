@@ -94,7 +94,7 @@ public:
 	                      std::int32_t processDataValue,
 	                      std::uint8_t &errorCodes) override;
 	bool store_device_descriptor_object_pool(std::shared_ptr<isobus::ControlFunction> partnerCF, const std::vector<std::uint8_t> &binaryPool, bool appendToPool) override;
-	std::map<std::shared_ptr<isobus::ControlFunction>, ClientState> &get_clients();
+	std::map<std::shared_ptr<isobus::ControlFunction>, ClientState> &get_clients(); ///< Returns a reference to the clients map
 	void request_measurement_commands();
 	void update_section_states(std::vector<bool> &sectionStates);
 	void update_section_control_enabled(bool enabled);

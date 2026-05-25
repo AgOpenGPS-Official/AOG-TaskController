@@ -27,6 +27,7 @@ public:
 protected:
 	int overflow(int c) override
 	{
+		std::lock_guard<std::mutex> lock(getLoggingMutex());
 		if (c != EOF)
 		{
 			consoleBuffer->sputc(c); // Write to console
@@ -37,6 +38,7 @@ protected:
 
 	int sync() override
 	{
+		std::lock_guard<std::mutex> lock(getLoggingMutex());
 		consoleBuffer->pubsync();
 		fileStream.flush();
 		return 0;
@@ -71,6 +73,7 @@ public:
 
 	void sink_CAN_stack_log(CANStackLogger::LoggingLevel level, const std::string &text) override
 	{
+		std::lock_guard<std::mutex> lock(getLoggingMutex());
 		std::cout << "[" << get_timestamp() << "] ";
 		switch (level)
 		{

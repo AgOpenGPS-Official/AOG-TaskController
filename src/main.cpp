@@ -107,6 +107,11 @@ public:
 		return fileLogging;
 	}
 
+	bool has_log_level() const
+	{
+		return logLevelSpecified;
+	}
+
 private:
 	bool parse_option(std::string option)
 	{
@@ -173,6 +178,7 @@ private:
 		}
 		else if ("--log_level" == key)
 		{
+			logLevelSpecified = true;
 			if ("debug" == value)
 			{
 				isobus::CANStackLogger::set_log_level(isobus::CANStackLogger::LoggingLevel::Debug);
@@ -210,6 +216,7 @@ private:
 	CANAdapter canAdapter = CANAdapter::NONE;
 	std::string canChannel;
 	bool fileLogging = false;
+	bool logLevelSpecified = false;
 };
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nShowCmd)

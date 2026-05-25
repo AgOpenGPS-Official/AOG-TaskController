@@ -69,6 +69,11 @@ bool Application::initialize()
 	tecuNAME.set_ecu_instance(0);
 
 	std::cout << "[" << get_timestamp() << "] [Init] Creating Task Controller control function..." << std::endl;
+	std::cout << "[" << get_timestamp() << "] [Init] TC NAME: 0x" << std::hex << tcNAME.get_full_name() << std::dec
+	          << " [Fn:" << static_cast<int>(tcNAME.get_function_code())
+	          << "/IG:" << static_cast<int>(tcNAME.get_industry_group())
+	          << "/Cls:" << static_cast<int>(tcNAME.get_device_class()) << "]"
+	          << " - Preferred address: " << static_cast<int>(isobus::preferred_addresses::IndustryGroup2::TaskController_MappingComputer) << std::endl;
 	tcCF = isobus::CANNetworkManager::CANNetwork.create_internal_control_function(tcNAME, 0, isobus::preferred_addresses::IndustryGroup2::TaskController_MappingComputer); // The preferred address for a TC is defined in ISO 11783
 
 	// Wait for TC address claim with bounded wait loop (no async to avoid blocking on destruction)
@@ -92,13 +97,42 @@ bool Application::initialize()
 
 	if (!tcAddressClaimed)
 	{
-		std::cout << "[" << get_timestamp() << "] Failed to claim address for TC server. The control function might be invalid." << std::endl;
+		std::cout << "[" << get_timestamp() << "] [ERROR] Failed to claim address for TC server. The control function might be invalid." << std::endl;
+
+		// Dump all visible ECUs to help diagnose address conflicts
+		std::cout << "[" << get_timestamp() << "] [ERROR] Dumping all visible ECUs before exit:" << std::endl;
+		auto allCFs = isobus::CANNetworkManager::CANNetwork.get_control_functions(false);
+		for (const auto &cf : allCFs)
+		{
+			if (cf && cf->get_address_valid())
+			{
+				const auto &name = cf->get_NAME();
+				std::cout << "[" << get_timestamp() << "] [ERROR]   Address " << static_cast<int>(cf->get_address())
+				          << " - NAME 0x" << std::hex << name.get_full_name() << std::dec
+				          << " [Fn:" << static_cast<int>(name.get_function_code())
+				          << "/IG:" << static_cast<int>(name.get_industry_group())
+				          << "/Cls:" << static_cast<int>(name.get_device_class()) << "]"
+				          << " - Mfg:" << name.get_manufacturer_code()
+				          << " (" << cf->get_type_string() << ")" << std::endl;
+			}
+		}
+		if (allCFs.empty())
+		{
+			std::cout << "[" << get_timestamp() << "] [ERROR]   No ECUs visible on bus" << std::endl;
+		}
+
 		return false;
 	}
 
 	// Record when the address was actually claimed for the 250ms delay calculation
 	auto tcAddressClaimedTime = isobus::SystemTiming::get_timestamp_ms();
-	std::cout << "[" << get_timestamp() << "] [Init] TC claimed address " << static_cast<int>(tcCF->get_address()) << std::endl;
+	std::uint8_t tcActualAddress = tcCF->get_address();
+	std::cout << "[" << get_timestamp() << "] [Init] TC successfully claimed address " << static_cast<int>(tcActualAddress);
+	if (tcActualAddress != isobus::preferred_addresses::IndustryGroup2::TaskController_MappingComputer)
+	{
+		std::cout << " (DIFFERS from preferred " << static_cast<int>(isobus::preferred_addresses::IndustryGroup2::TaskController_MappingComputer) << ")";
+	}
+	std::cout << std::endl;
 
 	// Print existing ECUs on the bus with their NAMEs
 	auto existingControlFunctions = isobus::CANNetworkManager::CANNetwork.get_control_functions(false);
@@ -226,6 +260,36 @@ bool Application::initialize()
 	tcServer->initialize();
 	tcServer->set_task_totals_active(true); // TODO: make this dynamic based on status in AOG
 
+	// Announce our TC's Control Function Functionalities (PGN 64654, 0xFC8E) per ISO 11783-12.
+	std::cout << "[" << get_timestamp() << "] [Init] Creating TC Control Function Functionalities..." << std::endl;
+	tcFunctionalities = std::make_unique<isobus::ControlFunctionFunctionalities>(tcCF);
+
+	// TC-BAS (Basic): mandatory baseline for any TC server
+	tcFunctionalities->set_functionality_is_supported(
+	  isobus::ControlFunctionFunctionalities::Functionalities::TaskControllerBasicServer,
+	  1, // Generation 1
+	  true);
+
+	// TC-GEO: DISABLED - we don't support variable rate / prescription maps yet
+	tcFunctionalities->set_functionality_is_supported(
+	  isobus::ControlFunctionFunctionalities::Functionalities::TaskControllerGeoServer,
+	  1, // Generation 1
+	  false);
+	tcFunctionalities->set_task_controller_geo_server_option_state(
+	  isobus::ControlFunctionFunctionalities::TaskControllerGeoServerOptions::PolygonBasedPrescriptionMapsAreSupported,
+	  false);
+
+	// TC-SC (Section Control): we support up to 1 boom and 64 sections,
+	// matching the limits configured in the MyTCServer constructor.
+	tcFunctionalities->set_functionality_is_supported(
+	  isobus::ControlFunctionFunctionalities::Functionalities::TaskControllerSectionControlServer,
+	  1, // Generation 1
+	  true);
+	tcFunctionalities->set_task_controller_section_control_server_option_state(
+	  1, // numberOfSupportedBooms
+	  64); // numberOfSupportedSections
+	std::cout << "[" << get_timestamp() << "] [Init] TC announced TC-BAS and TC-SC (1 boom / 64 sections) via PGN 64654" << std::endl;
+
 	// Register CAN callbacks to log WorkingSetMaster and ProcessData for diagnostics
 	isobus::CANNetworkManager::CANNetwork.add_any_control_function_parameter_group_number_callback(
 	  static_cast<std::uint32_t>(isobus::CANLibParameterGroupNumber::WorkingSetMaster),
@@ -234,6 +298,12 @@ bool Application::initialize()
 	isobus::CANNetworkManager::CANNetwork.add_any_control_function_parameter_group_number_callback(
 	  static_cast<std::uint32_t>(isobus::CANLibParameterGroupNumber::ProcessData),
 	  Application::log_can_process_data,
+	  this);
+
+	// Register raw CAN message logger for debugging
+	isobus::CANNetworkManager::CANNetwork.add_any_control_function_parameter_group_number_callback(
+	  0, // 0 = all PGNs
+	  Application::log_all_can_messages,
 	  this);
 
 	tcInitializedTimestampMs = isobus::SystemTiming::get_timestamp_ms();
@@ -390,6 +460,8 @@ bool Application::update()
 
 	tcServer->request_measurement_commands();
 	tcServer->update();
+	if (tcFunctionalities)
+		tcFunctionalities->update();
 	if (tecuFunctionalities)
 		tecuFunctionalities->update();
 	if (speedMessagesInterface)
@@ -628,20 +700,20 @@ void Application::dump_connection_table()
 
 void Application::update_connection_tracker()
 {
+	// Get a reference to clients
+	auto &clientsRef = tcServer ? tcServer->get_clients() : *new std::map<std::shared_ptr<isobus::ControlFunction>, ClientState>();
+
 	auto now = isobus::SystemTiming::get_timestamp_ms();
 
 	// Sync registered clients from tcServer
-	if (tcServer)
+	for (auto &client : clientsRef)
 	{
-		for (auto &client : tcServer->get_clients())
+		auto nameFull = client.first->get_NAME().get_full_name();
+		auto it = connectionTracker.find(nameFull);
+		if (it != connectionTracker.end())
 		{
-			auto nameFull = client.first->get_NAME().get_full_name();
-			auto it = connectionTracker.find(nameFull);
-			if (it != connectionTracker.end())
-			{
-				it->second.registeredAsClient = true;
-				it->second.address = client.first->get_address();
-			}
+			it->second.registeredAsClient = true;
+			it->second.address = client.first->get_address();
 		}
 	}
 
@@ -771,6 +843,47 @@ void Application::log_can_process_data(const isobus::CANMessage &message, void *
 	{
 		info.clientTaskReceived = true;
 		info.lastClientTaskMs = now;
+	}
+}
+
+void Application::log_all_can_messages(const isobus::CANMessage &message, void *parent)
+{
+	if (nullptr == parent)
+	{
+		return;
+	}
+	auto *app = static_cast<Application *>(parent);
+
+	// Get message details
+	auto sourceCF = message.get_source_control_function();
+	auto destCF = message.get_destination_control_function();
+	const auto &data = message.get_data();
+
+	std::uint8_t sourceAddr = sourceCF ? sourceCF->get_address() : 0xFF;
+	std::uint8_t destAddr = destCF ? destCF->get_address() : 0xFF;
+	std::uint32_t pgn = message.get_identifier().get_parameter_group_number();
+	std::uint8_t priority = static_cast<std::uint8_t>(message.get_identifier().get_priority());
+
+	// Log to CSV file if open
+	if (app->canLogFile.is_open())
+	{
+		auto timestamp = get_timestamp();
+		app->canLogFile << timestamp << ","
+		                << "RX," // All messages captured here are received
+		                << "0x" << std::hex << pgn << ","
+		                << std::dec << static_cast<int>(priority) << ","
+		                << "0x" << std::hex << static_cast<int>(sourceAddr) << ","
+		                << "0x" << std::hex << static_cast<int>(destAddr) << ","
+		                << std::dec << data.size() << ",";
+
+		// Write data bytes as hex
+		for (size_t i = 0; i < data.size(); i++)
+		{
+			app->canLogFile << std::hex << std::uppercase << std::setfill('0') << std::setw(2) << static_cast<int>(data[i]);
+			if (i < data.size() - 1)
+				app->canLogFile << " ";
+		}
+		app->canLogFile << std::dec << std::endl;
 	}
 }
 
