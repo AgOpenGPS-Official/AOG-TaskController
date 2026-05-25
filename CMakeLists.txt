@@ -35,10 +35,18 @@ endif()
 set(BUILD_EXAMPLES OFF)
 set(BUILD_TESTING OFF)
 
-set(CAN_DRIVER "WindowsPCANBasic")
-list(APPEND CAN_DRIVER "WindowsInnoMakerUSB2CAN")
-list(APPEND CAN_DRIVER "TouCAN")
-list(APPEND CAN_DRIVER "SYS_TEC")
+if(NOT DEFINED CAN_DRIVER)
+  if(WIN32)
+    set(CAN_DRIVER "WindowsPCANBasic")
+    list(APPEND CAN_DRIVER "WindowsInnoMakerUSB2CAN")
+    list(APPEND CAN_DRIVER "TouCAN")
+    list(APPEND CAN_DRIVER "SYS_TEC")
+  elseif(APPLE)
+    set(CAN_DRIVER "MacCANPCAN")
+  else()
+    set(CAN_DRIVER "SocketCAN")
+  endif()
+endif()
 
 include(FetchContent)
 
@@ -74,11 +82,17 @@ FetchContent_MakeAvailable(git_version)
 find_package(Threads REQUIRED)
 
 file(GLOB_RECURSE SRC_FILES ${CMAKE_CURRENT_LIST_DIR}/src/*.cpp)
-add_executable(${PROJECT_NAME} ${SRC_FILES} resources/AppIcon.rc)
+if(WIN32)
+  add_executable(${PROJECT_NAME} ${SRC_FILES} resources/AppIcon.rc)
+else()
+  add_executable(${PROJECT_NAME} ${SRC_FILES})
+endif()
 
 target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_20)
 set_target_properties(${PROJECT_NAME} PROPERTIES CXX_EXTENSIONS OFF)
-set_target_properties(${PROJECT_NAME} PROPERTIES WIN32_EXECUTABLE TRUE)
+if(WIN32)
+  set_target_properties(${PROJECT_NAME} PROPERTIES WIN32_EXECUTABLE TRUE)
+endif()
 
 target_include_directories(${PROJECT_NAME}
                            PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
@@ -99,79 +113,82 @@ target_link_libraries(
 
 install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION bin COMPONENT applications)
 
-add_custom_command(
-  TARGET ${PROJECT_NAME}
-  POST_BUILD
-  COMMENT "Copying icon.ico to the binary directory"
-  COMMAND
-    "${CMAKE_COMMAND}" -E copy_if_different
-    ${CMAKE_CURRENT_LIST_DIR}/resources/icon.ico
-    "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
-  VERBATIM)
+if(WIN32)
+  add_custom_command(
+    TARGET ${PROJECT_NAME}
+    POST_BUILD
+    COMMENT "Copying icon.ico to the binary directory"
+    COMMAND
+      "${CMAKE_COMMAND}" -E copy_if_different
+      ${CMAKE_CURRENT_LIST_DIR}/resources/icon.ico
+      "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+    VERBATIM)
 
-install(
-  FILES ${CMAKE_CURRENT_LIST_DIR}/resources/icon.ico
-  DESTINATION bin
-  COMPONENT applications)
+  install(
+    FILES ${CMAKE_CURRENT_LIST_DIR}/resources/icon.ico
+    DESTINATION bin
+    COMPONENT applications)
 
-add_custom_command(
-  TARGET ${PROJECT_NAME}
-  POST_BUILD
-  COMMENT "Copying PCANBasic.dll to the build directory"
-  COMMAND
-    "${CMAKE_COMMAND}" -E copy_if_different
-    ${CMAKE_CURRENT_LIST_DIR}/lib/PCANBasic.dll
-    "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
-  VERBATIM)
+  add_custom_command(
+    TARGET ${PROJECT_NAME}
+    POST_BUILD
+    COMMENT "Copying PCANBasic.dll to the build directory"
+    COMMAND
+      "${CMAKE_COMMAND}" -E copy_if_different
+      ${CMAKE_CURRENT_LIST_DIR}/lib/PCANBasic.dll
+      "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+    VERBATIM)
 
-install(
-  FILES ${CMAKE_CURRENT_LIST_DIR}/lib/PCANBasic.dll
-  DESTINATION bin
-  COMPONENT applications)
+  install(
+    FILES ${CMAKE_CURRENT_LIST_DIR}/lib/PCANBasic.dll
+    DESTINATION bin
+    COMPONENT applications)
 
-add_custom_command(
-  TARGET ${PROJECT_NAME}
-  POST_BUILD
-  COMMENT "Copying InnoMakerUsb2CanLib.dll to the build directory"
-  COMMAND
-    "${CMAKE_COMMAND}" -E copy_if_different
-    ${CMAKE_CURRENT_LIST_DIR}/lib/InnoMakerUsb2CanLib.dll
-    "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
-  VERBATIM)
+  add_custom_command(
+    TARGET ${PROJECT_NAME}
+    POST_BUILD
+    COMMENT "Copying InnoMakerUsb2CanLib.dll to the build directory"
+    COMMAND
+      "${CMAKE_COMMAND}" -E copy_if_different
+      ${CMAKE_CURRENT_LIST_DIR}/lib/InnoMakerUsb2CanLib.dll
+      "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+    VERBATIM)
 
-install(
-  FILES ${CMAKE_CURRENT_LIST_DIR}/lib/InnoMakerUsb2CanLib.dll
-  DESTINATION bin
-  COMPONENT applications)
+  install(
+    FILES ${CMAKE_CURRENT_LIST_DIR}/lib/InnoMakerUsb2CanLib.dll
+    DESTINATION bin
+    COMPONENT applications)
 
-add_custom_command(
-  TARGET ${PROJECT_NAME}
-  POST_BUILD
-  COMMENT "Copying canal.dll to the build directory"
-  COMMAND
-    "${CMAKE_COMMAND}" -E copy_if_different
-    ${CMAKE_CURRENT_LIST_DIR}/lib/canal.dll "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
-  VERBATIM)
+  add_custom_command(
+    TARGET ${PROJECT_NAME}
+    POST_BUILD
+    COMMENT "Copying canal.dll to the build directory"
+    COMMAND
+      "${CMAKE_COMMAND}" -E copy_if_different
+      ${CMAKE_CURRENT_LIST_DIR}/lib/canal.dll
+      "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+    VERBATIM)
 
-install(
-  FILES ${CMAKE_CURRENT_LIST_DIR}/lib/canal.dll
-  DESTINATION bin
-  COMPONENT applications)
+  install(
+    FILES ${CMAKE_CURRENT_LIST_DIR}/lib/canal.dll
+    DESTINATION bin
+    COMPONENT applications)
 
-add_custom_command(
-  TARGET ${PROJECT_NAME}
-  POST_BUILD
-  COMMENT "Copying Usbcan64.dll to the build directory"
-  COMMAND
-    "${CMAKE_COMMAND}" -E copy_if_different
-    ${CMAKE_CURRENT_LIST_DIR}/lib/Usbcan64.dll
-    "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
-  VERBATIM)
+  add_custom_command(
+    TARGET ${PROJECT_NAME}
+    POST_BUILD
+    COMMENT "Copying Usbcan64.dll to the build directory"
+    COMMAND
+      "${CMAKE_COMMAND}" -E copy_if_different
+      ${CMAKE_CURRENT_LIST_DIR}/lib/Usbcan64.dll
+      "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+    VERBATIM)
 
-install(
-  FILES ${CMAKE_CURRENT_LIST_DIR}/lib/Usbcan64.dll
-  DESTINATION bin
-  COMPONENT applications)
+  install(
+    FILES ${CMAKE_CURRENT_LIST_DIR}/lib/Usbcan64.dll
+    DESTINATION bin
+    COMPONENT applications)
+endif()
 
 set(CPACK_PACKAGE_NAME ${PROJECT_NAME})
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "ISOBUS-TC for AOG")
