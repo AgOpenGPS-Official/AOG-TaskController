@@ -76,7 +76,8 @@ private:
 class MyTCServer : public isobus::TaskControllerServer
 {
 public:
-	MyTCServer(std::shared_ptr<isobus::InternalControlFunction> internalControlFunction);
+	MyTCServer(std::shared_ptr<isobus::InternalControlFunction> internalControlFunction,
+	           isobus::TaskControllerServer::TaskControllerVersion version = isobus::TaskControllerServer::TaskControllerVersion::SecondPublishedEdition);
 	bool activate_object_pool(std::shared_ptr<isobus::ControlFunction> partnerCF, ObjectPoolActivationError &, ObjectPoolErrorCodes &, std::uint16_t &, std::uint16_t &) override;
 	bool change_designator(std::shared_ptr<isobus::ControlFunction>, std::uint16_t, const std::vector<std::uint8_t> &) override;
 	bool deactivate_object_pool(std::shared_ptr<isobus::ControlFunction> partnerCF) override;
@@ -93,7 +94,7 @@ public:
 	                      std::int32_t processDataValue,
 	                      std::uint8_t &errorCodes) override;
 	bool store_device_descriptor_object_pool(std::shared_ptr<isobus::ControlFunction> partnerCF, const std::vector<std::uint8_t> &binaryPool, bool appendToPool) override;
-	std::map<std::shared_ptr<isobus::ControlFunction>, ClientState> &get_clients();
+	std::map<std::shared_ptr<isobus::ControlFunction>, ClientState> &get_clients(); ///< Returns a reference to the clients map
 	void request_measurement_commands();
 	void update_section_states(std::vector<bool> &sectionStates);
 	void update_section_control_enabled(bool enabled);

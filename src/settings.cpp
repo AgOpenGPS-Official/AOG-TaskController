@@ -16,6 +16,9 @@
 
 using json = nlohmann::json;
 
+const std::string Settings::DEFAULT_LANGUAGE_CODE = "en";
+const std::string Settings::DEFAULT_COUNTRY_CODE = "US";
+
 bool Settings::load()
 {
 	std::ifstream file(get_filename_path("settings.json"));
@@ -79,6 +82,66 @@ bool Settings::load()
 		aogHeartbeatEnabled = DEFAULT_AOG_HEARTBEAT_ENABLED; // Key not found, use default
 	}
 
+	if (data.contains("tcVersion"))
+	{
+		try
+		{
+			int version = data["tcVersion"].get<int>();
+			if (version >= 0 && version <= 4)
+			{
+				tcVersion = static_cast<std::uint8_t>(version);
+			}
+			else
+			{
+				std::cout << "[" << get_timestamp() << "] Invalid tcVersion " << version << ", using default " << static_cast<int>(DEFAULT_TC_VERSION) << std::endl;
+				tcVersion = DEFAULT_TC_VERSION;
+			}
+		}
+		catch (const nlohmann::json::exception &e)
+		{
+			std::cout << "[" << get_timestamp() << "] Error parsing 'tcVersion': " << e.what() << std::endl;
+			tcVersion = DEFAULT_TC_VERSION; // Fallback to default
+		}
+	}
+	else
+	{
+		tcVersion = DEFAULT_TC_VERSION; // Key not found, use default
+	}
+
+	if (data.contains("languageCode"))
+	{
+		try
+		{
+			languageCode = data["languageCode"].get<std::string>();
+		}
+		catch (const nlohmann::json::exception &e)
+		{
+			std::cout << "[" << get_timestamp() << "] Error parsing 'languageCode': " << e.what() << std::endl;
+			languageCode = DEFAULT_LANGUAGE_CODE;
+		}
+	}
+	else
+	{
+		languageCode = DEFAULT_LANGUAGE_CODE;
+	}
+
+	if (data.contains("countryCode"))
+	{
+		try
+		{
+			countryCode = data["countryCode"].get<std::string>();
+		}
+		catch (const nlohmann::json::exception &e)
+		{
+			std::cout << "[" << get_timestamp() << "] Error parsing 'countryCode': " << e.what() << std::endl;
+			countryCode = DEFAULT_COUNTRY_CODE;
+		}
+	}
+	else
+	{
+		countryCode = DEFAULT_COUNTRY_CODE;
+	}
+
 	return true;
 }
 
@@ -88,6 +151,9 @@ bool Settings::save() const
 	data["subnet"] = configuredSubnet;
 	data["tecuEnabled"] = tecuEnabled;
 	data["aogHeartbeatEnabled"] = aogHeartbeatEnabled;
+	data["tcVersion"] = tcVersion;
+	data["languageCode"] = languageCode;
+	data["countryCode"] = countryCode;
 
 	std::ofstream file(get_filename_path("settings.json"));
 	if (!file.is_open())
@@ -96,6 +162,59 @@ bool Settings::save() const
 	}
 
 	file << data.dump(4); // Pretty print
+	return true;
+}
+
+std::uint8_t Settings::get_tc_version() const
+{
+	return tcVersion;
+}
+
+bool Settings::set_tc_version(std::uint8_t version, bool save)
+{
+	if (version > 4)
+	{
+		std::cout << "[" << get_timestamp() << "] Invalid TC version " << static_cast<int>(version) << ", using default " << static_cast<int>(DEFAULT_TC_VERSION) << std::endl;
+		tcVersion = DEFAULT_TC_VERSION;
+	}
+	else
+	{
+		tcVersion = version;
+	}
+	if (save)
+	{
+		return this->save();
+	}
+	return true;
+}
+
+std::string Settings::get_language_code() const
+{
+	return languageCode;
+}
+
+bool Settings::set_language_code(std::string code, bool save)
+{
+	languageCode = code;
+	if (save)
+	{
+		return this->save();
+	}
+	return true;
+}
+
+std::string Settings::get_country_code() const
+{
+	return countryCode;
+}
+
+bool Settings::set_country_code(std::string code, bool save)
+{
+	countryCode = code;
+	if (save)
+	{
+		return this->save();
+	}
 	return true;
 }
 

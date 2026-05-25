@@ -3,6 +3,7 @@
 #include <chrono>
 #include <ctime>
 #include <iomanip>
+#include <mutex>
 #include <sstream>
 #include <string>
 
@@ -22,4 +23,11 @@ inline std::string get_timestamp()
 	    << std::setfill('0') << std::setw(2) << localTime.tm_sec << "."
 	    << std::setfill('0') << std::setw(3) << ms.count();
 	return oss.str();
+}
+
+// Global mutex to protect all std::cout writes from concurrent access across threads
+inline std::mutex &getLoggingMutex()
+{
+	static std::mutex loggingMutex;
+	return loggingMutex;
 }
