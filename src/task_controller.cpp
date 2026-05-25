@@ -10,7 +10,11 @@
 #include "logging_utils.hpp"
 #include "settings.hpp"
 
+#ifdef _WIN32
 #include <windows.h>
+#endif
+
+#include <filesystem>
 
 #include "isobus/isobus/isobus_device_descriptor_object_pool_helpers.hpp"
 #include "isobus/isobus/isobus_task_controller_server.hpp"
@@ -301,7 +305,7 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 		auto it = std::find_if(label.begin(), label.end(), [](char c) { return c == '\0' || static_cast<unsigned char>(c) == 0x03; });
 		label.erase(it, label.end());
 
-		auto fileName = std::to_string(partnerCF->get_NAME().get_full_name()) + "\\" + label + ".ddop";
+		auto fileName = std::to_string(partnerCF->get_NAME().get_full_name()) + "/" + label + ".ddop";
 		std::vector<std::uint8_t> binaryPool;
 		if (state.get_pool().generate_binary_object_pool(binaryPool))
 		{
@@ -381,34 +385,16 @@ bool MyTCServer::deactivate_object_pool(std::shared_ptr<isobus::ControlFunction>
 
 static bool remove_directory_recursive(const std::string &path)
 {
-	WIN32_FIND_DATAA findData;
-	auto searchPath = path + "\\*";
-	auto hFind = FindFirstFileA(searchPath.c_str(), &findData);
-	if (hFind == INVALID_HANDLE_VALUE)
+	try
 	{
-		return RemoveDirectoryA(path.c_str()) != 0;
+		std::filesystem::remove_all(path);
+		return true;
 	}
-
-	do
+	catch (const std::filesystem::filesystem_error &e)
 	{
-		std::string name = findData.cFileName;
-		if (name == "." || name == "..")
-		{
-			continue;
-		}
-		std::string fullPath = path + "\\" + name;
-		if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
-		{
-			remove_directory_recursive(fullPath);
-		}
-		else
-		{
-			DeleteFileA(fullPath.c_str());
-		}
-	} while (FindNextFileA(hFind, &findData));
-
-	FindClose(hFind);
-	return RemoveDirectoryA(path.c_str()) != 0;
+		std::cerr << "[" << get_timestamp() << "] [Error] Failed to remove directory: " << e.what() << std::endl;
+		return false;
+	}
 }
 
 bool MyTCServer::delete_device_descriptor_object_pool(std::shared_ptr<isobus::ControlFunction> partnerCF, ObjectPoolDeletionErrors &)
@@ -417,13 +403,13 @@ bool MyTCServer::delete_device_descriptor_object_pool(std::shared_ptr<isobus::Co
 	auto folderName = std::to_string(nameFull);
 
 	// Get the directory path where this client's DDOP is stored
-	auto dummyFilePath = Settings::get_filename_path(folderName + "\\dummy.txt");
-	auto currentFolderPath = dummyFilePath.substr(0, dummyFilePath.find_last_of("\\/"));
-	auto parentDirPath = currentFolderPath.substr(0, currentFolderPath.find_last_of("\\/"));
-	auto archiveFolderPath = parentDirPath + "\\" + folderName + "_archive";
+	auto dummyFilePath = Settings::get_filename_path(folderName + "/dummy.txt");
+	auto currentFolderPath = std::filesystem::path(dummyFilePath).parent_path().string();
+	auto parentDirPath = std::filesystem::path(currentFolderPath).parent_path().string();
+	auto archiveFolderPath = parentDirPath + "/" + folderName + "_archive";
 
 	// If archive already exists, delete it first
-	if (GetFileAttributesA(archiveFolderPath.c_str()) != INVALID_FILE_ATTRIBUTES)
+	if (std::filesystem::exists(archiveFolderPath))
 	{
 		if (!remove_directory_recursive(archiveFolderPath))
 		{
@@ -432,15 +418,16 @@ bool MyTCServer::delete_device_descriptor_object_pool(std::shared_ptr<isobus::Co
 	}
 
 	// Rename current folder to archive
-	if (MoveFileA(currentFolderPath.c_str(), archiveFolderPath.c_str()))
+	try
 	{
+		std::filesystem::rename(currentFolderPath, archiveFolderPath);
 		std::cout << "[" << get_timestamp() << "] [TC Server] Archived DDOP folder for NAME " << nameFull
 		          << " to " << archiveFolderPath << std::endl;
 	}
-	else
+	catch (const std::filesystem::filesystem_error &e)
 	{
 		std::cout << "[" << get_timestamp() << "] [TC Server] Failed to archive DDOP folder for NAME " << nameFull
-		          << " (error " << GetLastError() << ")" << std::endl;
+		          << " (" << e.what() << ")" << std::endl;
 	}
 
 	{
