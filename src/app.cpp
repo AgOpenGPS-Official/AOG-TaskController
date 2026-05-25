@@ -464,21 +464,10 @@ bool Application::update()
 
 	// Send startup TC Status burst to help late-joining implements detect the TC
 	// ISO 11783-10 allows up to 5 Hz (200ms interval) for TC Status
+	// After the burst, AgIsoStack++ handles the periodic 2-second TC Status internally.
 	if (!tcStatusBurstSent && tcCF && tcCF->get_address_valid())
 	{
 		send_tc_status_burst();
-	}
-
-	// Send Task Controller Status message every 2 seconds (ISO 11783-10 B.8.1)
-	if (isobus::SystemTiming::time_expired_ms(lastTCStatusTransmit, 2000) && tcCF && tcCF->get_address_valid())
-	{
-		static bool firstStatusSent = false;
-		send_task_controller_status_message();
-		if (!firstStatusSent)
-		{
-			std::cout << "[" << get_timestamp() << "] [TC Status] First TC Status message sent (PGN 0xCB00)" << std::endl;
-			firstStatusSent = true;
-		}
 	}
 
 	// Update connection tracker state
@@ -531,12 +520,31 @@ void Application::send_task_controller_status_message()
 		0xFF // Byte 8: Reserved
 	};
 
-	// Send to global destination (0xFF) - broadcast to all nodes
-	// Using 4-arg version: PGN, data, length, source CF (destination is implicit in PGN for broadcast)
+	// Send to global destination (0xFF) with priority 3 (ISO 11783-10 requirement)
 	const auto transmitAttemptTimestamp = isobus::SystemTiming::get_timestamp_ms();
-	if (!isobus::CANNetworkManager::CANNetwork.send_can_message(0xCB00, tcStatusData.data(), tcStatusData.size(), tcCF))
+	bool sendSuccess = isobus::CANNetworkManager::CANNetwork.send_can_message(
+	    0xCB00, tcStatusData.data(), tcStatusData.size(), tcCF, nullptr,
+	    isobus::CANIdentifier::CANPriority::Priority3);
+
+	if (!sendSuccess)
 	{
 		std::cout << "[" << get_timestamp() << "] [TC Status] Failed to send TC Status message!" << std::endl;
+	}
+	else
+	{
+		std::cout << "[" << get_timestamp() << "] [TC Status] Sent: ID=0x0CBFFF" << std::hex
+		          << static_cast<int>(tcCF->get_address()) << std::dec
+		          << " Payload=" << std::hex << std::uppercase
+		          << std::setfill('0') << std::setw(2) << static_cast<int>(tcStatusData[0]) << " "
+		          << std::setw(2) << static_cast<int>(tcStatusData[1]) << " "
+		          << std::setw(2) << static_cast<int>(tcStatusData[2]) << " "
+		          << std::setw(2) << static_cast<int>(tcStatusData[3]) << " "
+		          << std::setw(2) << static_cast<int>(tcStatusData[4]) << " "
+		          << std::setw(2) << static_cast<int>(tcStatusData[5]) << " "
+		          << std::setw(2) << static_cast<int>(tcStatusData[6]) << " "
+		          << std::setw(2) << static_cast<int>(tcStatusData[7]) << std::dec
+		          << " [task_totals=" << (statusByte & 0x01) << "]"
+		          << std::endl;
 	}
 
 	// Update the transmit timestamp for every send attempt so failed sends
@@ -562,6 +570,7 @@ void Application::send_tc_status_burst()
 		send_task_controller_status_message();
 		burstCount++;
 		lastBurstTransmit = isobus::SystemTiming::get_timestamp_ms();
+		lastTCStatusTransmit = lastBurstTransmit; // Prevent duplicate 2s timer
 		std::cout << "[" << get_timestamp() << "] [TC Status] Startup burst message " << static_cast<int>(burstCount) << "/5 sent" << std::endl;
 
 		if (burstCount >= 5)
