@@ -29,3 +29,44 @@ jobs:
         with:
           name: 'Windows Installer'
           path: build/_CPack_Packages/win64/NSIS/*.exe
+
+  linux_build:
+    name: Linux Build (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build
+      - name: Configure (CMake)
+        run: cmake -S . -B build -G Ninja -DBUILD_EXAMPLES=OFF -DBUILD_TESTING=OFF -DCMAKE_BUILD_TYPE=Release -Wno-dev
+      - name: Build
+        run: cmake --build build --config Release
+      - name: Stage tarball
+        run: |
+          set -euo pipefail
+          STAGE="${{ github.workspace }}/stage/AOG-TaskController-linux-${{ matrix.arch }}"
+          mkdir -p "$STAGE/bin" "$STAGE/share/AOG-TaskController" "$STAGE/lib/systemd/system"
+          install -m 0755 build/AOG-TaskController "$STAGE/bin/AOG-TaskController"
+          install -m 0644 resources/linux/settings.sample.json "$STAGE/share/AOG-TaskController/settings.sample.json"
+          install -m 0644 resources/linux/aog-taskcontroller.service "$STAGE/lib/systemd/system/aog-taskcontroller.service"
+          cp LICENSE "$STAGE/LICENSE"
+          tar -C "${{ github.workspace }}/stage" -czf AOG-TaskController-linux-${{ matrix.arch }}.tar.gz AOG-TaskController-linux-${{ matrix.arch }}
+      - name: Upload Linux tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: 'Linux Tarball (${{ matrix.arch }})'
+          path: AOG-TaskController-linux-${{ matrix.arch }}.tar.gz

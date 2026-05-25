@@ -2,6 +2,11 @@
 
 This is an experimental project to control sections of an ISOBUS implement using AgOpenGPS. It is based on the [AgIsoStack++](https://github.com/Open-Agriculture/AgIsoStack-plus-plus) library.
 
+## Documentation
+
+- [docs/LINUX_DAEMON.md](docs/LINUX_DAEMON.md) — running AOG-TaskController as a headless Linux service (Raspberry Pi, x86 SBCs, generic Linux). Install, systemd, CAN setup, troubleshooting.
+- [docs/PROTOCOL.md](docs/PROTOCOL.md) — UDP wire protocol, PGN reference, settings/CLI, ISOBUS overview, and Python/C# example clients. Read this if you are writing an AgIO / AgValonia / third-party client.
+
 ## How to run the project
 
 After installing the desired release of AOG-TaskController, you can run it directly through AgOpenGPS itself:
@@ -13,6 +18,12 @@ After installing the desired release of AOG-TaskController, you can run it direc
 5. Click on the `connect` button.
 
 ![how-to](resources/agopengps-howto.png)
+
+## Raising tickets
+
+Open %APPDATA% folder in explorer.
+Zip all the folders (sometimes we need the ddop found in the subfolders) and the logs.
+Attach them to the ticket.
 
 ## How to package the project
 

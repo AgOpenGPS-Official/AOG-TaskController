@@ -1,0 +1,16 @@
+[Unit]
+Description=AOG-TaskController (ISOBUS TC for AgOpenGPS)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust User= and the CAN interface to match your deployment.
+# The default CAN interface is can0; override via --can_channel=<iface>.
+User=aog
+ExecStart=/usr/local/bin/AOG-TaskController --can_adapter=socketcan --can_channel=can0 --log_level=info --log2file
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

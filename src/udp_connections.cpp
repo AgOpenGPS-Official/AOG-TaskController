@@ -11,6 +11,12 @@
 #include <cassert>
 #include <iostream>
 
+#if !defined(_WIN32)
+#include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <netinet/in.h>
+#endif
+
 UdpConnections::UdpConnections(std::shared_ptr<Settings> settings, boost::asio::io_context &ioContext) :
   settings(settings),
   udpConnection(ioContext),
@@ -28,12 +34,14 @@ bool UdpConnections::open()
 	// Set up the UDP server
 	udpConnection.open(udp::v4());
 	udpConnection.set_option(boost::asio::socket_base::broadcast(true));
+	udpConnection.set_option(boost::asio::socket_base::reuse_address(true));
 	udpConnection.non_blocking(true);
 	udpConnection.bind(get_local_endpoint());
 
 	// Set up another UDP server for Address Detection
 	udpConnectionAddressDetection.open(udp::v4());
 	udpConnectionAddressDetection.set_option(boost::asio::socket_base::broadcast(true));
+	udpConnectionAddressDetection.set_option(boost::asio::socket_base::reuse_address(true));
 	udpConnectionAddressDetection.non_blocking(true);
 	udp::endpoint local_any_endpoint(boost::asio::ip::address_v4::any(), 8888); // Bind to 0.0.0.0 to receive packets on all interfaces
 	udpConnectionAddressDetection.bind(local_any_endpoint);
@@ -50,13 +58,54 @@ void UdpConnections::close()
 udp::endpoint UdpConnections::get_local_endpoint() const
 {
 	auto subnet = settings->get_subnet();
+
+#if !defined(_WIN32)
+	// On POSIX, enumerate live interfaces via getifaddrs(3). The hostname-based
+	// resolver below only returns whatever the resolver maps the hostname to
+	// (e.g. 127.0.1.1 on stock Ubuntu), which never matches a LAN subnet.
+	{
+		struct ifaddrs *ifaList = nullptr;
+		if (getifaddrs(&ifaList) == 0)
+		{
+			std::cout << "Available IP addresses (getifaddrs):" << std::endl;
+			for (struct ifaddrs *ifa = ifaList; ifa != nullptr; ifa = ifa->ifa_next)
+			{
+				if (ifa->ifa_addr == nullptr || ifa->ifa_addr->sa_family != AF_INET)
+				{
+					continue;
+				}
+				auto *sin = reinterpret_cast<struct sockaddr_in *>(ifa->ifa_addr);
+				char buf[INET_ADDRSTRLEN] = { 0 };
+				inet_ntop(AF_INET, &sin->sin_addr, buf, sizeof(buf));
+				std::cout << "- " << ifa->ifa_name << " " << buf << std::endl;
+
+				auto raw = ntohl(sin->sin_addr.s_addr);
+				std::array<std::uint8_t, 4> octets = {
+					static_cast<std::uint8_t>((raw >> 24) & 0xFF),
+					static_cast<std::uint8_t>((raw >> 16) & 0xFF),
+					static_cast<std::uint8_t>((raw >> 8) & 0xFF),
+					static_cast<std::uint8_t>(raw & 0xFF),
+				};
+				if (std::equal(subnet.begin(), subnet.begin() + 3, octets.begin()))
+				{
+					auto addr = boost::asio::ip::make_address_v4(buf);
+					std::cout << "Found local endpoint address " << buf << ", which matches the subnet " << settings->get_subnet_string() << std::endl;
+					freeifaddrs(ifaList);
+					return udp::endpoint(addr, 8888);
+				}
+			}
+			freeifaddrs(ifaList);
+		}
+	}
+#endif
+
 	try
 	{
 		boost::asio::io_context io_context;
 		boost::asio::ip::tcp::resolver resolver(io_context);
 		auto endpoints = resolver.resolve(boost::asio::ip::host_name(), "");
 
-		std::cout << "Available IP addresses:" << std::endl;
+		std::cout << "Available IP addresses (resolver):" << std::endl;
 		for (const auto &endpoint : endpoints)
 		{
 			const auto &addr = endpoint.endpoint().address();
@@ -213,6 +262,7 @@ void UdpConnections::handle_address_detection()
 					udpConnection.close();
 					udpConnection.open(udp::v4());
 					udpConnection.set_option(boost::asio::socket_base::broadcast(true));
+					udpConnection.set_option(boost::asio::socket_base::reuse_address(true));
 					udpConnection.non_blocking(true);
 					udpConnection.bind(get_local_endpoint());
 

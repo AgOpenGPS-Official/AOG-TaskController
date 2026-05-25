@@ -19,7 +19,10 @@
 
 #include "task_controller.hpp"
 
+#include "logging_utils.hpp"
+
 #include <iomanip>
+#include <iostream>
 #include <thread>
 
 using boost::asio::ip::udp;

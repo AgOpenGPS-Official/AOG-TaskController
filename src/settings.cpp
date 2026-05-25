@@ -9,10 +9,15 @@
 #include "settings.hpp"
 #include "logging_utils.hpp"
 
-#include <ShlObj_core.h>
+#include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <nlohmann/json.hpp>
+
+#if defined(_WIN32)
+#include <ShlObj_core.h>
+#endif
 
 using json = nlohmann::json;
 
@@ -268,45 +273,54 @@ bool Settings::set_aog_heartbeat_enabled(bool enabled, bool save)
 	return true;
 }
 
+namespace
+{
+	std::filesystem::path get_base_config_dir()
+	{
+#if defined(_WIN32)
+		// Use the same call the original Windows build linked against, so we
+		// don't take a new ole32 dependency. CSIDL_APPDATA == FOLDERID_RoamingAppData.
+		char path[MAX_PATH] = { 0 };
+		if (SHGetFolderPathA(NULL, CSIDL_APPDATA, NULL, 0, path) != S_OK)
+		{
+			throw std::runtime_error("Failed to get AppData path");
+		}
+		return std::filesystem::path(path) / PROJECT_NAME;
+#elif defined(__APPLE__)
+		const char *home = std::getenv("HOME");
+		if (!home)
+		{
+			throw std::runtime_error("HOME environment variable not set");
+		}
+		return std::filesystem::path(home) / "Library" / "Application Support" / PROJECT_NAME;
+#else
+		// Linux / other Unix: XDG Base Directory specification
+		const char *xdg = std::getenv("XDG_CONFIG_HOME");
+		if (xdg && *xdg)
+		{
+			return std::filesystem::path(xdg) / PROJECT_NAME;
+		}
+		const char *home = std::getenv("HOME");
+		if (!home)
+		{
+			throw std::runtime_error("HOME environment variable not set");
+		}
+		return std::filesystem::path(home) / ".config" / PROJECT_NAME;
+#endif
+	}
+}
+
 std::string Settings::get_filename_path(std::string fileName)
 {
-	char path[MAX_PATH];
-	if (SHGetFolderPath(NULL, CSIDL_APPDATA, NULL, 0, path) != S_OK)
+	auto basePath = get_base_config_dir();
+	auto fullPath = basePath / fileName;
+
+	std::error_code ec;
+	std::filesystem::create_directories(fullPath.parent_path(), ec);
+	if (ec)
 	{
-		throw std::runtime_error("Failed to get AppData path");
+		throw std::runtime_error("Failed to create config directory " + fullPath.parent_path().string() + ": " + ec.message());
 	}
 
-	std::string baseDir = std::string(path) + "\\" + PROJECT_NAME;
-	std::string fullPath = baseDir + "\\" + fileName;
-
-	// Find the last directory separator (before the actual file name)
-	size_t lastSlash = fullPath.find_last_of("\\/");
-	if (lastSlash != std::string::npos)
-	{
-		std::string directoryPath = fullPath.substr(0, lastSlash); // Extract the directory part
-
-		// Create each directory level iteratively
-		std::istringstream dirStream(directoryPath);
-		std::string segment;
-		std::string currentPath;
-
-		while (std::getline(dirStream, segment, '\\')) // Split by `\`
-		{
-			if (!currentPath.empty())
-				currentPath += "\\"; // Append separator only after first segment
-
-			currentPath += segment;
-
-			if (CreateDirectory(currentPath.c_str(), NULL) == 0)
-			{
-				DWORD error = GetLastError();
-				if (error != ERROR_ALREADY_EXISTS)
-				{
-					throw std::runtime_error("Failed to create directory: " + currentPath);
-				}
-			}
-		}
-	}
-
-	return fullPath;
+	return fullPath.string();
 }

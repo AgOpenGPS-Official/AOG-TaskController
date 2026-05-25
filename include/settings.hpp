@@ -10,6 +10,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <string>
 
 /// @brief A class to store/load AOG-TC settings to/from a file
