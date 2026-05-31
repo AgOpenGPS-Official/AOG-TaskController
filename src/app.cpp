@@ -10,9 +10,11 @@
 
 #include "isobus/hardware_integration/available_can_drivers.hpp"
 #include "isobus/hardware_integration/can_hardware_interface.hpp"
+#include "isobus/isobus/can_general_parameter_group_numbers.hpp"
 #include "isobus/isobus/can_network_manager.hpp"
 #include "isobus/isobus/isobus_preferred_addresses.hpp"
 #include "isobus/isobus/isobus_standard_data_description_indices.hpp"
+#include "isobus/isobus/isobus_task_controller_server.hpp"
 #include "isobus/utility/system_timing.hpp"
 
 #include "task_controller.hpp"
@@ -174,12 +176,67 @@ bool Application::initialize()
 		}
 	}
 
-	tcServer = std::make_shared<MyTCServer>(tcCF);
+	// Map settings version to TaskControllerVersion enum
+	isobus::TaskControllerServer::TaskControllerVersion tcVersionEnum;
+	switch (settings->get_tc_version())
+	{
+		case 0:
+			tcVersionEnum = isobus::TaskControllerServer::TaskControllerVersion::DraftInternationalStandard;
+			break;
+		case 1:
+			tcVersionEnum = isobus::TaskControllerServer::TaskControllerVersion::FinalDraftInternationalStandardFirstEdition;
+			break;
+		case 2:
+			tcVersionEnum = isobus::TaskControllerServer::TaskControllerVersion::FirstPublishedEdition;
+			break;
+		case 3:
+			tcVersionEnum = isobus::TaskControllerServer::TaskControllerVersion::SecondEditionDraft;
+			break;
+		case 4:
+		default:
+			tcVersionEnum = isobus::TaskControllerServer::TaskControllerVersion::SecondPublishedEdition;
+			break;
+	}
+
+	tcServer = std::make_shared<MyTCServer>(tcCF, tcVersionEnum);
 	auto &languageInterface = tcServer->get_language_command_interface();
-	languageInterface.set_language_code("en"); // This is the default, but you can change it if you want
-	languageInterface.set_country_code("US"); // This is the default, but you can change it if you want
+	languageInterface.set_language_code(settings->get_language_code());
+	languageInterface.set_country_code(settings->get_country_code());
 	tcServer->initialize();
 	tcServer->set_task_totals_active(true); // TODO: make this dynamic based on status in AOG
+
+	// Announce TC Control Function Functionalities (PGN 64654 / 0xFC8E) per ISO 11783-12.
+	tcFunctionalities = std::make_unique<isobus::ControlFunctionFunctionalities>(tcCF);
+
+	// TC-BAS (Basic): mandatory baseline for any TC server
+	tcFunctionalities->set_functionality_is_supported(
+	  isobus::ControlFunctionFunctionalities::Functionalities::TaskControllerBasicServer,
+	  1,
+	  true);
+
+	// TC-GEO: DISABLED – variable rate / prescription maps are not supported
+	tcFunctionalities->set_functionality_is_supported(
+	  isobus::ControlFunctionFunctionalities::Functionalities::TaskControllerGeoServer,
+	  1,
+	  false);
+	tcFunctionalities->set_task_controller_geo_server_option_state(
+	  isobus::ControlFunctionFunctionalities::TaskControllerGeoServerOptions::PolygonBasedPrescriptionMapsAreSupported,
+	  false);
+
+	// TC-SC (Section Control): 1 boom, 64 sections – matching MyTCServer constructor limits
+	tcFunctionalities->set_functionality_is_supported(
+	  isobus::ControlFunctionFunctionalities::Functionalities::TaskControllerSectionControlServer,
+	  1,
+	  true);
+	tcFunctionalities->set_task_controller_section_control_server_option_state(
+	  1, // numberOfSupportedBooms
+	  64); // numberOfSupportedSections
+
+	// Register a ProcessData PGN callback to drive the bidirectional VersionPayload exchange
+	isobus::CANNetworkManager::CANNetwork.add_any_control_function_parameter_group_number_callback(
+	  static_cast<std::uint32_t>(isobus::CANLibParameterGroupNumber::ProcessData),
+	  Application::on_process_data_pgn_received,
+	  this);
 
 	// Initialize speed and distance messages
 	if (tecuCF && tecuCF->get_address_valid())
@@ -332,6 +389,8 @@ bool Application::update()
 
 	tcServer->request_measurement_commands();
 	tcServer->update();
+	if (tcFunctionalities)
+		tcFunctionalities->update();
 	if (tecuFunctionalities)
 		tecuFunctionalities->update();
 	if (speedMessagesInterface)
@@ -471,6 +530,53 @@ void Application::send_task_controller_status_message()
 
 void Application::stop()
 {
+	isobus::CANNetworkManager::CANNetwork.remove_any_control_function_parameter_group_number_callback(
+	  static_cast<std::uint32_t>(isobus::CANLibParameterGroupNumber::ProcessData),
+	  Application::on_process_data_pgn_received,
+	  this);
 	tcServer->terminate();
 	isobus::CANHardwareInterface::stop();
+}
+
+void Application::on_process_data_pgn_received(const isobus::CANMessage &message, void *parent)
+{
+	if (nullptr == parent)
+	{
+		return;
+	}
+	auto *app = static_cast<Application *>(parent);
+
+	auto source = message.get_source_control_function();
+	if (nullptr == source)
+	{
+		return;
+	}
+
+	const auto &data = message.get_data();
+	if (data.empty())
+	{
+		return;
+	}
+
+	// RequestVersion: both nibbles of byte 0 are zero (command = 0x0, element = 0x0)
+	if (data[0] == 0x00 && app->tcCF && app->tcCF->get_address_valid())
+	{
+		auto nameFull = source->get_NAME().get_full_name();
+		if (app->implementVersionRequested.find(nameFull) == app->implementVersionRequested.end())
+		{
+			// Send RequestVersion toward the implement so we also learn its reported TC version
+			std::array<std::uint8_t, 8> requestVersionPayload = {
+				0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF
+			};
+			if (isobus::CANNetworkManager::CANNetwork.send_can_message(
+			      0xCB00,
+			      requestVersionPayload.data(),
+			      requestVersionPayload.size(),
+			      app->tcCF,
+			      source))
+			{
+				app->implementVersionRequested.insert(nameFull);
+			}
+		}
+	}
 }
