@@ -205,33 +205,6 @@ bool Application::initialize()
 	tcServer->initialize();
 	tcServer->set_task_totals_active(true); // TODO: make this dynamic based on status in AOG
 
-	// Announce TC Control Function Functionalities (PGN 64654 / 0xFC8E) per ISO 11783-12.
-	tcFunctionalities = std::make_unique<isobus::ControlFunctionFunctionalities>(tcCF);
-
-	// TC-BAS (Basic): mandatory baseline for any TC server
-	tcFunctionalities->set_functionality_is_supported(
-	  isobus::ControlFunctionFunctionalities::Functionalities::TaskControllerBasicServer,
-	  1,
-	  true);
-
-	// TC-GEO: DISABLED – variable rate / prescription maps are not supported
-	tcFunctionalities->set_functionality_is_supported(
-	  isobus::ControlFunctionFunctionalities::Functionalities::TaskControllerGeoServer,
-	  1,
-	  false);
-	tcFunctionalities->set_task_controller_geo_server_option_state(
-	  isobus::ControlFunctionFunctionalities::TaskControllerGeoServerOptions::PolygonBasedPrescriptionMapsAreSupported,
-	  false);
-
-	// TC-SC (Section Control): 1 boom, 64 sections – matching MyTCServer constructor limits
-	tcFunctionalities->set_functionality_is_supported(
-	  isobus::ControlFunctionFunctionalities::Functionalities::TaskControllerSectionControlServer,
-	  1,
-	  true);
-	tcFunctionalities->set_task_controller_section_control_server_option_state(
-	  1, // numberOfSupportedBooms
-	  64); // numberOfSupportedSections
-
 	// Register a ProcessData PGN callback to drive the bidirectional VersionPayload exchange
 	isobus::CANNetworkManager::CANNetwork.add_any_control_function_parameter_group_number_callback(
 	  static_cast<std::uint32_t>(isobus::CANLibParameterGroupNumber::ProcessData),
@@ -241,18 +214,6 @@ bool Application::initialize()
 	// Initialize speed and distance messages
 	if (tecuCF && tecuCF->get_address_valid())
 	{
-		std::cout << "[" << get_timestamp() << "] [Init] Creating TECU Control Function Functionalities..." << std::endl;
-		tecuFunctionalities = std::make_unique<isobus::ControlFunctionFunctionalities>(tecuCF);
-		// Announce as Basic Tractor ECU Server Class 1 (ISO 11783-9 compliance)
-		tecuFunctionalities->set_functionality_is_supported(
-		  isobus::ControlFunctionFunctionalities::Functionalities::BasicTractorECUServer,
-		  2, // Generation 2 (Version 2)
-		  true);
-		tecuFunctionalities->set_basic_tractor_ECU_server_option_state(
-		  isobus::ControlFunctionFunctionalities::BasicTractorECUOptions::Class1NoOptions,
-		  true);
-		std::cout << "[" << get_timestamp() << "] [Init] TECU announced as Class 1 Tractor ECU (PGN 64654)" << std::endl;
-
 		std::cout << "[" << get_timestamp() << "] [Init] Creating Speed Messages Interface on TECU..." << std::endl;
 		speedMessagesInterface = std::make_unique<isobus::SpeedMessagesInterface>(tecuCF, true, true, true, false); //TODO: make configurable whether to send these messages
 		speedMessagesInterface->initialize();
@@ -389,10 +350,6 @@ bool Application::update()
 
 	tcServer->request_measurement_commands();
 	tcServer->update();
-	if (tcFunctionalities)
-		tcFunctionalities->update();
-	if (tecuFunctionalities)
-		tecuFunctionalities->update();
 	if (speedMessagesInterface)
 		speedMessagesInterface->update();
 	if (nmea2000MessageInterface)
