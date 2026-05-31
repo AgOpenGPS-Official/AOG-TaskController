@@ -10,6 +10,7 @@
 
 #include "isobus/hardware_integration/available_can_drivers.hpp"
 #include "isobus/hardware_integration/can_hardware_interface.hpp"
+#include "isobus/isobus/can_internal_control_function.hpp"
 #include "isobus/isobus/can_network_manager.hpp"
 #include "isobus/isobus/isobus_preferred_addresses.hpp"
 #include "isobus/isobus/isobus_standard_data_description_indices.hpp"
@@ -19,10 +20,130 @@
 
 #include "logging_utils.hpp"
 
+#include <iomanip>
 #include <iostream>
+#include <map>
+#include <span>
 #include <thread>
 
 using boost::asio::ip::udp;
+
+// Enumerate and log all Control Functions on the bus
+static void enumerate_bus_control_functions(const std::string &context)
+{
+	std::cout << "\n";
+	std::cout << "[" << get_timestamp() << "] [Bus CFs] " << context << std::endl;
+	std::cout << "[" << get_timestamp() << "] [Bus CFs] ==================================================" << std::endl;
+	std::cout << "[" << get_timestamp() << "] [Bus CFs] Control Functions on ISOBUS:" << std::endl;
+	std::cout << "[" << get_timestamp() << "] [Bus CFs] --------------------------------------------------" << std::endl;
+
+	// Get all control functions (including offline ones to see address claim history)
+	auto allCFs = isobus::CANNetworkManager::CANNetwork.get_control_functions(false);
+
+	std::uint32_t cfCount = 0;
+
+	for (const auto &cf : allCFs)
+	{
+		if (!cf)
+			continue;
+
+		// Only show control functions with valid addresses (online)
+		if (!cf->get_address_valid())
+			continue;
+
+		cfCount++;
+		isobus::NAME name = cf->get_NAME();
+		bool isInternal = (cf->get_type() == isobus::ControlFunction::Type::Internal);
+
+		std::cout << "[" << get_timestamp() << "] [Bus CFs]   Address: " << std::setw(3) << std::right << static_cast<int>(cf->get_address())
+		          << " | Mfg: " << std::left << std::setw(5) << name.get_manufacturer_code()
+		          << " | Func: " << std::left << std::setw(3) << static_cast<int>(name.get_function_code())
+		          << " | IG: " << static_cast<int>(name.get_industry_group())
+		          << " | Identity: " << std::setw(6) << std::right << name.get_identity_number()
+		          << " | ECU Inst: " << static_cast<int>(name.get_ecu_instance())
+		          << " | Func Inst: " << static_cast<int>(name.get_function_instance())
+		          << (isInternal ? " [INTERNAL]" : "")
+		          << std::endl;
+	}
+
+	if (cfCount == 0)
+	{
+		std::cout << "[" << get_timestamp() << "] [Bus CFs]   (No control functions detected on bus)" << std::endl;
+	}
+
+	std::cout << "[" << get_timestamp() << "] [Bus CFs] ==================================================" << std::endl;
+	std::cout << "[" << get_timestamp() << "] [Bus CFs] Total CFs found: " << cfCount << std::endl;
+	std::cout << "\n";
+}
+
+// Check for TC address conflicts and log warning if we couldn't claim preferred address
+static void check_tc_address_conflict(std::shared_ptr<isobus::InternalControlFunction> ourTC)
+{
+	if (!ourTC || !ourTC->get_address_valid())
+		return;
+
+	static constexpr std::uint8_t PREFERRED_TC_ADDRESS = isobus::preferred_addresses::IndustryGroup2::TaskController_MappingComputer;
+	static std::uint32_t lastWarnTime = 0;
+	static bool conflictDetected = false;
+
+	// Check if we have the preferred address
+	if (ourTC->get_address() == PREFERRED_TC_ADDRESS)
+	{
+		// We have the preferred address, clear conflict state
+		if (conflictDetected)
+		{
+			conflictDetected = false;
+			std::cout << "[" << get_timestamp() << "] [TC Address] Successfully claimed preferred address " << static_cast<int>(PREFERRED_TC_ADDRESS) << std::endl;
+		}
+		return;
+	}
+
+	// We don't have the preferred address - check if another TC has it
+	auto allCFs = isobus::CANNetworkManager::CANNetwork.get_control_functions(false);
+
+	for (const auto &cf : allCFs)
+	{
+		if (!cf || !cf->get_address_valid())
+			continue;
+
+		if (cf->get_address() == PREFERRED_TC_ADDRESS && cf != ourTC)
+		{
+			isobus::NAME otherName = cf->get_NAME();
+
+			// Check if it's actually a TC (function code 10 or 11)
+			std::uint8_t funcCode = otherName.get_function_code();
+			if (funcCode == 10 || funcCode == 11) // Task Controller - Mapping Computer or Basic
+			{
+				// Periodic warning every 30 seconds
+				if (isobus::SystemTiming::time_expired_ms(lastWarnTime, 30000))
+				{
+					conflictDetected = true;
+					std::cout << "\n";
+					std::cout << "[" << get_timestamp() << "] [WARN] ==================================================" << std::endl;
+					std::cout << "[" << get_timestamp() << "] [WARN] TC ADDRESS CONFLICT - Another TC at preferred address " << static_cast<int>(PREFERRED_TC_ADDRESS) << std::endl;
+					std::cout << "[" << get_timestamp() << "] [WARN] Conflicting TC: Mfg=" << otherName.get_manufacturer_code()
+					          << ", Func=" << static_cast<int>(funcCode)
+					          << ", Identity=" << otherName.get_identity_number()
+					          << ", ECU Inst=" << static_cast<int>(otherName.get_ecu_instance())
+					          << ", Func Inst=" << static_cast<int>(otherName.get_function_instance()) << std::endl;
+					std::cout << "[" << get_timestamp() << "] [WARN] Our TC using address: " << static_cast<int>(ourTC->get_address()) << std::endl;
+					std::cout << "[" << get_timestamp() << "] [WARN] ==================================================" << std::endl;
+					std::cout << "\n";
+					lastWarnTime = isobus::SystemTiming::get_timestamp_ms();
+				}
+				return; // Only report first conflicting TC found
+			}
+		}
+	}
+
+	// If we get here, we didn't find a conflicting TC at the preferred address
+	// This means we arbitrated to a different address for another reason
+	if (conflictDetected)
+	{
+		conflictDetected = false;
+		std::cout << "[" << get_timestamp() << "] [TC Address] TC address conflict resolved" << std::endl;
+	}
+}
 
 Application::Application(std::shared_ptr<isobus::CANHardwarePlugin> canDriver) :
   canDriver(canDriver)
@@ -47,6 +168,9 @@ bool Application::initialize()
 	}
 
 	isobus::CANNetworkManager::CANNetwork.get_configuration().set_number_of_packets_per_cts_message(255);
+
+	// Enumerate CFs on the bus BEFORE creating our own functions
+	enumerate_bus_control_functions("Before creating internal control functions");
 
 	isobus::NAME ourNAME(0);
 
@@ -173,6 +297,9 @@ bool Application::initialize()
 			tecuCF.reset(); // Release the failed control function
 		}
 	}
+
+	// Enumerate CFs on the bus AFTER creating our internal functions
+	enumerate_bus_control_functions("After creating internal control functions");
 
 	tcServer = std::make_shared<MyTCServer>(tcCF);
 	auto &languageInterface = tcServer->get_language_command_interface();
@@ -338,6 +465,9 @@ bool Application::update()
 		speedMessagesInterface->update();
 	if (nmea2000MessageInterface)
 		nmea2000MessageInterface->update();
+
+	// Check for TC address conflicts periodically
+	check_tc_address_conflict(tcCF);
 
 	// Send section control heartbeat to AOG every 100ms (PGN 0xF0, source 0x80)
 	// When no clients with sections, send 0 sections as heartbeat so AOG knows TC is alive
