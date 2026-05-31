@@ -78,13 +78,13 @@ public:
 	bool set_aog_heartbeat_enabled(bool enabled, bool save = true);
 
 	/**
-	 * @brief Get the configured TC ISO 11783-10 version
+	 * @brief Get the configured TC version
 	 * @return The configured version (0-4, default 3)
 	 */
 	std::uint8_t get_tc_version() const;
 
 	/**
-	 * @brief Set the TC ISO 11783-10 version
+	 * @brief Set the TC version
 	 * @param version The version to set (0=DIS, 1=FDIS.1, 2=FirstEdition, 3=SecondEditionDraft, 4=SecondPublishedEdition)
 	 * @param save Whether or not to save the settings to file
 	 * @return True if the version was set successfully, false otherwise
@@ -92,28 +92,28 @@ public:
 	bool set_tc_version(std::uint8_t version, bool save = true);
 
 	/**
-	 * @brief Get the configured language code (ISO 639-1)
+	 * @brief Get the configured language code
 	 * @return The language code (default "en")
 	 */
 	std::string get_language_code() const;
 
 	/**
 	 * @brief Set the language code
-	 * @param code The ISO 639-1 language code
+	 * @param code The language code
 	 * @param save Whether or not to save the settings to file
 	 * @return True if the setting was set successfully, false otherwise
 	 */
 	bool set_language_code(std::string code, bool save = true);
 
 	/**
-	 * @brief Get the configured country code (ISO 3166-1 alpha-2)
+	 * @brief Get the configured country code
 	 * @return The country code (default "US")
 	 */
 	std::string get_country_code() const;
 
 	/**
 	 * @brief Set the country code
-	 * @param code The ISO 3166-1 alpha-2 country code
+	 * @param code The country code
 	 * @param save Whether or not to save the settings to file
 	 * @return True if the setting was set successfully, false otherwise
 	 */
