@@ -14,6 +14,7 @@
 #include "isobus/isobus/can_network_manager.hpp"
 #include "isobus/isobus/isobus_preferred_addresses.hpp"
 #include "isobus/isobus/isobus_standard_data_description_indices.hpp"
+#include "isobus/isobus/isobus_task_controller_server.hpp"
 #include "isobus/utility/system_timing.hpp"
 
 #include "task_controller.hpp"
@@ -301,12 +302,52 @@ bool Application::initialize()
 	// Enumerate CFs on the bus AFTER creating our internal functions
 	enumerate_bus_control_functions("After creating internal control functions");
 
-	tcServer = std::make_shared<MyTCServer>(tcCF);
+  // Map settings version to TaskControllerVersion enum
+	isobus::TaskControllerServer::TaskControllerVersion tcVersionEnum;
+	switch (settings->get_tc_version())
+	{
+		case 0:
+			tcVersionEnum = isobus::TaskControllerServer::TaskControllerVersion::DraftInternationalStandard;
+			break;
+		case 1:
+			tcVersionEnum = isobus::TaskControllerServer::TaskControllerVersion::FinalDraftInternationalStandardFirstEdition;
+			break;
+		case 2:
+			tcVersionEnum = isobus::TaskControllerServer::TaskControllerVersion::FirstPublishedEdition;
+			break;
+		case 3:
+			tcVersionEnum = isobus::TaskControllerServer::TaskControllerVersion::SecondEditionDraft;
+			break;
+		case 4:
+		default:
+			tcVersionEnum = isobus::TaskControllerServer::TaskControllerVersion::SecondPublishedEdition;
+			break;
+	}
+
+	tcServer = std::make_shared<MyTCServer>(tcCF, tcVersionEnum);
 	auto &languageInterface = tcServer->get_language_command_interface();
-	languageInterface.set_language_code("en"); // This is the default, but you can change it if you want
-	languageInterface.set_country_code("US"); // This is the default, but you can change it if you want
+	languageInterface.set_language_code(settings->get_language_code());
+	languageInterface.set_country_code(settings->get_country_code());
 	tcServer->initialize();
 	tcServer->set_task_totals_active(true); // TODO: make this dynamic based on status in AOG
+	tcFunctionalities = std::make_unique<isobus::ControlFunctionFunctionalities>(tcCF);
+	tcFunctionalities->set_functionality_is_supported(
+	  isobus::ControlFunctionFunctionalities::Functionalities::TaskControllerBasicServer,
+	  1,
+	  true);
+	tcFunctionalities->set_functionality_is_supported(
+	  isobus::ControlFunctionFunctionalities::Functionalities::TaskControllerGeoServer,
+	  1,
+	  false);
+	tcFunctionalities->set_task_controller_geo_server_option_state(
+	  isobus::ControlFunctionFunctionalities::TaskControllerGeoServerOptions::PolygonBasedPrescriptionMapsAreSupported,
+	  false);
+	tcFunctionalities->set_functionality_is_supported(
+	  isobus::ControlFunctionFunctionalities::Functionalities::TaskControllerSectionControlServer,
+	  1,
+	  true);
+	tcFunctionalities->set_task_controller_section_control_server_option_state(1, 64);
+	std::cout << "[" << get_timestamp() << "] [Init] TC announced TC-BAS and TC-SC (1 boom / 64 sections) via PGN 64654" << std::endl;
 
 	// Initialize speed and distance messages
 	if (tecuCF && tecuCF->get_address_valid())
@@ -459,6 +500,8 @@ bool Application::update()
 
 	tcServer->request_measurement_commands();
 	tcServer->update();
+	if (tcFunctionalities)
+		tcFunctionalities->update();
 	if (tecuFunctionalities)
 		tecuFunctionalities->update();
 	if (speedMessagesInterface)
