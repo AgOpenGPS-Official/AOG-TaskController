@@ -180,6 +180,24 @@ bool Application::initialize()
 	languageInterface.set_country_code("US"); // This is the default, but you can change it if you want
 	tcServer->initialize();
 	tcServer->set_task_totals_active(true); // TODO: make this dynamic based on status in AOG
+	tcFunctionalities = std::make_unique<isobus::ControlFunctionFunctionalities>(tcCF);
+	tcFunctionalities->set_functionality_is_supported(
+	  isobus::ControlFunctionFunctionalities::Functionalities::TaskControllerBasicServer,
+	  1,
+	  true);
+	tcFunctionalities->set_functionality_is_supported(
+	  isobus::ControlFunctionFunctionalities::Functionalities::TaskControllerGeoServer,
+	  1,
+	  false);
+	tcFunctionalities->set_task_controller_geo_server_option_state(
+	  isobus::ControlFunctionFunctionalities::TaskControllerGeoServerOptions::PolygonBasedPrescriptionMapsAreSupported,
+	  false);
+	tcFunctionalities->set_functionality_is_supported(
+	  isobus::ControlFunctionFunctionalities::Functionalities::TaskControllerSectionControlServer,
+	  1,
+	  true);
+	tcFunctionalities->set_task_controller_section_control_server_option_state(1, 64);
+	std::cout << "[" << get_timestamp() << "] [Init] TC announced TC-BAS and TC-SC (1 boom / 64 sections) via PGN 64654" << std::endl;
 
 	// Initialize speed and distance messages
 	if (tecuCF && tecuCF->get_address_valid())
@@ -332,6 +350,8 @@ bool Application::update()
 
 	tcServer->request_measurement_commands();
 	tcServer->update();
+	if (tcFunctionalities)
+		tcFunctionalities->update();
 	if (tecuFunctionalities)
 		tecuFunctionalities->update();
 	if (speedMessagesInterface)
