@@ -23,7 +23,6 @@
 
 #include <iomanip>
 #include <iostream>
-#include <map>
 #include <span>
 #include <thread>
 
@@ -78,7 +77,7 @@ static void enumerate_bus_control_functions(const std::string &context)
 }
 
 // Check for TC address conflicts and log warning if we couldn't claim preferred address
-static void check_tc_address_conflict(std::shared_ptr<isobus::InternalControlFunction> ourTC)
+static void check_tc_address_conflict(const std::shared_ptr<isobus::InternalControlFunction> &ourTC)
 {
 	if (!ourTC || !ourTC->get_address_valid())
 		return;
@@ -169,6 +168,11 @@ bool Application::initialize()
 	}
 
 	isobus::CANNetworkManager::CANNetwork.get_configuration().set_number_of_packets_per_cts_message(255);
+
+	// Start CAN network and allow a brief update window to observe bus CFs
+	isobus::CANNetworkManager::CANNetwork.update();
+	std::this_thread::sleep_for(std::chrono::milliseconds(100));
+	isobus::CANNetworkManager::CANNetwork.update();
 
 	// Enumerate CFs on the bus BEFORE creating our own functions
 	enumerate_bus_control_functions("Before creating internal control functions");
@@ -302,7 +306,7 @@ bool Application::initialize()
 	// Enumerate CFs on the bus AFTER creating our internal functions
 	enumerate_bus_control_functions("After creating internal control functions");
 
-  // Map settings version to TaskControllerVersion enum
+	// Map settings version to TaskControllerVersion enum
 	isobus::TaskControllerServer::TaskControllerVersion tcVersionEnum;
 	switch (settings->get_tc_version())
 	{
@@ -509,8 +513,13 @@ bool Application::update()
 	if (nmea2000MessageInterface)
 		nmea2000MessageInterface->update();
 
-	// Check for TC address conflicts periodically
-	check_tc_address_conflict(tcCF);
+	// Check for TC address conflicts every 15 seconds
+	static std::uint32_t lastConflictCheck = 0;
+	if (isobus::SystemTiming::time_expired_ms(lastConflictCheck, 15000))
+	{
+		check_tc_address_conflict(tcCF);
+		lastConflictCheck = isobus::SystemTiming::get_timestamp_ms();
+	}
 
 	// Send section control heartbeat to AOG every 100ms (PGN 0xF0, source 0x80)
 	// When no clients with sections, send 0 sections as heartbeat so AOG knows TC is alive
