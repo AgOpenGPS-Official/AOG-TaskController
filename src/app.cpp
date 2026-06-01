@@ -13,6 +13,7 @@
 #include "isobus/isobus/can_network_manager.hpp"
 #include "isobus/isobus/isobus_preferred_addresses.hpp"
 #include "isobus/isobus/isobus_standard_data_description_indices.hpp"
+#include "isobus/isobus/isobus_task_controller_server.hpp"
 #include "isobus/utility/system_timing.hpp"
 
 #include "task_controller.hpp"
@@ -174,10 +175,32 @@ bool Application::initialize()
 		}
 	}
 
-	tcServer = std::make_shared<MyTCServer>(tcCF);
+	// Map settings version to TaskControllerVersion enum
+	isobus::TaskControllerServer::TaskControllerVersion tcVersionEnum;
+	switch (settings->get_tc_version())
+	{
+		case 0:
+			tcVersionEnum = isobus::TaskControllerServer::TaskControllerVersion::DraftInternationalStandard;
+			break;
+		case 1:
+			tcVersionEnum = isobus::TaskControllerServer::TaskControllerVersion::FinalDraftInternationalStandardFirstEdition;
+			break;
+		case 2:
+			tcVersionEnum = isobus::TaskControllerServer::TaskControllerVersion::FirstPublishedEdition;
+			break;
+		case 3:
+			tcVersionEnum = isobus::TaskControllerServer::TaskControllerVersion::SecondEditionDraft;
+			break;
+		case 4:
+		default:
+			tcVersionEnum = isobus::TaskControllerServer::TaskControllerVersion::SecondPublishedEdition;
+			break;
+	}
+
+	tcServer = std::make_shared<MyTCServer>(tcCF, tcVersionEnum);
 	auto &languageInterface = tcServer->get_language_command_interface();
-	languageInterface.set_language_code("en"); // This is the default, but you can change it if you want
-	languageInterface.set_country_code("US"); // This is the default, but you can change it if you want
+	languageInterface.set_language_code(settings->get_language_code());
+	languageInterface.set_country_code(settings->get_country_code());
 	tcServer->initialize();
 	tcServer->set_task_totals_active(true); // TODO: make this dynamic based on status in AOG
 	tcFunctionalities = std::make_unique<isobus::ControlFunctionFunctionalities>(tcCF);
