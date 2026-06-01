@@ -37,7 +37,7 @@ static void enumerate_bus_control_functions(const std::string &context)
 	std::cout << "[" << get_timestamp() << "] [Bus CFs] Control Functions on ISOBUS:" << std::endl;
 	std::cout << "[" << get_timestamp() << "] [Bus CFs] --------------------------------------------------" << std::endl;
 
-	// Get all control functions (including offline ones to see address claim history)
+	// Get all control functions; offline CFs are filtered out below.
 	auto allCFs = isobus::CANNetworkManager::CANNetwork.get_control_functions(false);
 
 	std::uint32_t cfCount = 0;
@@ -110,9 +110,9 @@ static void check_tc_address_conflict(const std::shared_ptr<isobus::InternalCont
 		{
 			isobus::NAME otherName = cf->get_NAME();
 
-			// Check if it's actually a TC (function code 10 or 11)
+			// Check if it's actually a TC
 			std::uint8_t funcCode = otherName.get_function_code();
-			if (funcCode == 10 || funcCode == 11) // Task Controller - Mapping Computer or Basic
+			if (funcCode == static_cast<std::uint8_t>(isobus::NAME::Function::TaskController))
 			{
 				// Periodic warning every 30 seconds
 				if (isobus::SystemTiming::time_expired_ms(lastWarnTime, 30000))
@@ -170,9 +170,12 @@ bool Application::initialize()
 	isobus::CANNetworkManager::CANNetwork.get_configuration().set_number_of_packets_per_cts_message(255);
 
 	// Start CAN network and allow a brief update window to observe bus CFs
-	isobus::CANNetworkManager::CANNetwork.update();
-	std::this_thread::sleep_for(std::chrono::milliseconds(100));
-	isobus::CANNetworkManager::CANNetwork.update();
+	auto busDiscoveryWindowStart = isobus::SystemTiming::get_timestamp_ms();
+	while (isobus::SystemTiming::get_time_elapsed_ms(busDiscoveryWindowStart) < 100)
+	{
+		isobus::CANNetworkManager::CANNetwork.update();
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
 
 	// Enumerate CFs on the bus BEFORE creating our own functions
 	enumerate_bus_control_functions("Before creating internal control functions");
