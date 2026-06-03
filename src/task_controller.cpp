@@ -295,8 +295,8 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 
 		auto labelBytes = deviceObject->get_localization_label();
 		std::string label(reinterpret_cast<const char *>(labelBytes.data()), labelBytes.size());
-		// trim at first occurrence of null or ETX (0x03)
-		auto it = std::find_if(label.begin(), label.end(), [](char c) { return c == '\0' || static_cast<unsigned char>(c) == 0x03; });
+		// trim at first non-printable character (control chars, DEL, etc.)
+		auto it = std::find_if(label.begin(), label.end(), [](unsigned char c) { return c < 0x20 || c >= 0x7F; });
 		label.erase(it, label.end());
 
 		auto fileName = std::to_string(partnerCF->get_NAME().get_full_name()) + "\\" + label + ".ddop";
