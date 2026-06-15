@@ -420,6 +420,12 @@ void MyTCServer::on_client_timeout(std::shared_ptr<isobus::ControlFunction> part
 	clients.erase(partner);
 }
 
+void MyTCServer::on_client_version_received(std::shared_ptr<isobus::ControlFunction> clientControlFunction, std::uint8_t version)
+{
+	std::cout << "[" << get_timestamp() << "] [TC Server] Client " << clientControlFunction->get_NAME().get_full_name()
+	          << " reported TC version " << static_cast<int>(version) << std::endl;
+}
+
 void MyTCServer::on_process_data_acknowledge(std::shared_ptr<isobus::ControlFunction> partner,
                                              std::uint16_t dataDescriptionIndex,
                                              std::uint16_t elementNumber,
