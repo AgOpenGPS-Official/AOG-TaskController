@@ -87,6 +87,7 @@ public:
 	bool get_is_enough_memory_available(std::uint32_t) override;
 	void identify_task_controller(std::uint8_t) override;
 	void on_client_timeout(std::shared_ptr<isobus::ControlFunction> partner) override;
+	void on_client_version_received(std::shared_ptr<isobus::ControlFunction> clientControlFunction, std::uint8_t version) override;
 	void on_process_data_acknowledge(std::shared_ptr<isobus::ControlFunction> partner, std::uint16_t dataDescriptionIndex, std::uint16_t elementNumber, std::uint8_t errorCodesFromClient, ProcessDataCommands processDataCommand) override;
 	bool on_value_command(std::shared_ptr<isobus::ControlFunction> partner,
 	                      std::uint16_t dataDescriptionIndex,

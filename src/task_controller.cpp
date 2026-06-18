@@ -17,6 +17,22 @@
 #include <fstream>
 #include <iostream>
 
+// Sanitize a string for use as a filename by replacing invalid characters with underscores
+static std::string sanitize_filename(const std::string &input)
+{
+	std::string result = input;
+	// Characters invalid on Windows (and / is invalid on POSIX too)
+	const std::string invalid_chars = "\\/*:?\"<>|";
+	for (char &c : result)
+	{
+		if (invalid_chars.find(c) != std::string::npos)
+		{
+			c = '_';
+		}
+	}
+	return result;
+}
+
 void ClientState::set_number_of_sections(std::uint8_t number)
 {
 	numberOfSections = number;
@@ -295,11 +311,11 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 
 		auto labelBytes = deviceObject->get_localization_label();
 		std::string label(reinterpret_cast<const char *>(labelBytes.data()), labelBytes.size());
-		// trim at first occurrence of null or ETX (0x03)
-		auto it = std::find_if(label.begin(), label.end(), [](char c) { return c == '\0' || static_cast<unsigned char>(c) == 0x03; });
+		// trim at first non-printable character (control chars, DEL, etc.)
+		auto it = std::find_if(label.begin(), label.end(), [](unsigned char c) { return c < 0x20 || c >= 0x7F; });
 		label.erase(it, label.end());
 
-		auto fileName = std::to_string(partnerCF->get_NAME().get_full_name()) + "\\" + label + ".ddop";
+		auto fileName = std::to_string(partnerCF->get_NAME().get_full_name()) + "/" + sanitize_filename(label) + ".ddop";
 		std::vector<std::uint8_t> binaryPool;
 		if (state.get_pool().generate_binary_object_pool(binaryPool))
 		{
@@ -420,6 +436,12 @@ void MyTCServer::on_client_timeout(std::shared_ptr<isobus::ControlFunction> part
 	clients.erase(partner);
 }
 
+void MyTCServer::on_client_version_received(std::shared_ptr<isobus::ControlFunction> clientControlFunction, std::uint8_t version)
+{
+	std::cout << "[" << get_timestamp() << "] [TC Server] Client " << clientControlFunction->get_NAME().get_full_name()
+	          << " reported TC version " << static_cast<int>(version) << std::endl;
+}
+
 void MyTCServer::on_process_data_acknowledge(std::shared_ptr<isobus::ControlFunction> partner,
                                              std::uint16_t dataDescriptionIndex,
                                              std::uint16_t elementNumber,
@@ -502,7 +524,8 @@ void MyTCServer::request_measurement_commands()
 {
 	for (auto &client : clients)
 	{
-		if (!client.second.are_measurement_commands_sent())
+		// Skip clients with 0 sections (e.g. tractors) - sending measurement commands to a tractor ECU can cause unexpected behavior
+		if (!client.second.are_measurement_commands_sent() && client.second.get_number_of_sections() > 0)
 		{
 			// Find all actual (condensed) work state DDIs and request them to trigger "On Change" and "Time Interval"
 			for (std::uint32_t i = 0; i < client.second.get_pool().size(); i++)
