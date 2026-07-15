@@ -115,6 +115,21 @@ target_link_libraries(
 
 install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION bin COMPONENT applications)
 
+add_custom_command(
+  TARGET ${PROJECT_NAME}
+  POST_BUILD
+  COMMENT "Copying AOG_TC.iop to the binary directory"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_if_different
+    ${CMAKE_CURRENT_LIST_DIR}/src/AOG_TC.iop
+    "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+  VERBATIM)
+
+install(
+  FILES ${CMAKE_CURRENT_LIST_DIR}/src/AOG_TC.iop
+  DESTINATION bin
+  COMPONENT applications)
+
 if(WIN32)
   add_custom_command(
     TARGET ${PROJECT_NAME}

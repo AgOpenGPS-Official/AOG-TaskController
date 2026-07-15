@@ -87,6 +87,23 @@ bool Settings::load()
 		aogHeartbeatEnabled = DEFAULT_AOG_HEARTBEAT_ENABLED; // Key not found, use default
 	}
 
+	if (data.contains("vtEnabled"))
+	{
+		try
+		{
+			vtEnabled = data["vtEnabled"].get<bool>();
+		}
+		catch (const nlohmann::json::exception &e)
+		{
+			std::cout << "[" << get_timestamp() << "] Error parsing 'vtEnabled': " << e.what() << std::endl;
+			vtEnabled = DEFAULT_VT_ENABLED; // Fallback to default
+		}
+	}
+	else
+	{
+		vtEnabled = DEFAULT_VT_ENABLED; // Key not found, use default
+	}
+
 	if (data.contains("tcVersion"))
 	{
 		try
@@ -156,6 +173,7 @@ bool Settings::save() const
 	data["subnet"] = configuredSubnet;
 	data["tecuEnabled"] = tecuEnabled;
 	data["aogHeartbeatEnabled"] = aogHeartbeatEnabled;
+	data["vtEnabled"] = vtEnabled;
 	data["tcVersion"] = tcVersion;
 	data["languageCode"] = languageCode;
 	data["countryCode"] = countryCode;
@@ -198,6 +216,21 @@ bool Settings::is_tecu_enabled() const
 bool Settings::set_tecu_enabled(bool enabled, bool save)
 {
 	tecuEnabled = enabled;
+	if (save)
+	{
+		return this->save();
+	}
+	return true;
+}
+
+bool Settings::is_vt_enabled() const
+{
+	return vtEnabled;
+}
+
+bool Settings::set_vt_enabled(bool enabled, bool save)
+{
+	vtEnabled = enabled;
 	if (save)
 	{
 		return this->save();

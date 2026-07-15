@@ -78,6 +78,20 @@ public:
 	bool set_aog_heartbeat_enabled(bool enabled, bool save = true);
 
 	/**
+	 * @brief Check if the Virtual Terminal client UI is enabled
+	 * @return True if the VT UI is enabled, false otherwise
+	 */
+	bool is_vt_enabled() const;
+
+	/**
+	 * @brief Set the Virtual Terminal client UI enabled state
+	 * @param enabled Whether to enable the VT UI
+	 * @param save Whether or not to save the settings to file
+	 * @return True if the setting was set successfully, false otherwise
+	 */
+	bool set_vt_enabled(bool enabled, bool save = true);
+
+	/**
 	 * @brief Get the configured TC version
 	 * @return The configured version (0-4, default 3)
 	 */
@@ -130,12 +144,14 @@ private:
 	constexpr static std::array<std::uint8_t, 3> DEFAULT_SUBNET = { 192, 168, 5 };
 	constexpr static bool DEFAULT_TECU_ENABLED = true;
 	constexpr static bool DEFAULT_AOG_HEARTBEAT_ENABLED = true;
+	constexpr static bool DEFAULT_VT_ENABLED = true;
 	constexpr static std::uint8_t DEFAULT_TC_VERSION = 3; ///< SecondEditionDraft (V3 default for maximum implement compatibility)
 	static const std::string DEFAULT_LANGUAGE_CODE;
 	static const std::string DEFAULT_COUNTRY_CODE;
 	std::array<std::uint8_t, 3> configuredSubnet = DEFAULT_SUBNET;
 	bool tecuEnabled = DEFAULT_TECU_ENABLED;
 	bool aogHeartbeatEnabled = DEFAULT_AOG_HEARTBEAT_ENABLED;
+	bool vtEnabled = DEFAULT_VT_ENABLED;
 	std::uint8_t tcVersion = DEFAULT_TC_VERSION;
 	std::string languageCode = DEFAULT_LANGUAGE_CODE;
 	std::string countryCode = DEFAULT_COUNTRY_CODE;

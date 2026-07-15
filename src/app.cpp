@@ -15,9 +15,13 @@
 #include "isobus/isobus/isobus_preferred_addresses.hpp"
 #include "isobus/isobus/isobus_standard_data_description_indices.hpp"
 #include "isobus/isobus/isobus_task_controller_server.hpp"
+#include "isobus/utility/iop_file_interface.hpp"
 #include "isobus/utility/system_timing.hpp"
 
 #include "task_controller.hpp"
+
+// gunicsba (github.com/gunicsba/AOG-TaskController @ tramlines); reused with attribution.
+#include "AOG_TC.iop.h"
 
 #include "logging_utils.hpp"
 
@@ -400,10 +404,20 @@ bool Application::initialize()
 
 	std::cout << "[" << get_timestamp() << "] Task controller server started." << std::endl;
 
+	if (settings->is_vt_enabled())
+	{
+		setup_vt_client();
+	}
+	else
+	{
+		std::cout << "[" << get_timestamp() << "] [Info] VT UI disabled in settings, skipping VT client." << std::endl;
+	}
+
 	static std::uint8_t xteSid = 0;
 	static std::uint32_t lastXteTransmit = 0;
 
 	auto packetHandler = [this](std::uint8_t src, std::uint8_t pgn, std::span<std::uint8_t> data) {
+		lastAogPacketMs = isobus::SystemTiming::get_timestamp_ms(); // Track AOG liveness for the VT status page
 		if (src == 0x7F && pgn == 0xE5) // 229 - 64 sections PGN
 		{
 			std::vector<bool> sectionStates;
@@ -457,6 +471,7 @@ bool Application::initialize()
 			}
 			else if (identifier == isobus::DataDescriptionIndex::GuidanceLineDeviation)
 			{
+				lastXteValue = value;
 				std::int32_t xte = value / 1000; // Convert from mm to m
 				static const std::uint8_t xteMode = 0b00000001;
 				xteSid = xteSid % 253 + 1;
@@ -515,6 +530,8 @@ bool Application::update()
 		speedMessagesInterface->update();
 	if (nmea2000MessageInterface)
 		nmea2000MessageInterface->update();
+	if (vtClient)
+		update_vt_client();
 
 	// Check for TC address conflicts every 15 seconds
 	static std::uint32_t lastConflictCheck = 0;
@@ -654,8 +671,121 @@ void Application::send_task_controller_status_message()
 	lastTCStatusTransmit = transmitAttemptTimestamp;
 }
 
+void Application::setup_vt_client()
+{
+	static const std::vector<std::string> poolSearchPaths = {
+		"AOG_TC.iop",
+		"src/AOG_TC.iop",
+		"../src/AOG_TC.iop",
+		"./src/AOG_TC.iop"
+	};
+	for (const auto &path : poolSearchPaths)
+	{
+		vtObjectPool = isobus::IOPFileInterface::read_iop_file(path);
+		if (!vtObjectPool.empty())
+		{
+			std::cout << "[" << get_timestamp() << "] [VT] Loaded object pool from " << path << " (" << vtObjectPool.size() << " bytes)" << std::endl;
+			break;
+		}
+	}
+	if (vtObjectPool.empty())
+	{
+		std::cout << "[" << get_timestamp() << "] [VT] Warning: could not find AOG_TC.iop, VT UI will not be available." << std::endl;
+		return;
+	}
+
+	// Partner filter for any Virtual Terminal server on the bus.
+	const isobus::NAMEFilter filterVirtualTerminal(isobus::NAME::NAMEParameters::FunctionCode, static_cast<std::uint8_t>(isobus::NAME::Function::VirtualTerminal));
+	auto partnerVT = isobus::CANNetworkManager::CANNetwork.create_partnered_control_function(0, { filterVirtualTerminal });
+
+	vtClient = std::make_shared<isobus::VirtualTerminalClient>(partnerVT, tcCF);
+
+	std::string poolHash = isobus::IOPFileInterface::hash_object_pool_to_version(vtObjectPool);
+	vtClient->set_object_pool(0, vtObjectPool.data(), static_cast<std::uint32_t>(vtObjectPool.size()), poolHash);
+
+	vtClient->get_vt_soft_key_event_dispatcher().add_listener([](const isobus::VirtualTerminalClient::VTKeyEvent &event) {
+		std::cout << "[" << get_timestamp() << "] [VT] Soft key event, key=" << static_cast<int>(event.keyNumber) << std::endl;
+	});
+	vtClient->get_vt_button_event_dispatcher().add_listener([](const isobus::VirtualTerminalClient::VTKeyEvent &event) {
+		std::cout << "[" << get_timestamp() << "] [VT] Button event, key=" << static_cast<int>(event.keyNumber) << std::endl;
+	});
+	vtClient->get_vt_change_numeric_value_event_dispatcher().add_listener([](const isobus::VirtualTerminalClient::VTChangeNumericValueEvent &event) {
+		std::cout << "[" << get_timestamp() << "] [VT] Numeric value changed, object=" << event.objectID << " value=" << event.value << std::endl;
+	});
+
+	vtUpdateHelper = std::make_unique<isobus::VirtualTerminalClientUpdateHelper>(vtClient);
+	vtUpdateHelper->add_tracked_numeric_value(VTSpeedValue, 0);
+	vtUpdateHelper->add_tracked_numeric_value(VTXteValue, 0);
+	vtUpdateHelper->initialize();
+
+	std::cout << "[" << get_timestamp() << "] [VT] VT client created; waiting for a VT server on the bus." << std::endl;
+}
+
+void Application::update_vt_client()
+{
+	if (!vtClientStarted)
+	{
+
+		auto vtPartner = vtClient->get_partner_control_function();
+		if (vtPartner && vtPartner->get_address_valid())
+		{
+			vtClient->initialize(false);
+			vtClientStarted = true;
+			std::cout << "[" << get_timestamp() << "] [VT] VT server detected at address " << static_cast<int>(vtPartner->get_address()) << ", VT client initialized (manual update mode)." << std::endl;
+		}
+		return;
+	}
+
+	vtClient->update();
+
+	if (!vtClient->get_is_connected() || !vtUpdateHelper)
+	{
+		return;
+	}
+
+	vtUpdateHelper->set_numeric_value(VTSpeedValue, static_cast<std::uint32_t>(std::abs(lastSpeedValue)));
+	vtUpdateHelper->set_numeric_value(VTXteValue, static_cast<std::uint32_t>(std::abs(lastXteValue)));
+
+	if (!isobus::SystemTiming::time_expired_ms(lastVtStatusUpdateMs, 1000))
+	{
+		return;
+	}
+	lastVtStatusUpdateMs = isobus::SystemTiming::get_timestamp_ms();
+
+	vtClient->send_change_string_value(VTAogIPStr, settings->get_subnet_string());
+	bool aogConnected = (lastAogPacketMs != 0) && !isobus::SystemTiming::time_expired_ms(lastAogPacketMs, 3000);
+
+	// Total sections across all connected TC clients.
+	std::uint32_t totalSections = 0;
+	for (auto &client : tcServer->get_clients())
+	{
+		totalSections += client.second.get_number_of_sections();
+	}
+	vtClient->send_change_string_value(VTSectionsFromAOGS, std::to_string(totalSections));
+
+	static constexpr std::uint8_t PREFERRED_TC_ADDRESS = isobus::preferred_addresses::IndustryGroup2::TaskController_MappingComputer;
+	bool havePreferredAddress = tcCF && tcCF->get_address_valid() && (tcCF->get_address() == PREFERRED_TC_ADDRESS);
+	std::string status = !havePreferredAddress ? "CONFLICT" : (aogConnected ? "OK" : "OFFLINE");
+	vtClient->send_change_string_value(VTWorkingSetStatusStr, status);
+
+	// Count online control functions on the bus (ISOBUS network summary).
+	std::uint32_t cfCount = 0;
+	for (const auto &cf : isobus::CANNetworkManager::CANNetwork.get_control_functions(false))
+	{
+		if (cf && cf->get_address_valid())
+		{
+			cfCount++;
+		}
+	}
+	vtClient->send_change_string_value(VTControlFunctionsStr, std::to_string(cfCount) + " on bus");
+}
+
 void Application::stop()
 {
+	if (vtClient && vtClientStarted)
+	{
+		vtClient->terminate();
+	}
 	tcServer->terminate();
 	isobus::CANHardwareInterface::stop();
 }
