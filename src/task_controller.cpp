@@ -413,7 +413,7 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 		}
 
 		// Scan the DDOP to determine which section control method the device supports
-		bool hasCondensedSetpoint = false;      // Modern: DDI 290+ (paired with DDI 289 for global work state)
+		bool hasCondensedSetpoint = false; // Modern: DDI 290+ (paired with DDI 289 for global work state)
 		bool hasSettableCondensedActual = false; // Old: DDI 161+ settable
 		bool hasSettableActualWorkState = false; // Oldest: DDI 141 per-element settable
 
