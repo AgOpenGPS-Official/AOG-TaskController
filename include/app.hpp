@@ -9,7 +9,9 @@
 #pragma once
 
 #include <boost/asio.hpp>
+#include <map>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "isobus/hardware_integration/can_hardware_plugin.hpp"
@@ -39,6 +41,8 @@ private:
 	void setup_vt_client();
 	void update_vt_client();
 
+	void send_vt_string_if_changed(std::uint16_t objectID, const std::string &value);
+
 	std::shared_ptr<Settings> settings = std::make_shared<Settings>();
 	boost::asio::io_context ioContext = boost::asio::io_context();
 	std::shared_ptr<UdpConnections> udpConnections = std::make_shared<UdpConnections>(settings, ioContext);
@@ -55,11 +59,15 @@ private:
 	std::unique_ptr<isobus::VirtualTerminalClientUpdateHelper> vtUpdateHelper;
 	std::vector<std::uint8_t> vtObjectPool;
 	bool vtClientStarted = false;
+	bool vtConfigSynced = false;
 	std::uint8_t nmea2000SequenceIdentifier = 0;
 	std::uint32_t lastJ1939SpeedTransmit = 0;
 	std::uint32_t lastTCStatusTransmit = 0;
 	std::int32_t lastSpeedValue = 0;
 	std::int32_t lastXteValue = 0;
+	std::uint32_t lastDistanceMm = 0;
 	std::uint32_t lastAogPacketMs = 0;
 	std::uint32_t lastVtStatusUpdateMs = 0;
+	std::uint32_t lastVtSectionUpdateMs = 0;
+	std::map<std::uint16_t, std::string> lastVtStrings;
 };

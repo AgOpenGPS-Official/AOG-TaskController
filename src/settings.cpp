@@ -53,56 +53,23 @@ bool Settings::load()
 		configuredSubnet = DEFAULT_SUBNET; // Key not found, use default
 	}
 
-	if (data.contains("tecuEnabled"))
-	{
+	auto loadBoolean = [&data](const char *key, bool defaultValue) {
 		try
 		{
-			tecuEnabled = data["tecuEnabled"].get<bool>();
+			return data.value(key, defaultValue);
 		}
 		catch (const nlohmann::json::exception &e)
 		{
-			std::cout << "[" << get_timestamp() << "] Error parsing 'tecuEnabled': " << e.what() << std::endl;
-			tecuEnabled = DEFAULT_TECU_ENABLED; // Fallback to default
+			std::cout << "[" << get_timestamp() << "] Error parsing '" << key << "': " << e.what() << std::endl;
+			return defaultValue;
 		}
-	}
-	else
-	{
-		tecuEnabled = DEFAULT_TECU_ENABLED; // Key not found, use default
-	}
-
-	if (data.contains("aogHeartbeatEnabled"))
-	{
-		try
-		{
-			aogHeartbeatEnabled = data["aogHeartbeatEnabled"].get<bool>();
-		}
-		catch (const nlohmann::json::exception &e)
-		{
-			std::cout << "[" << get_timestamp() << "] Error parsing 'aogHeartbeatEnabled': " << e.what() << std::endl;
-			aogHeartbeatEnabled = DEFAULT_AOG_HEARTBEAT_ENABLED; // Fallback to default
-		}
-	}
-	else
-	{
-		aogHeartbeatEnabled = DEFAULT_AOG_HEARTBEAT_ENABLED; // Key not found, use default
-	}
-
-	if (data.contains("vtEnabled"))
-	{
-		try
-		{
-			vtEnabled = data["vtEnabled"].get<bool>();
-		}
-		catch (const nlohmann::json::exception &e)
-		{
-			std::cout << "[" << get_timestamp() << "] Error parsing 'vtEnabled': " << e.what() << std::endl;
-			vtEnabled = DEFAULT_VT_ENABLED; // Fallback to default
-		}
-	}
-	else
-	{
-		vtEnabled = DEFAULT_VT_ENABLED; // Key not found, use default
-	}
+	};
+	tecuEnabled = loadBoolean("tecuEnabled", DEFAULT_TECU_ENABLED);
+	hydliftAuxNEnabled = loadBoolean("hydliftAuxNEnabled", DEFAULT_HYDLIFT_AUX_N_ENABLED);
+	nmeaReadEnabled = loadBoolean("nmeaReadEnabled", DEFAULT_NMEA_READ_ENABLED);
+	nmeaSendEnabled = loadBoolean("nmeaSendEnabled", DEFAULT_NMEA_SEND_ENABLED);
+	aogHeartbeatEnabled = loadBoolean("aogHeartbeatEnabled", DEFAULT_AOG_HEARTBEAT_ENABLED);
+	vtEnabled = loadBoolean("vtEnabled", DEFAULT_VT_ENABLED);
 
 	if (data.contains("tcVersion"))
 	{
@@ -172,6 +139,9 @@ bool Settings::save() const
 	json data;
 	data["subnet"] = configuredSubnet;
 	data["tecuEnabled"] = tecuEnabled;
+	data["hydliftAuxNEnabled"] = hydliftAuxNEnabled;
+	data["nmeaReadEnabled"] = nmeaReadEnabled;
+	data["nmeaSendEnabled"] = nmeaSendEnabled;
 	data["aogHeartbeatEnabled"] = aogHeartbeatEnabled;
 	data["vtEnabled"] = vtEnabled;
 	data["tcVersion"] = tcVersion;
@@ -185,7 +155,7 @@ bool Settings::save() const
 	}
 
 	file << data.dump(4); // Pretty print
-	return true;
+	return file.good();
 }
 
 const std::array<std::uint8_t, 3> &Settings::get_subnet() const
@@ -215,12 +185,49 @@ bool Settings::is_tecu_enabled() const
 
 bool Settings::set_tecu_enabled(bool enabled, bool save)
 {
-	tecuEnabled = enabled;
-	if (save)
+	return set_boolean(tecuEnabled, enabled, save);
+}
+
+bool Settings::is_hydlift_aux_n_enabled() const
+{
+	return hydliftAuxNEnabled;
+}
+
+bool Settings::set_hydlift_aux_n_enabled(bool enabled, bool save)
+{
+	return set_boolean(hydliftAuxNEnabled, enabled, save);
+}
+
+bool Settings::is_nmea_read_enabled() const
+{
+	return nmeaReadEnabled;
+}
+
+bool Settings::set_nmea_read_enabled(bool enabled, bool save)
+{
+	return set_boolean(nmeaReadEnabled, enabled, save);
+}
+
+bool Settings::is_nmea_send_enabled() const
+{
+	return nmeaSendEnabled;
+}
+
+bool Settings::set_nmea_send_enabled(bool enabled, bool save)
+{
+	return set_boolean(nmeaSendEnabled, enabled, save);
+}
+
+bool Settings::set_boolean(bool &setting, bool enabled, bool save)
+{
+	const bool previousValue = setting;
+	setting = enabled;
+	if (!save || this->save())
 	{
-		return this->save();
+		return true;
 	}
-	return true;
+	setting = previousValue;
+	return false;
 }
 
 bool Settings::is_vt_enabled() const

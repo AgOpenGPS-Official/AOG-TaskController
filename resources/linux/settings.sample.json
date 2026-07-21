@@ -1,5 +1,12 @@
 {
     "subnet": [192, 168, 5],
     "tecuEnabled": true,
-    "aogHeartbeatEnabled": true
+    "hydliftAuxNEnabled": false,
+    "nmeaReadEnabled": false,
+    "nmeaSendEnabled": true,
+    "aogHeartbeatEnabled": true,
+    "vtEnabled": true,
+    "tcVersion": 3,
+    "languageCode": "en",
+    "countryCode": "US"
 }

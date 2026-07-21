@@ -63,6 +63,24 @@ public:
 	 */
 	bool set_tecu_enabled(bool enabled, bool save = true);
 
+	/// @brief Check whether Hydlift Aux-N integration is enabled.
+	bool is_hydlift_aux_n_enabled() const;
+
+	/// @brief Enable or disable Hydlift Aux-N integration.
+	bool set_hydlift_aux_n_enabled(bool enabled, bool save = true);
+
+	/// @brief Check whether incoming NMEA messages are enabled.
+	bool is_nmea_read_enabled() const;
+
+	/// @brief Enable or disable incoming NMEA messages.
+	bool set_nmea_read_enabled(bool enabled, bool save = true);
+
+	/// @brief Check whether cyclic NMEA messages are transmitted.
+	bool is_nmea_send_enabled() const;
+
+	/// @brief Enable or disable cyclic NMEA message transmission.
+	bool set_nmea_send_enabled(bool enabled, bool save = true);
+
 	/**
 	 * @brief Check if AOG heartbeat is enabled
 	 * @return True if heartbeat is enabled, false otherwise
@@ -141,8 +159,13 @@ public:
 	static std::string get_filename_path(std::string);
 
 private:
+	bool set_boolean(bool &setting, bool enabled, bool save);
+
 	constexpr static std::array<std::uint8_t, 3> DEFAULT_SUBNET = { 192, 168, 5 };
 	constexpr static bool DEFAULT_TECU_ENABLED = true;
+	constexpr static bool DEFAULT_HYDLIFT_AUX_N_ENABLED = false;
+	constexpr static bool DEFAULT_NMEA_READ_ENABLED = false;
+	constexpr static bool DEFAULT_NMEA_SEND_ENABLED = true;
 	constexpr static bool DEFAULT_AOG_HEARTBEAT_ENABLED = true;
 	constexpr static bool DEFAULT_VT_ENABLED = true;
 	constexpr static std::uint8_t DEFAULT_TC_VERSION = 3; ///< SecondEditionDraft (V3 default for maximum implement compatibility)
@@ -150,6 +173,9 @@ private:
 	static const std::string DEFAULT_COUNTRY_CODE;
 	std::array<std::uint8_t, 3> configuredSubnet = DEFAULT_SUBNET;
 	bool tecuEnabled = DEFAULT_TECU_ENABLED;
+	bool hydliftAuxNEnabled = DEFAULT_HYDLIFT_AUX_N_ENABLED;
+	bool nmeaReadEnabled = DEFAULT_NMEA_READ_ENABLED;
+	bool nmeaSendEnabled = DEFAULT_NMEA_SEND_ENABLED;
 	bool aogHeartbeatEnabled = DEFAULT_AOG_HEARTBEAT_ENABLED;
 	bool vtEnabled = DEFAULT_VT_ENABLED;
 	std::uint8_t tcVersion = DEFAULT_TC_VERSION;

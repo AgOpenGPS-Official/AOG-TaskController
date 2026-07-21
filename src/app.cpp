@@ -15,6 +15,7 @@
 #include "isobus/isobus/isobus_preferred_addresses.hpp"
 #include "isobus/isobus/isobus_standard_data_description_indices.hpp"
 #include "isobus/isobus/isobus_task_controller_server.hpp"
+#include "isobus/isobus/isobus_device_descriptor_object_pool_helpers.hpp"
 #include "isobus/utility/iop_file_interface.hpp"
 #include "isobus/utility/system_timing.hpp"
 
@@ -25,12 +26,21 @@
 
 #include "logging_utils.hpp"
 
+#include <algorithm>
 #include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <span>
 #include <thread>
 
 using boost::asio::ip::udp;
+
+static std::string format_hex_address(std::uint8_t address)
+{
+	std::ostringstream value;
+	value << "0x" << std::hex << std::uppercase << std::setw(2) << std::setfill('0') << static_cast<int>(address);
+	return value.str();
+}
 
 // Enumerate and log all Control Functions on the bus
 static void enumerate_bus_control_functions(const std::string &context)
@@ -385,9 +395,8 @@ bool Application::initialize()
 		std::cout << "[" << get_timestamp() << "] [Init] Speed Messages Interface created and initialized." << std::endl;
 
 		std::cout << "[" << get_timestamp() << "] [Init] Creating NMEA2000 Message Interface on TECU..." << std::endl;
-		nmea2000MessageInterface = std::make_unique<isobus::NMEA2000MessageInterface>(tecuCF, false, false, false, false, false, false, false);
+		nmea2000MessageInterface = std::make_unique<isobus::NMEA2000MessageInterface>(tecuCF, settings->is_nmea_send_enabled(), false, false, false, false, false, false);
 		nmea2000MessageInterface->initialize();
-		nmea2000MessageInterface->set_enable_sending_cog_sog_cyclically(true); // TODO: make configurable whether to send these messages
 		std::cout << "[" << get_timestamp() << "] [Init] NMEA2000 Message Interface created and initialized." << std::endl;
 	}
 	else
@@ -455,10 +464,6 @@ bool Application::initialize()
 					speedMessagesInterface->groundBasedSpeedTransmitData.set_machine_speed(speed);
 					speedMessagesInterface->wheelBasedSpeedTransmitData.set_machine_speed(speed);
 					speedMessagesInterface->machineSelectedSpeedTransmitData.set_machine_speed(speed);
-
-					speedMessagesInterface->groundBasedSpeedTransmitData.set_machine_distance(0); // TODO: Implement distance
-					speedMessagesInterface->wheelBasedSpeedTransmitData.set_machine_distance(0); // TODO: Implement distance
-					speedMessagesInterface->machineSelectedSpeedTransmitData.set_machine_distance(0); // TODO: Implement distance
 				}
 				if (nmea2000MessageInterface)
 				{
@@ -498,10 +503,10 @@ bool Application::initialize()
 			}
 			else if (static_cast<std::uint16_t>(identifier) == 597 /*isobus::DataDescriptionIndex::TotalDistance*/ && speedMessagesInterface)
 			{
-				auto distance = static_cast<std::uint32_t>(value);
-				speedMessagesInterface->groundBasedSpeedTransmitData.set_machine_distance(distance);
-				speedMessagesInterface->wheelBasedSpeedTransmitData.set_machine_distance(distance);
-				speedMessagesInterface->machineSelectedSpeedTransmitData.set_machine_distance(distance);
+				lastDistanceMm = (value < 0) ? 0 : static_cast<std::uint32_t>(value);
+				speedMessagesInterface->groundBasedSpeedTransmitData.set_machine_distance(lastDistanceMm);
+				speedMessagesInterface->wheelBasedSpeedTransmitData.set_machine_distance(lastDistanceMm);
+				speedMessagesInterface->machineSelectedSpeedTransmitData.set_machine_distance(lastDistanceMm);
 			}
 		}
 	};
@@ -703,22 +708,120 @@ void Application::setup_vt_client()
 	std::string poolHash = isobus::IOPFileInterface::hash_object_pool_to_version(vtObjectPool);
 	vtClient->set_object_pool(0, vtObjectPool.data(), static_cast<std::uint32_t>(vtObjectPool.size()), poolHash);
 
-	vtClient->get_vt_soft_key_event_dispatcher().add_listener([](const isobus::VirtualTerminalClient::VTKeyEvent &event) {
-		std::cout << "[" << get_timestamp() << "] [VT] Soft key event, key=" << static_cast<int>(event.keyNumber) << std::endl;
+	vtClient->get_vt_soft_key_event_dispatcher().add_listener([this](const isobus::VirtualTerminalClient::VTKeyEvent &event) {
+		if (event.keyEvent != isobus::VirtualTerminalClient::KeyActivationCode::ButtonPressedOrLatched)
+		{
+			return;
+		}
+
+		std::uint16_t targetMask = 0xFFFF;
+		switch (event.objectID)
+		{
+			case NavStatus:
+				targetMask = DataMask_1000;
+				break;
+			case NavNetwork:
+				targetMask = DataMask_Network;
+				break;
+			case NavImplement:
+				targetMask = DataMask_Implement;
+				break;
+			case NavDiagnostics:
+				targetMask = DataMask_Diagnostics;
+				break;
+			case NavConfig:
+				targetMask = DataMask_Config;
+				break;
+			default:
+				break;
+		}
+
+		if (targetMask != 0xFFFF)
+		{
+			vtClient->send_change_active_mask(WorkingSet_0, targetMask);
+			std::cout << "[" << get_timestamp() << "] [VT] Navigating to mask " << targetMask << std::endl;
+		}
 	});
 	vtClient->get_vt_button_event_dispatcher().add_listener([](const isobus::VirtualTerminalClient::VTKeyEvent &event) {
 		std::cout << "[" << get_timestamp() << "] [VT] Button event, key=" << static_cast<int>(event.keyNumber) << std::endl;
 	});
-	vtClient->get_vt_change_numeric_value_event_dispatcher().add_listener([](const isobus::VirtualTerminalClient::VTChangeNumericValueEvent &event) {
-		std::cout << "[" << get_timestamp() << "] [VT] Numeric value changed, object=" << event.objectID << " value=" << event.value << std::endl;
-	});
-
 	vtUpdateHelper = std::make_unique<isobus::VirtualTerminalClientUpdateHelper>(vtClient);
 	vtUpdateHelper->add_tracked_numeric_value(VTSpeedValue, 0);
 	vtUpdateHelper->add_tracked_numeric_value(VTXteValue, 0);
+	vtUpdateHelper->add_tracked_numeric_value(ConfigHydliftAuxN, settings->is_hydlift_aux_n_enabled());
+	vtUpdateHelper->add_tracked_numeric_value(ConfigNmeaRead, settings->is_nmea_read_enabled());
+	vtUpdateHelper->add_tracked_numeric_value(ConfigNmeaSend, settings->is_nmea_send_enabled());
+	vtUpdateHelper->add_tracked_numeric_value(ConfigTecuEnabled, settings->is_tecu_enabled());
+
+	vtClient->get_vt_change_numeric_value_event_dispatcher().add_listener([this](const isobus::VirtualTerminalClient::VTChangeNumericValueEvent &event) {
+		const std::uint16_t objectID = event.objectID;
+		const std::uint32_t value = event.value;
+		const bool enabled = (value != 0);
+		bool handled = true;
+		bool saved = true;
+		switch (objectID)
+		{
+			case ConfigHydliftAuxN:
+				saved = settings->set_hydlift_aux_n_enabled(enabled);
+				break;
+			case ConfigNmeaRead:
+				saved = settings->set_nmea_read_enabled(enabled);
+				break;
+			case ConfigNmeaSend:
+				saved = settings->set_nmea_send_enabled(enabled);
+				if (saved && nmea2000MessageInterface)
+				{
+					nmea2000MessageInterface->set_enable_sending_cog_sog_cyclically(enabled);
+				}
+				break;
+			case ConfigTecuEnabled:
+				saved = settings->set_tecu_enabled(enabled);
+				break;
+			default:
+				handled = false;
+				break;
+		}
+		if (handled)
+		{
+			std::cout << "[" << get_timestamp() << "] [VT] " << (saved ? "Saved" : "Failed to save") << " configuration object " << objectID << " = " << enabled << std::endl;
+		}
+		if (handled && !saved)
+		{
+			bool storedValue = false;
+			switch (objectID)
+			{
+				case ConfigHydliftAuxN:
+					storedValue = settings->is_hydlift_aux_n_enabled();
+					break;
+				case ConfigNmeaRead:
+					storedValue = settings->is_nmea_read_enabled();
+					break;
+				case ConfigNmeaSend:
+					storedValue = settings->is_nmea_send_enabled();
+					break;
+				case ConfigTecuEnabled:
+					storedValue = settings->is_tecu_enabled();
+					break;
+				default:
+					break;
+			}
+			vtClient->send_change_numeric_value(objectID, storedValue ? 1U : 0U);
+		}
+	});
 	vtUpdateHelper->initialize();
 
 	std::cout << "[" << get_timestamp() << "] [VT] VT client created; waiting for a VT server on the bus." << std::endl;
+}
+
+void Application::send_vt_string_if_changed(std::uint16_t objectID, const std::string &value)
+{
+	auto cached = lastVtStrings.find(objectID);
+	if (cached != lastVtStrings.end() && cached->second == value)
+	{
+		return;
+	}
+	vtClient->send_change_string_value(objectID, value);
+	lastVtStrings[objectID] = value;
 }
 
 void Application::update_vt_client()
@@ -740,11 +843,52 @@ void Application::update_vt_client()
 
 	if (!vtClient->get_is_connected() || !vtUpdateHelper)
 	{
+		lastVtStrings.clear();
+		vtConfigSynced = false;
 		return;
 	}
 
-	vtUpdateHelper->set_numeric_value(VTSpeedValue, static_cast<std::uint32_t>(std::abs(lastSpeedValue)));
-	vtUpdateHelper->set_numeric_value(VTXteValue, static_cast<std::uint32_t>(std::abs(lastXteValue)));
+	if (!vtConfigSynced)
+	{
+		vtClient->send_change_numeric_value(ConfigHydliftAuxN, settings->is_hydlift_aux_n_enabled());
+		vtClient->send_change_numeric_value(ConfigNmeaRead, settings->is_nmea_read_enabled());
+		vtClient->send_change_numeric_value(ConfigNmeaSend, settings->is_nmea_send_enabled());
+		vtClient->send_change_numeric_value(ConfigTecuEnabled, settings->is_tecu_enabled());
+		vtConfigSynced = true;
+	}
+
+	const bool aogConnected = (lastAogPacketMs != 0) && !isobus::SystemTiming::time_expired_ms(lastAogPacketMs, 3000);
+	vtUpdateHelper->set_numeric_value(VTSpeedValue, aogConnected ? static_cast<std::uint32_t>(std::abs(lastSpeedValue)) : 0U);
+
+	vtUpdateHelper->set_numeric_value(VTXteValue, aogConnected ? (static_cast<std::uint32_t>(lastXteValue) ^ 0x80000000U) : 0x80000000U);
+	vtUpdateHelper->set_numeric_value(ConfigHydliftAuxN, settings->is_hydlift_aux_n_enabled());
+	vtUpdateHelper->set_numeric_value(ConfigNmeaRead, settings->is_nmea_read_enabled());
+	vtUpdateHelper->set_numeric_value(ConfigNmeaSend, settings->is_nmea_send_enabled());
+	vtUpdateHelper->set_numeric_value(ConfigTecuEnabled, settings->is_tecu_enabled());
+
+	if (isobus::SystemTiming::time_expired_ms(lastVtSectionUpdateMs, 100))
+	{
+		std::string sectionMap = "No sections connected";
+		if (!tcServer->get_clients().empty())
+		{
+			auto &state = tcServer->get_clients().begin()->second;
+			const auto sectionCount = std::min<std::uint8_t>(state.get_number_of_sections(), 64);
+			if (sectionCount > 0)
+			{
+				sectionMap.clear();
+				for (std::uint8_t section = 0; section < sectionCount; ++section)
+				{
+					if (section != 0)
+					{
+						sectionMap.push_back((section % 16) == 0 ? '\n' : ' ');
+					}
+					sectionMap.push_back(state.get_section_actual_state(section) == SectionState::ON ? '1' : '0');
+				}
+			}
+		}
+		send_vt_string_if_changed(ImplementSectionMap, sectionMap);
+		lastVtSectionUpdateMs = isobus::SystemTiming::get_timestamp_ms();
+	}
 
 	if (!isobus::SystemTiming::time_expired_ms(lastVtStatusUpdateMs, 1000))
 	{
@@ -752,32 +896,222 @@ void Application::update_vt_client()
 	}
 	lastVtStatusUpdateMs = isobus::SystemTiming::get_timestamp_ms();
 
-	vtClient->send_change_string_value(VTAogIPStr, settings->get_subnet_string());
-	bool aogConnected = (lastAogPacketMs != 0) && !isobus::SystemTiming::time_expired_ms(lastAogPacketMs, 3000);
+	send_vt_string_if_changed(VTAogIPStr, settings->get_subnet_string());
+	const std::string packetAge = (lastAogPacketMs == 0) ? "never" : (std::to_string(isobus::SystemTiming::get_time_elapsed_ms(lastAogPacketMs) / 1000) + " s");
+	const bool taskRunning = tcServer->get_task_totals_active();
+	auto &clients = tcServer->get_clients();
 
-	// Total sections across all connected TC clients.
 	std::uint32_t totalSections = 0;
-	for (auto &client : tcServer->get_clients())
+	for (const auto &client : clients)
 	{
 		totalSections += client.second.get_number_of_sections();
 	}
-	vtClient->send_change_string_value(VTSectionsFromAOGS, std::to_string(totalSections));
+
+	std::string implementName = "No implement";
+	std::string sectionControl = "DISABLED";
+	std::string workingWidth = "n/a";
+	std::string boomOffset = "n/a";
+	std::uint8_t implementSections = 0;
+	if (!clients.empty())
+	{
+		auto &state = clients.begin()->second;
+		auto &pool = state.get_pool();
+		if (auto deviceObject = pool.get_object_by_index(0))
+		{
+			implementName = deviceObject->get_designator();
+		}
+		sectionControl = state.is_section_control_enabled() ? "ENABLED" : "DISABLED";
+		implementSections = state.get_number_of_sections();
+
+		std::int32_t totalWidthMillimetres = 0;
+		const auto geometry = isobus::DeviceDescriptorObjectPoolHelper::get_implement_geometry(pool);
+		if (!geometry.booms.empty())
+		{
+			const auto &boom = geometry.booms.front();
+			if (boom.xOffset_mm || boom.yOffset_mm)
+			{
+				std::ostringstream offsetText;
+				offsetText << std::fixed << std::setprecision(2);
+				if (boom.xOffset_mm)
+				{
+					offsetText << "X:" << std::showpos
+					           << (static_cast<double>(boom.xOffset_mm.get()) / 1000.0)
+					           << std::noshowpos;
+				}
+				else
+				{
+					offsetText << "X:n/a";
+				}
+				offsetText << " ";
+				if (boom.yOffset_mm)
+				{
+					offsetText << "Y:" << std::showpos
+					           << (static_cast<double>(boom.yOffset_mm.get()) / 1000.0)
+					           << std::noshowpos;
+				}
+				else
+				{
+					offsetText << "Y:n/a";
+				}
+				boomOffset = offsetText.str();
+			}
+		}
+		for (const auto &boom : geometry.booms)
+		{
+			for (const auto &section : boom.sections)
+			{
+				if (section.width_mm)
+				{
+					totalWidthMillimetres += section.width_mm.get();
+				}
+			}
+			for (const auto &subBoom : boom.subBooms)
+			{
+				if (subBoom.sections.empty() && subBoom.width_mm)
+				{
+					totalWidthMillimetres += subBoom.width_mm.get();
+				}
+				for (const auto &section : subBoom.sections)
+				{
+					if (section.width_mm)
+					{
+						totalWidthMillimetres += section.width_mm.get();
+					}
+				}
+			}
+		}
+		if (totalWidthMillimetres > 0)
+		{
+			std::ostringstream widthText;
+			widthText << std::fixed << std::setprecision(2) << (static_cast<double>(totalWidthMillimetres) / 1000.0);
+			workingWidth = widthText.str();
+		}
+	}
+	const std::string implementDisplayName = implementName.substr(0, 16);
+	const std::string activeDDOP = clients.empty() ? "none" : implementDisplayName;
+	if (boomOffset.size() > 16)
+	{
+		boomOffset.resize(16);
+	}
 
 	static constexpr std::uint8_t PREFERRED_TC_ADDRESS = isobus::preferred_addresses::IndustryGroup2::TaskController_MappingComputer;
 	bool havePreferredAddress = tcCF && tcCF->get_address_valid() && (tcCF->get_address() == PREFERRED_TC_ADDRESS);
-	std::string status = !havePreferredAddress ? "CONFLICT" : (aogConnected ? "OK" : "OFFLINE");
-	vtClient->send_change_string_value(VTWorkingSetStatusStr, status);
+	std::string status = !havePreferredAddress ? "ADDR!" : (aogConnected ? "OK" : "OFF");
+	send_vt_string_if_changed(VTWorkingSetStatusStr, status);
 
 	// Count online control functions on the bus (ISOBUS network summary).
+	const auto controlFunctions = isobus::CANNetworkManager::CANNetwork.get_control_functions(false);
 	std::uint32_t cfCount = 0;
-	for (const auto &cf : isobus::CANNetworkManager::CANNetwork.get_control_functions(false))
+	for (const auto &cf : controlFunctions)
 	{
 		if (cf && cf->get_address_valid())
 		{
 			cfCount++;
 		}
 	}
-	vtClient->send_change_string_value(VTControlFunctionsStr, std::to_string(cfCount) + " on bus");
+
+	std::ostringstream mainImplementStatus;
+	mainImplementStatus << "Name             " << implementDisplayName << '\n'
+	                    << "Sections         " << totalSections << '\n'
+	                    << "Section control  " << sectionControl;
+	send_vt_string_if_changed(VTSectionsFromAOGS, mainImplementStatus.str());
+
+	std::ostringstream distanceText;
+	if (lastDistanceMm < 1000000U)
+	{
+		distanceText << std::fixed << std::setprecision(1) << (static_cast<double>(lastDistanceMm) / 1000.0) << " m";
+	}
+	else
+	{
+		distanceText << std::fixed << std::setprecision(2) << (static_cast<double>(lastDistanceMm) / 1000000.0) << " km";
+	}
+
+	std::ostringstream mainSystemStatus;
+	mainSystemStatus << "Control funcs    " << cfCount << '\n'
+	                 << "Task state       " << (taskRunning ? "RUNNING" : "STOPPED") << '\n'
+	                 << "Direction        " << (!aogConnected ? "--" : (lastSpeedValue < 0 ? "REV" : "FWD")) << '\n'
+	                 << "Distance         " << distanceText.str() << '\n'
+	                 << "AOG packet age   " << packetAge;
+	send_vt_string_if_changed(VTControlFunctionsStr, mainSystemStatus.str());
+	send_vt_string_if_changed(ConfigHydliftLabel, "Hydlift AUX-N: N/A");
+	send_vt_string_if_changed(ConfigNmeaReadLabel, "NMEA Read: N/A");
+	send_vt_string_if_changed(
+	  ConfigNmeaSendLabel,
+	  std::string("NMEA Send: ") + (settings->is_nmea_send_enabled() ? "ON" : "OFF"));
+	send_vt_string_if_changed(
+	  ConfigTecuLabel,
+	  std::string("TECU: ") + (settings->is_tecu_enabled() ? "ON" : "OFF") + " (restart req)");
+
+	std::ostringstream networkRows;
+	std::uint8_t displayedCFs = 0;
+	for (const auto &cf : controlFunctions)
+	{
+		if (displayedCFs >= 7)
+		{
+			break;
+		}
+		if (!cf || !cf->get_address_valid())
+		{
+			continue;
+		}
+
+		std::uint8_t sectionCount = 0;
+		auto client = clients.find(cf);
+		if (client != clients.end())
+		{
+			sectionCount = client->second.get_number_of_sections();
+		}
+
+		const auto name = cf->get_NAME();
+		if (displayedCFs != 0)
+		{
+			networkRows << '\n';
+		}
+		networkRows << std::dec << std::nouppercase << std::setfill(' ') << std::left
+		            << std::setw(6) << format_hex_address(cf->get_address())
+		            << std::setw(10) << static_cast<int>(name.get_function_code())
+		            << std::setw(6) << name.get_manufacturer_code()
+		            << std::setw(9) << name.get_identity_number()
+		            << static_cast<int>(sectionCount);
+		displayedCFs++;
+	}
+	if (displayedCFs == 0)
+	{
+		networkRows << "No control functions online";
+	}
+	send_vt_string_if_changed(NetworkConnectedValue, std::to_string(cfCount));
+	send_vt_string_if_changed(NetworkRows, networkRows.str());
+
+	// Implement page: show the first active task-controller client and its section state.
+	send_vt_string_if_changed(ImplementActiveDDOP, implementDisplayName);
+	send_vt_string_if_changed(ImplementSectionControl, sectionControl);
+	send_vt_string_if_changed(ImplementWorkingWidth, workingWidth);
+	send_vt_string_if_changed(ImplementBoomOffset, boomOffset);
+	send_vt_string_if_changed(ImplementSectionCount, std::to_string(implementSections));
+
+	// Diagnostics page: compact state block plus one actionable alarm line.
+	const std::string tcAddress = (tcCF && tcCF->get_address_valid()) ? format_hex_address(tcCF->get_address()) : "not claimed";
+	send_vt_string_if_changed(DiagnosticsValues, aogConnected ? "ONLINE" : "OFFLINE");
+	send_vt_string_if_changed(DiagnosticsLastPacket, packetAge);
+	send_vt_string_if_changed(DiagnosticsTcAddress, tcAddress);
+	send_vt_string_if_changed(DiagnosticsTaskState, taskRunning ? "RUNNING" : "STOPPED");
+	send_vt_string_if_changed(DiagnosticsActiveDDOP, activeDDOP);
+	send_vt_string_if_changed(DiagnosticsTcClients, std::to_string(clients.size()));
+
+	std::string alarm = "No active alarms";
+	if (!havePreferredAddress)
+	{
+		alarm = (tcCF && tcCF->get_address_valid()) ? "TC address conflict" : "TC address not claimed";
+	}
+	else if (!aogConnected)
+	{
+		alarm = "AOG heartbeat missing";
+	}
+	else if (clients.empty())
+	{
+		alarm = "Waiting for implement";
+	}
+	send_vt_string_if_changed(DiagnosticsAlarmValue, alarm);
 }
 
 void Application::stop()

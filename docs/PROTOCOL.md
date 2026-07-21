@@ -117,7 +117,7 @@ Wraps a single ISO 11783 DDI/value pair. The TC currently dispatches on these DD
 | DDI (decimal) | Name | TC behavior |
 |---|---|---|
 | `156` | Actual speed (mm/s) | Stored. If TECU enabled, broadcast as Ground/Wheel/Machine-selected speed (PGN 65256) + NMEA2000 SOG. Drives forward/reverse direction. Also produces J1939 PGN 65256 every 100 ms. |
-| `597` | Total distance (mm) | Stored. If TECU enabled, populated into Speed Messages distance fields. |
+| `597` | Total distance (mm) | Stored and displayed on the VT Status page. If TECU is enabled, also populated into Speed Messages distance fields. |
 | Guidance line deviation | XTE (mm) | Converted to metres. Broadcast as NMEA2000 XTE (PGN 0x1F903) at 1 Hz. |
 
 Unknown DDIs are silently ignored (PGN 0xF2 is the generic process-data channel — the TC will gain more DDIs over time).
