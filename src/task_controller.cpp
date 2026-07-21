@@ -71,7 +71,19 @@ void ClientState::set_element_number_for_section(std::uint8_t section, std::uint
 	if (section < numberOfSections && section < sectionToElementNumber.size())
 	{
 		sectionToElementNumber[section] = elementNumber;
+		elementToSection[elementNumber] = section;
 	}
+}
+
+bool ClientState::try_get_section_for_element(std::uint16_t elementNumber, std::uint8_t &section) const
+{
+	auto it = elementToSection.find(elementNumber);
+	if (it != elementToSection.end())
+	{
+		section = it->second;
+		return true;
+	}
+	return false;
 }
 
 std::uint8_t ClientState::get_number_of_sections() const
@@ -143,6 +155,26 @@ bool ClientState::is_section_control_enabled() const
 void ClientState::set_section_control_enabled(bool state)
 {
 	isSectionControlEnabled = state;
+}
+
+bool ClientState::uses_per_element_control() const
+{
+	return usesPerElementControl;
+}
+
+void ClientState::set_uses_per_element_control(bool state)
+{
+	usesPerElementControl = state;
+}
+
+std::uint16_t ClientState::get_per_element_setpoint_ddi() const
+{
+	return perElementSetpointDDI;
+}
+
+void ClientState::set_per_element_setpoint_ddi(std::uint16_t ddi)
+{
+	perElementSetpointDDI = ddi;
 }
 
 isobus::DeviceDescriptorObjectPool &ClientState::get_pool()
@@ -339,6 +371,9 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 		auto implement = isobus::DeviceDescriptorObjectPoolHelper::get_implement_geometry(state.get_pool());
 		std::uint8_t numberOfSections = 0;
 
+		// Build a flat list of section element numbers in the same order as the geometry enumeration
+		std::vector<std::uint16_t> sectionElementNumbers;
+
 		std::cout << "Implement geometry: " << std::endl;
 		std::cout << "Number of booms=" << implement.booms.size() << std::endl;
 		for (const auto &boom : implement.booms)
@@ -350,6 +385,7 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 				for (const auto &section : subBoom.sections)
 				{
 					numberOfSections++;
+					sectionElementNumbers.push_back(section.elementNumber);
 					std::cout << "Section: id=" << static_cast<int>(section.elementNumber) << std::endl;
 					std::cout << "X Offset: " << section.xOffset_mm.get() << std::endl;
 					std::cout << "Y Offset: " << section.yOffset_mm.get() << std::endl;
@@ -360,6 +396,7 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 			for (const auto &section : boom.sections)
 			{
 				numberOfSections++;
+				sectionElementNumbers.push_back(section.elementNumber);
 				std::cout << "Section: id=" << static_cast<int>(section.elementNumber) << std::endl;
 				std::cout << "X Offset: " << section.xOffset_mm.get() << std::endl;
 				std::cout << "Y Offset: " << section.yOffset_mm.get() << std::endl;
@@ -368,6 +405,75 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 			}
 		}
 		state.set_number_of_sections(numberOfSections);
+
+		// Map each section index to its element number from the geometry
+		for (std::uint8_t i = 0; i < numberOfSections && i < sectionElementNumbers.size(); i++)
+		{
+			state.set_element_number_for_section(i, sectionElementNumbers[i]);
+		}
+
+		// Scan the DDOP to determine which section control method the device supports
+		bool hasCondensedSetpoint = false;      // Modern: DDI 290+ (paired with DDI 289 for global work state)
+		bool hasSettableCondensedActual = false; // Old: DDI 161+ settable
+		bool hasSettableActualWorkState = false; // Oldest: DDI 141 per-element settable
+
+		for (std::uint32_t i = 0; i < state.get_pool().size(); i++)
+		{
+			auto object = state.get_pool().get_object_by_index(i);
+			if (object->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceProcessData)
+			{
+				auto processDataObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceProcessDataObject>(object);
+				auto ddi = processDataObject->get_ddi();
+
+				if (ddi >= static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SetpointCondensedWorkState1_16) &&
+				    ddi <= static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SetpointCondensedWorkState241_256))
+				{
+					hasCondensedSetpoint = true;
+				}
+				if (ddi >= static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState1_16) &&
+				    ddi <= static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState241_256) &&
+				    processDataObject->has_property(isobus::task_controller_object::DeviceProcessDataObject::PropertiesBit::Settable))
+				{
+					hasSettableCondensedActual = true;
+				}
+				if (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualWorkState) &&
+				    processDataObject->has_property(isobus::task_controller_object::DeviceProcessDataObject::PropertiesBit::Settable))
+				{
+					hasSettableActualWorkState = true;
+				}
+			}
+		}
+
+		// Announce and configure the section control method (hierarchy: Modern > Old > Oldest)
+		if (hasCondensedSetpoint)
+		{
+			// Modern: condensed setpoint DDI 290+ (always paired with DDI 289 for global work state)
+			std::cout << "[" << get_timestamp() << "] [TC Server] Attempting Section Control via: DDI 290 (SetpointCondensedWorkState) + DDI 289 (SetpointWorkState)"
+			          << " for " << static_cast<int>(numberOfSections) << " sections." << std::endl;
+		}
+		else if (hasSettableCondensedActual)
+		{
+			// Old: settable condensed actual DDI 161+
+			std::cout << "[" << get_timestamp() << "] [TC Server] Attempting Section Control via: DDI 161 (ActualCondensedWorkState, settable)"
+			          << " for " << static_cast<int>(numberOfSections) << " sections." << std::endl;
+		}
+		else if (hasSettableActualWorkState)
+		{
+			// Oldest: per-element settable DDI 141
+			state.set_uses_per_element_control(true);
+			state.set_per_element_setpoint_ddi(static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualWorkState));
+			std::cout << "[" << get_timestamp() << "] [TC Server] Attempting Section Control via: DDI 141 (ActualWorkState, settable per-element)"
+			          << " for " << static_cast<int>(numberOfSections) << " sections." << std::endl;
+			for (std::uint8_t i = 0; i < numberOfSections; i++)
+			{
+				std::cout << "  Section " << static_cast<int>(i) << " -> element " << sectionElementNumbers[i] << std::endl;
+			}
+		}
+		else
+		{
+			std::cout << "[" << get_timestamp() << "] [TC Server] WARNING: No supported section control method detected! "
+			          << "Device has no DDI 290, 161 (settable), or 141 (settable)." << std::endl;
+		}
 	}
 	else
 	{
@@ -496,8 +602,16 @@ bool MyTCServer::on_value_command(std::shared_ptr<isobus::ControlFunction> partn
 
 		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualWorkState):
 		{
-			// Store the work state per element rather than globally
+			// Store the work state per element (used for parent-off checks)
 			clients[partner].set_element_work_state(elementNumber, processDataValue == 1);
+
+			// For legacy per-element devices: propagate to section actual states
+			// so the heartbeat (PGN 0xF0) can report them to AOG
+			std::uint8_t sectionIndex;
+			if (clients[partner].try_get_section_for_element(elementNumber, sectionIndex))
+			{
+				clients[partner].set_section_actual_state(sectionIndex, (processDataValue == 1) ? SectionState::ON : SectionState::OFF);
+			}
 		}
 	}
 
@@ -719,6 +833,7 @@ void MyTCServer::send_section_setpoint_states(std::shared_ptr<isobus::ControlFun
 		{
 			std::cout << "[" << get_timestamp() << "] [TC Server] DDI 289 (SetpointWorkState) not available!" << std::endl;
 		}
+		return; // Modern condensed path complete
 	}
 	else if (clients[client].has_element_number_for_ddi(static_cast<isobus::DataDescriptionIndex>(ddiTargetLegacy)))
 	{
@@ -730,11 +845,46 @@ void MyTCServer::send_section_setpoint_states(std::shared_ptr<isobus::ControlFun
 		{
 			std::cout << "[" << get_timestamp() << "] [TC Server] Legacy DDI " << ddiTargetLegacy << " (ActualCondensedWorkState) is not settable!" << std::endl;
 		}
-		return;
+		return; // Legacy condensed path complete
+	}
+	else if (clients[client].uses_per_element_control())
+	{
+		// Per-element control: send setpoints to each section element individually (DDI 141 settable)
+		std::uint16_t setpointDDI = clients[client].get_per_element_setpoint_ddi();
+		for (std::uint8_t i = 0; i < NUMBER_SECTIONS_PER_CONDENSED_MESSAGE; i++)
+		{
+			std::uint8_t sectionIndex = sectionOffset + i;
+			if (sectionIndex >= clients[client].get_number_of_sections())
+			{
+				break;
+			}
+			std::uint16_t elementNumber = clients[client].get_element_number_for_section(sectionIndex);
+			if (elementNumber != 0)
+			{
+				std::uint8_t state = clients[client].get_section_setpoint_state(sectionIndex);
+				send_set_value(client, setpointDDI, elementNumber, (state == SectionState::ON) ? 1 : 0);
+			}
+		}
+
+		// Also send global work state on the boom/device element if DDI 289 is available
+		bool setpointWorkState = clients[client].is_any_section_setpoint_on();
+		if (clients[client].get_setpoint_work_state() != setpointWorkState)
+		{
+			if (clients[client].has_element_number_for_ddi(isobus::DataDescriptionIndex::SetpointWorkState))
+			{
+				send_set_value(client,
+				               static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SetpointWorkState),
+				               clients[client].get_element_number_for_ddi(isobus::DataDescriptionIndex::SetpointWorkState),
+				               setpointWorkState ? 1 : 0);
+				clients[client].set_setpoint_work_state(setpointWorkState);
+			}
+		}
+		return; // Per-element path complete
 	}
 	else
 	{
-		std::cout << "[" << get_timestamp() << "] [TC Server] Neither condensed nor controllable-actual work state supported Missing DDI 290 and 141!" << std::endl;
+		std::cout << "[" << get_timestamp() << "] [TC Server] No supported method to send section setpoint states! "
+		          << "Device has no DDI 290, 161 (settable), or 141 (settable)." << std::endl;
 	}
 }
 
