@@ -104,7 +104,16 @@ std::uint8_t ClientState::get_section_actual_state(std::uint8_t section) const
 {
 	if (section < numberOfSections)
 	{
-		// Check if the element or any parent is off
+		// For legacy per-element devices, sectionActualStates is updated directly
+		// from DDI 141 in on_value_command, so we can return it without the
+		// expensive parent-traversal check (which has thread-safety concerns
+		// when called from the heartbeat on the main thread).
+		if (usesPerElementControl)
+		{
+			return sectionActualStates[section];
+		}
+
+		// For modern/old devices using condensed DDIs, check parent hierarchy
 		std::uint16_t elementNumber = get_element_number_for_section(section);
 		if (is_element_or_parent_off(elementNumber))
 		{

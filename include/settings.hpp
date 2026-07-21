@@ -129,7 +129,7 @@ public:
 private:
 	constexpr static std::array<std::uint8_t, 3> DEFAULT_SUBNET = { 192, 168, 5 };
 	constexpr static bool DEFAULT_TECU_ENABLED = true;
-	constexpr static bool DEFAULT_AOG_HEARTBEAT_ENABLED = true;
+	constexpr static bool DEFAULT_AOG_HEARTBEAT_ENABLED = false;
 	constexpr static std::uint8_t DEFAULT_TC_VERSION = 3; ///< SecondEditionDraft (V3 default for maximum implement compatibility)
 	static const std::string DEFAULT_LANGUAGE_CODE;
 	static const std::string DEFAULT_COUNTRY_CODE;
