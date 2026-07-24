@@ -55,6 +55,17 @@ void UdpConnections::close()
 	udpConnectionAddressDetection.close();
 }
 
+std::string UdpConnections::get_bound_ip_address() const
+{
+	boost::system::error_code errorCode;
+	const auto endpoint = udpConnection.local_endpoint(errorCode);
+	if (errorCode)
+	{
+		return "not available";
+	}
+	return endpoint.address().to_string();
+}
+
 udp::endpoint UdpConnections::get_local_endpoint() const
 {
 	auto subnet = settings->get_subnet();

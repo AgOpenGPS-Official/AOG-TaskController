@@ -83,6 +83,22 @@ unset(CMAKE_POLICY_VERSION_MINIMUM)
 
 find_package(Threads REQUIRED)
 
+set(AOG_TC_IOP_SOURCE "${CMAKE_CURRENT_LIST_DIR}/resources/AOG_TC.iop")
+set(AOG_TC_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+set(AOG_TC_IOP_HEADER "${AOG_TC_GENERATED_INCLUDE_DIR}/AOG_TC_iop_data.hpp")
+file(MAKE_DIRECTORY "${AOG_TC_GENERATED_INCLUDE_DIR}")
+file(READ "${AOG_TC_IOP_SOURCE}" AOG_TC_IOP_HEX HEX)
+string(REGEX REPLACE "([0-9a-fA-F][0-9a-fA-F])" "0x\\1," AOG_TC_IOP_BYTES
+                     "${AOG_TC_IOP_HEX}")
+file(
+  WRITE "${AOG_TC_IOP_HEADER}"
+  "#pragma once\n\n#include <cstdint>\n\ninline constexpr std::uint8_t AOG_TC_IOP_DATA[] = {${AOG_TC_IOP_BYTES}};\n"
+)
+set_property(
+  DIRECTORY
+  APPEND
+  PROPERTY CMAKE_CONFIGURE_DEPENDS "${AOG_TC_IOP_SOURCE}")
+
 file(GLOB_RECURSE SRC_FILES ${CMAKE_CURRENT_LIST_DIR}/src/*.cpp)
 if(WIN32)
   add_executable(${PROJECT_NAME} ${SRC_FILES} resources/AppIcon.rc)
@@ -96,8 +112,10 @@ if(WIN32)
   set_target_properties(${PROJECT_NAME} PROPERTIES WIN32_EXECUTABLE TRUE)
 endif()
 
-target_include_directories(${PROJECT_NAME}
-                           PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
+target_include_directories(
+  ${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include
+                          ${CMAKE_CURRENT_LIST_DIR}/resources
+                          ${AOG_TC_GENERATED_INCLUDE_DIR})
 
 target_compile_definitions(
   ${PROJECT_NAME} PUBLIC PROJECT_VERSION="${PROJECT_VERSION}"
