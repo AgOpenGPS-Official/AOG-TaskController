@@ -117,7 +117,7 @@ Wraps a single ISO 11783 DDI/value pair. The TC currently dispatches on these DD
 | DDI (decimal) | Name | TC behavior |
 |---|---|---|
 | `156` | Actual speed (mm/s) | Stored. If TECU enabled, broadcast as Ground/Wheel/Machine-selected speed (PGN 65256) + NMEA2000 SOG. Drives forward/reverse direction. Also produces J1939 PGN 65256 every 100 ms. |
-| `597` | Total distance (mm) | Stored. If TECU enabled, populated into Speed Messages distance fields. |
+| `597` | Total distance (mm) | Stored and displayed on the VT Status page. If TECU is enabled, also populated into Speed Messages distance fields. |
 | Guidance line deviation | XTE (mm) | Converted to metres. Broadcast as NMEA2000 XTE (PGN 0x1F903) at 1 Hz. |
 
 Unknown DDIs are silently ignored (PGN 0xF2 is the generic process-data channel — the TC will gain more DDIs over time).
@@ -158,7 +158,12 @@ The TC reads `settings.json` from a per-user config directory:
 {
     "subnet": [192, 168, 5],
     "tecuEnabled": true,
-    "aogHeartbeatEnabled": true
+    "nmeaSendEnabled": true,
+    "aogHeartbeatEnabled": true,
+    "vtEnabled": true,
+    "tcVersion": 3,
+    "languageCode": "en",
+    "countryCode": "US"
 }
 ```
 
@@ -166,9 +171,14 @@ The TC reads `settings.json` from a per-user config directory:
 |---|---|---|---|
 | `subnet` | `int[3]` | `[192, 168, 5]` | First three octets of the LAN AgIO/AgValonia lives on. Used for NIC selection and broadcast destination. |
 | `tecuEnabled` | `bool` | `true` | If `true`, the TC also impersonates a Tractor ECU on the CAN bus (claims address 128, broadcasts Speed Messages/NMEA2000, announces Class 1 BasicTractorECUServer). Set `false` when the tractor already has a TECU. |
+| `nmeaSendEnabled` | `bool` | `true` | Enable cyclic NMEA2000 COG/SOG transmission. Requires `tecuEnabled`; the VT disables this control when no TECU interface exists. |
 | `aogHeartbeatEnabled` | `bool` | `true` | Send `0xF0` heartbeat to AgIO/AgValonia every 100 ms even with no implement. Disable for AOG < v6.8.2 beta 5. |
+| `vtEnabled` | `bool` | `true` | Register the Virtual Terminal client and display the TC UI when a VT is present. |
+| `tcVersion` | `integer` | `3` | Task Controller version code (`0`=DIS, `1`=FDIS.1, `2`=First Edition, `3`=Second Edition Draft, `4`=Second Published Edition). |
+| `languageCode` | `string` | `"en"` | Two-character language code advertised through the ISOBUS language interface. |
+| `countryCode` | `string` | `"US"` | Two-character country code advertised through the ISOBUS language interface. |
 
-Unknown keys are ignored. The file is rewritten by the TC when the subnet is updated by `0xC9`.
+Unknown keys are ignored. Settings updates are written to a temporary file and atomically renamed over `settings.json`; the previous file is preserved if writing fails.
 
 ---
 
@@ -232,6 +242,14 @@ The TC also receives all ISOBUS Process Data (PGN 0xCB00) and Section Control co
 | Max booms | 1 |
 | Max sections | 64 |
 | Supported DDIs | 160 / 161 / 290 (condensed section setpoint and actual states), plus speed/distance/guidance DDIs from the tractor side |
+
+### 5.5 Virtual Terminal UI
+
+The roughly 12 KB VT object pool is embedded in the executable, so deployment does not require a separate `AOG_TC.iop` file. The committed `src/AOG_TC.iop` remains its build-time source of truth, while `src/AOG_TC.iop.h` contains the ISO-Designer-generated object IDs and authored geometry.
+
+The pool was authored for a 480-pixel data mask and an 80-pixel softkey designator. The client asks AgIsoStack to scale both before initialization, and includes that scaling contract in the VT cache version so a terminal cannot reuse a pool cached by an older unscaled build. The UI defines five virtual navigation softkeys; terminals with fewer than five physical softkeys must support paging.
+
+At connection, the TC logs the VT version, screen dimensions, softkey dimensions, and virtual/physical softkey counts. It warns when fewer than five virtual softkeys are available. If a VT address is detected but the client has not connected after 30 seconds, it logs the reported capabilities and recovery guidance. Clear the terminal's stored/cached object pools first when diagnosing an upload failure, because stale pools and full non-volatile pool storage can prevent an otherwise compatible upload.
 
 ---
 
