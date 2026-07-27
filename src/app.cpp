@@ -166,7 +166,34 @@ Application::Application(std::shared_ptr<isobus::CANHardwarePlugin> canDriver) :
 
 bool Application::initialize()
 {
+	bool initialized = false;
 	settings->load();
+
+	if (setup_can_hardware() && setup_control_functions())
+	{
+		setup_task_controller_server();
+		setup_tecu_interfaces();
+
+		std::cout << "[" << get_timestamp() << "] Task controller server started." << std::endl;
+
+		if (settings->is_vt_enabled())
+		{
+			setup_vt_client();
+		}
+		else
+		{
+			std::cout << "[" << get_timestamp() << "] [Info] VT UI disabled in settings, skipping VT client." << std::endl;
+		}
+
+		setup_udp_connections();
+		initialized = true;
+	}
+
+	return initialized;
+}
+
+bool Application::setup_can_hardware()
+{
 	if (nullptr == canDriver)
 	{
 		std::cout << "[" << get_timestamp() << "] Unable to find a CAN driver. Please make sure the selected driver is installed." << std::endl;
@@ -191,6 +218,11 @@ bool Application::initialize()
 		std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
 
+	return true;
+}
+
+bool Application::setup_control_functions()
+{
 	// Enumerate CFs on the bus BEFORE creating our own functions
 	enumerate_bus_control_functions("Before creating internal control functions");
 
@@ -323,6 +355,11 @@ bool Application::initialize()
 	// Enumerate CFs on the bus AFTER creating our internal functions
 	enumerate_bus_control_functions("After creating internal control functions");
 
+	return true;
+}
+
+void Application::setup_task_controller_server()
+{
 	// Map settings version to TaskControllerVersion enum
 	isobus::TaskControllerServer::TaskControllerVersion tcVersionEnum;
 	switch (settings->get_tc_version())
@@ -369,7 +406,10 @@ bool Application::initialize()
 	  true);
 	tcFunctionalities->set_task_controller_section_control_server_option_state(1, 64);
 	std::cout << "[" << get_timestamp() << "] [Init] TC announced TC-BAS and TC-SC (1 boom / 64 sections) via PGN 64654" << std::endl;
+}
 
+void Application::setup_tecu_interfaces()
+{
 	// Initialize speed and distance messages
 	if (tecuCF && tecuCF->get_address_valid())
 	{
@@ -410,18 +450,10 @@ bool Application::initialize()
 			std::cout << "[" << get_timestamp() << "] [Warning] TECU Control Function not available, Speed/NMEA interfaces not created" << std::endl;
 		}
 	}
+}
 
-	std::cout << "[" << get_timestamp() << "] Task controller server started." << std::endl;
-
-	if (settings->is_vt_enabled())
-	{
-		setup_vt_client();
-	}
-	else
-	{
-		std::cout << "[" << get_timestamp() << "] [Info] VT UI disabled in settings, skipping VT client." << std::endl;
-	}
-
+void Application::setup_udp_connections()
+{
 	static std::uint8_t xteSid = 0;
 	static std::uint32_t lastXteTransmit = 0;
 
@@ -529,8 +561,6 @@ bool Application::initialize()
 	udpConnections->open();
 
 	std::cout << "[" << get_timestamp() << "] UDP connections opened." << std::endl;
-
-	return true;
 }
 
 bool Application::update()
@@ -821,62 +851,51 @@ void Application::send_vt_string_if_changed(std::uint16_t objectID, const std::s
 	lastVtStrings[objectID] = value;
 }
 
-void Application::update_vt_client()
+void Application::try_start_vt_client()
 {
-	if (!vtClientStarted)
+	auto vtPartner = vtClient->get_partner_control_function();
+	if (vtPartner && vtPartner->get_address_valid())
 	{
-		auto vtPartner = vtClient->get_partner_control_function();
-		if (vtPartner && vtPartner->get_address_valid())
-		{
-			vtClient->initialize(false);
-			vtClientStarted = true;
-			vtDisconnectedSinceMs = isobus::SystemTiming::get_timestamp_ms();
-			std::cout << "[" << get_timestamp() << "] [VT] VT server detected at address " << static_cast<int>(vtPartner->get_address()) << ", VT client initialized (manual update mode)." << std::endl;
-		}
-		return;
+		vtClient->initialize(false);
+		vtClientStarted = true;
+		vtDisconnectedSinceMs = isobus::SystemTiming::get_timestamp_ms();
+		std::cout << "[" << get_timestamp() << "] [VT] VT server detected at address " << static_cast<int>(vtPartner->get_address()) << ", VT client initialized (manual update mode)." << std::endl;
 	}
+}
 
-	vtClient->update();
-
-	if (!vtClient->get_is_connected())
+void Application::handle_vt_disconnected()
+{
+	if (vtWasConnected)
 	{
-		if (vtWasConnected)
-		{
-			vtDisconnectedSinceMs = isobus::SystemTiming::get_timestamp_ms();
-			vtConnectionWarningLogged = false;
-			vtCapabilitiesLogged = false;
-		}
-		else if (vtDisconnectedSinceMs == 0)
-		{
-			vtDisconnectedSinceMs = isobus::SystemTiming::get_timestamp_ms();
-		}
-		vtWasConnected = false;
-
-		if ((!vtConnectionWarningLogged) &&
-		    isobus::SystemTiming::time_expired_ms(vtDisconnectedSinceMs, 30000))
-		{
-			std::cout << "[" << get_timestamp() << "] [VT] WARNING: VT address was detected, but the client did not connect within 30 seconds. "
-			          << "Reported VT capabilities: screen=" << vtClient->get_number_x_pixels() << "x" << vtClient->get_number_y_pixels()
-			          << ", softkey=" << static_cast<int>(vtClient->get_softkey_x_axis_pixels()) << "x" << static_cast<int>(vtClient->get_softkey_y_axis_pixels())
-			          << ", virtual softkeys=" << static_cast<int>(vtClient->get_number_virtual_softkeys())
-			          << ", physical softkeys=" << static_cast<int>(vtClient->get_number_physical_softkeys())
-			          << ". The pool requires five navigation softkeys. Check VT paging support and clear the terminal's cached/stored object pool before retrying."
-			          << std::endl;
-			vtConnectionWarningLogged = true;
-		}
-
-		lastVtStrings.clear();
-		vtConfigSynced = false;
-		return;
-	}
-
-	if (!vtWasConnected)
-	{
-		vtWasConnected = true;
-		vtDisconnectedSinceMs = 0;
+		vtDisconnectedSinceMs = isobus::SystemTiming::get_timestamp_ms();
 		vtConnectionWarningLogged = false;
+		vtCapabilitiesLogged = false;
+	}
+	else if (vtDisconnectedSinceMs == 0)
+	{
+		vtDisconnectedSinceMs = isobus::SystemTiming::get_timestamp_ms();
+	}
+	vtWasConnected = false;
+
+	if ((!vtConnectionWarningLogged) &&
+	    isobus::SystemTiming::time_expired_ms(vtDisconnectedSinceMs, 30000))
+	{
+		std::cout << "[" << get_timestamp() << "] [VT] WARNING: VT address was detected, but the client did not connect within 30 seconds. "
+		          << "Reported VT capabilities: screen=" << vtClient->get_number_x_pixels() << "x" << vtClient->get_number_y_pixels()
+		          << ", softkey=" << static_cast<int>(vtClient->get_softkey_x_axis_pixels()) << "x" << static_cast<int>(vtClient->get_softkey_y_axis_pixels())
+		          << ", virtual softkeys=" << static_cast<int>(vtClient->get_number_virtual_softkeys())
+		          << ", physical softkeys=" << static_cast<int>(vtClient->get_number_physical_softkeys())
+		          << ". The pool requires five navigation softkeys. Check VT paging support and clear the terminal's cached/stored object pool before retrying."
+		          << std::endl;
+		vtConnectionWarningLogged = true;
 	}
 
+	lastVtStrings.clear();
+	vtConfigSynced = false;
+}
+
+void Application::log_vt_capabilities_once()
+{
 	if (!vtCapabilitiesLogged)
 	{
 		const auto virtualSoftkeys = vtClient->get_number_virtual_softkeys();
@@ -900,12 +919,10 @@ void Application::update_vt_client()
 		}
 		vtCapabilitiesLogged = true;
 	}
+}
 
-	if (!vtUpdateHelper)
-	{
-		return;
-	}
-
+void Application::sync_vt_config_once()
+{
 	if (!vtConfigSynced)
 	{
 		vtClient->send_enable_disable_object(
@@ -921,14 +938,10 @@ void Application::update_vt_client()
 		vtClient->send_change_numeric_value(ConfigTecuEnabled, settings->is_tecu_enabled());
 		vtConfigSynced = true;
 	}
+}
 
-	const bool aogConnected = (lastAogPacketMs != 0) && !isobus::SystemTiming::time_expired_ms(lastAogPacketMs, 3000);
-	vtUpdateHelper->set_numeric_value(VTSpeedValue, aogConnected ? static_cast<std::uint32_t>(std::abs(lastSpeedValue)) : 0U);
-
-	vtUpdateHelper->set_numeric_value(VTXteValue, aogConnected ? (static_cast<std::uint32_t>(lastXteValue) ^ 0x80000000U) : 0x80000000U);
-	vtUpdateHelper->set_numeric_value(ConfigNmeaSend, settings->is_nmea_send_enabled());
-	vtUpdateHelper->set_numeric_value(ConfigTecuEnabled, settings->is_tecu_enabled());
-
+void Application::update_vt_section_map()
+{
 	if (isobus::SystemTiming::time_expired_ms(lastVtSectionUpdateMs, 100))
 	{
 		std::string sectionMap = "No sections connected";
@@ -952,11 +965,58 @@ void Application::update_vt_client()
 		send_vt_string_if_changed(ImplementSectionMap, sectionMap);
 		lastVtSectionUpdateMs = isobus::SystemTiming::get_timestamp_ms();
 	}
+}
+
+void Application::update_vt_client()
+{
+	if (!vtClientStarted)
+	{
+		try_start_vt_client();
+		return;
+	}
+
+	vtClient->update();
+
+	if (!vtClient->get_is_connected())
+	{
+		handle_vt_disconnected();
+		return;
+	}
+
+	if (!vtWasConnected)
+	{
+		vtWasConnected = true;
+		vtDisconnectedSinceMs = 0;
+		vtConnectionWarningLogged = false;
+	}
+
+	log_vt_capabilities_once();
+
+	if (!vtUpdateHelper)
+	{
+		return;
+	}
+
+	sync_vt_config_once();
+
+	const bool aogConnected = (lastAogPacketMs != 0) && !isobus::SystemTiming::time_expired_ms(lastAogPacketMs, 3000);
+	vtUpdateHelper->set_numeric_value(VTSpeedValue, aogConnected ? static_cast<std::uint32_t>(std::abs(lastSpeedValue)) : 0U);
+
+	vtUpdateHelper->set_numeric_value(VTXteValue, aogConnected ? (static_cast<std::uint32_t>(lastXteValue) ^ 0x80000000U) : 0x80000000U);
+	vtUpdateHelper->set_numeric_value(ConfigNmeaSend, settings->is_nmea_send_enabled());
+	vtUpdateHelper->set_numeric_value(ConfigTecuEnabled, settings->is_tecu_enabled());
+
+	update_vt_section_map();
 
 	if (!isobus::SystemTiming::time_expired_ms(lastVtStatusUpdateMs, 1000))
 	{
 		return;
 	}
+	update_vt_status_strings(aogConnected);
+}
+
+void Application::update_vt_status_strings(bool aogConnected)
+{
 	lastVtStatusUpdateMs = isobus::SystemTiming::get_timestamp_ms();
 
 	send_vt_string_if_changed(VTWorkingSetStatusLabel, "AOG TC IP");

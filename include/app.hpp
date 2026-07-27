@@ -38,8 +38,20 @@ public:
 private:
 	void send_task_controller_status_message();
 
+	bool setup_can_hardware();
+	bool setup_control_functions();
+	void setup_task_controller_server();
+	void setup_tecu_interfaces();
+	void setup_udp_connections();
+
 	void setup_vt_client();
 	void update_vt_client();
+	void try_start_vt_client();
+	void handle_vt_disconnected();
+	void log_vt_capabilities_once();
+	void sync_vt_config_once();
+	void update_vt_section_map();
+	void update_vt_status_strings(bool aogConnected);
 
 	void send_vt_string_if_changed(std::uint16_t objectID, const std::string &value);
 
