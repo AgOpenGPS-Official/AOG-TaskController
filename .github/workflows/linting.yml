@@ -13,8 +13,8 @@ jobs:
           clang-format-version: 16
           # Some files can be excluded from the clang-format style check, like 3rd party driver files,
           # as their licenses may not allow us to modify them, such as if they are LGPL licensed.
-          # The exclude-regex option can be used to exclude these files from the style check:
-          # exclude-regex: ^.*(test1\.h|test2\.h)$
+          # AOG_TC.iop.h is generated/exported by ISO-Designer, so it is not hand-formatted.
+          exclude-regex: ^.*AOG_TC\.iop\.h$
   cmake-format:
     name: cmake-format style
     runs-on: ubuntu-latest

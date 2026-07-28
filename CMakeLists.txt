@@ -113,9 +113,9 @@ if(WIN32)
 endif()
 
 target_include_directories(
-  ${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include
-                          ${CMAKE_CURRENT_LIST_DIR}/resources
-                          ${AOG_TC_GENERATED_INCLUDE_DIR})
+  ${PROJECT_NAME}
+  PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include ${CMAKE_CURRENT_LIST_DIR}/resources
+          ${AOG_TC_GENERATED_INCLUDE_DIR})
 
 target_compile_definitions(
   ${PROJECT_NAME} PUBLIC PROJECT_VERSION="${PROJECT_VERSION}"
