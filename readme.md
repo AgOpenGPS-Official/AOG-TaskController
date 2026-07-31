@@ -46,29 +46,22 @@ The installer will be generated in the `build` directory.
 
 AOG-TaskController reads its configuration from a `settings.json` file located in:
 
-- **Windows:** `%APPDATA%\AOG-Taskcontroller\settings.json`
+- **Windows:** `%APPDATA%\AOG-TaskController\settings.json`
+- **Linux:** `$XDG_CONFIG_HOME/AOG-TaskController/settings.json`, or `~/.config/AOG-TaskController/settings.json`
+- **macOS:** `~/Library/Application Support/AOG-TaskController/settings.json`
 
 ### Available Settings
 
-#### `tecuEnabled`
-- **Type:** Boolean
-- **Default:** `true`
-- **Description:** Enables the internal Tractor ECU (TECU) simulator. When enabled, AOG-TaskController broadcasts TECU speed messages on the ISOBUS.
-- **⚠️ Important:** 
-  - Disable if your tractor already has a TECU to avoid conflicts (two TECUs on the same bus will cause issues)
-  - Enable when your tractor lacks a TECU
-- **TECU Speed Messages Provided (when enabled):**
-  - **Ground-based Speed** (PGN 65256, 0xFEE8) - 100ms interval
-  - **Wheel-based Speed** (PGN 65256, 0xFEE8) - 100ms interval  
-  - **Machine Selected Speed** (PGN 65256, 0xFEE8) - 100ms interval
-  - **Control Function Functionalities** (PGN 64654, 0xFC8E) - Announces TECU Class 1 capability (no control functions)
-  - **NMEA2000 COG/SOG** - Optional navigation data
-
-#### `aogHeartbeatEnabled`
-- **Type:** Boolean  
-- **Default:** `true`
-- **Description:** Enables the heartbeat message sent to AgOpenGPS every 100ms. This allows AOG to detect when the ISOBUS TC is running and display the ISOBUS button status.
-- **⚠️ Important:** If using AgOpenGPS **pre-v6.8.2 beta 5**, set this to `false` to avoid compatibility issues. Newer versions of AOG can properly handle the heartbeat message.
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `subnet` | `int[3]` | `[192, 168, 5]` | LAN prefix used to select the AOG-facing NIC and broadcast address. |
+| `tecuEnabled` | `bool` | `true` | Enables the internal Tractor ECU. Disable it when the tractor already has a TECU. A change made from the VT takes effect after restart. |
+| `nmeaSendEnabled` | `bool` | `true` | Enables cyclic NMEA2000 COG/SOG transmission. Requires `tecuEnabled`. |
+| `aogHeartbeatEnabled` | `bool` | `true` | Sends the 100 ms zero-section heartbeat when no implement is connected. Disable for AgOpenGPS versions before v6.8.2 beta 5. |
+| `vtEnabled` | `bool` | `true` | Enables the ISOBUS Virtual Terminal UI. |
+| `tcVersion` | `integer` | `3` | Task Controller version code, from `0` through `4`; `3` is Second Edition Draft. |
+| `languageCode` | `string` | `"en"` | Two-character language code advertised on ISOBUS. |
+| `countryCode` | `string` | `"US"` | Two-character country code advertised on ISOBUS. |
 
 ### Example `settings.json`
 
@@ -76,9 +69,20 @@ AOG-TaskController reads its configuration from a `settings.json` file located i
 {
   "subnet": [192, 168, 5],
   "tecuEnabled": true,
-  "aogHeartbeatEnabled": true
+  "nmeaSendEnabled": true,
+  "aogHeartbeatEnabled": true,
+  "vtEnabled": true,
+  "tcVersion": 3,
+  "languageCode": "en",
+  "countryCode": "US"
 }
 ```
+
+### Virtual Terminal compatibility
+
+The VT object pool is embedded in the executable and automatically scales from its authored 480-pixel data mask and 80-pixel softkey designator to the connected terminal. It uses five virtual navigation softkeys. A VT with fewer than five physical keys must support softkey paging.
+
+The application logs the detected VT version, screen size, softkey dimensions, and virtual/physical softkey counts. If a detected VT does not connect within 30 seconds, check those values and clear the terminal's stored/cached object pools before retrying.
 
 ## Task Controller Capabilities
 

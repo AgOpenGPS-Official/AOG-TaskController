@@ -17,6 +17,7 @@
 
 #if defined(_WIN32)
 #include <ShlObj_core.h>
+#include <Windows.h>
 #endif
 
 using json = nlohmann::json;
@@ -26,6 +27,7 @@ const std::string Settings::DEFAULT_COUNTRY_CODE = "US";
 
 bool Settings::load()
 {
+	std::scoped_lock lock(settingsMutex);
 	std::ifstream file(get_filename_path("settings.json"));
 	if (!file.is_open())
 	{
@@ -53,39 +55,21 @@ bool Settings::load()
 		configuredSubnet = DEFAULT_SUBNET; // Key not found, use default
 	}
 
-	if (data.contains("tecuEnabled"))
-	{
+	auto loadBoolean = [&data](const char *key, bool defaultValue) {
 		try
 		{
-			tecuEnabled = data["tecuEnabled"].get<bool>();
+			return data.value(key, defaultValue);
 		}
 		catch (const nlohmann::json::exception &e)
 		{
-			std::cout << "[" << get_timestamp() << "] Error parsing 'tecuEnabled': " << e.what() << std::endl;
-			tecuEnabled = DEFAULT_TECU_ENABLED; // Fallback to default
+			std::cout << "[" << get_timestamp() << "] Error parsing '" << key << "': " << e.what() << std::endl;
+			return defaultValue;
 		}
-	}
-	else
-	{
-		tecuEnabled = DEFAULT_TECU_ENABLED; // Key not found, use default
-	}
-
-	if (data.contains("aogHeartbeatEnabled"))
-	{
-		try
-		{
-			aogHeartbeatEnabled = data["aogHeartbeatEnabled"].get<bool>();
-		}
-		catch (const nlohmann::json::exception &e)
-		{
-			std::cout << "[" << get_timestamp() << "] Error parsing 'aogHeartbeatEnabled': " << e.what() << std::endl;
-			aogHeartbeatEnabled = DEFAULT_AOG_HEARTBEAT_ENABLED; // Fallback to default
-		}
-	}
-	else
-	{
-		aogHeartbeatEnabled = DEFAULT_AOG_HEARTBEAT_ENABLED; // Key not found, use default
-	}
+	};
+	tecuEnabled = loadBoolean("tecuEnabled", DEFAULT_TECU_ENABLED);
+	nmeaSendEnabled = loadBoolean("nmeaSendEnabled", DEFAULT_NMEA_SEND_ENABLED);
+	aogHeartbeatEnabled = loadBoolean("aogHeartbeatEnabled", DEFAULT_AOG_HEARTBEAT_ENABLED);
+	vtEnabled = loadBoolean("vtEnabled", DEFAULT_VT_ENABLED);
 
 	if (data.contains("tcVersion"))
 	{
@@ -152,36 +136,77 @@ bool Settings::load()
 
 bool Settings::save() const
 {
+	std::scoped_lock lock(settingsMutex);
 	json data;
 	data["subnet"] = configuredSubnet;
 	data["tecuEnabled"] = tecuEnabled;
+	data["nmeaSendEnabled"] = nmeaSendEnabled;
 	data["aogHeartbeatEnabled"] = aogHeartbeatEnabled;
+	data["vtEnabled"] = vtEnabled;
 	data["tcVersion"] = tcVersion;
 	data["languageCode"] = languageCode;
 	data["countryCode"] = countryCode;
 
-	std::ofstream file(get_filename_path("settings.json"));
+	const std::filesystem::path settingsPath(get_filename_path("settings.json"));
+	std::filesystem::path temporaryPath = settingsPath;
+	temporaryPath += ".tmp";
+
+	std::ofstream file(temporaryPath, std::ios::out | std::ios::trunc);
 	if (!file.is_open())
 	{
 		return false;
 	}
 
 	file << data.dump(4); // Pretty print
+	file.flush();
+	const bool writeSucceeded = file.good();
+	file.close();
+	if (!writeSucceeded || file.fail())
+	{
+		std::error_code cleanupError;
+		std::filesystem::remove(temporaryPath, cleanupError);
+		return false;
+	}
+
+#if defined(_WIN32)
+	if (!MoveFileExW(
+	      temporaryPath.c_str(),
+	      settingsPath.c_str(),
+	      MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+	{
+		std::error_code cleanupError;
+		std::filesystem::remove(temporaryPath, cleanupError);
+		return false;
+	}
+#else
+	std::error_code renameError;
+	std::filesystem::rename(temporaryPath, settingsPath, renameError);
+	if (renameError)
+	{
+		std::error_code cleanupError;
+		std::filesystem::remove(temporaryPath, cleanupError);
+		return false;
+	}
+#endif
+
 	return true;
 }
 
-const std::array<std::uint8_t, 3> &Settings::get_subnet() const
+std::array<std::uint8_t, 3> Settings::get_subnet() const
 {
+	std::scoped_lock lock(settingsMutex);
 	return configuredSubnet;
 }
 
 std::string Settings::get_subnet_string() const
 {
+	std::scoped_lock lock(settingsMutex);
 	return std::to_string(configuredSubnet[0]) + '.' + std::to_string(configuredSubnet[1]) + '.' + std::to_string(configuredSubnet[2]) + ".0";
 }
 
 bool Settings::set_subnet(std::array<std::uint8_t, 3> subnet, bool save)
 {
+	std::scoped_lock lock(settingsMutex);
 	configuredSubnet = subnet;
 	if (save)
 	{
@@ -192,41 +217,70 @@ bool Settings::set_subnet(std::array<std::uint8_t, 3> subnet, bool save)
 
 bool Settings::is_tecu_enabled() const
 {
+	std::scoped_lock lock(settingsMutex);
 	return tecuEnabled;
 }
 
 bool Settings::set_tecu_enabled(bool enabled, bool save)
 {
-	tecuEnabled = enabled;
-	if (save)
+	return set_boolean(tecuEnabled, enabled, save);
+}
+
+bool Settings::is_nmea_send_enabled() const
+{
+	std::scoped_lock lock(settingsMutex);
+	return nmeaSendEnabled;
+}
+
+bool Settings::set_nmea_send_enabled(bool enabled, bool save)
+{
+	return set_boolean(nmeaSendEnabled, enabled, save);
+}
+
+bool Settings::set_boolean(bool &setting, bool enabled, bool save)
+{
+	std::scoped_lock lock(settingsMutex);
+	const bool previousValue = setting;
+	setting = enabled;
+	if (!save || this->save())
 	{
-		return this->save();
+		return true;
 	}
-	return true;
+	setting = previousValue;
+	return false;
+}
+
+bool Settings::is_vt_enabled() const
+{
+	std::scoped_lock lock(settingsMutex);
+	return vtEnabled;
+}
+
+bool Settings::set_vt_enabled(bool enabled, bool save)
+{
+	return set_boolean(vtEnabled, enabled, save);
 }
 
 bool Settings::is_aog_heartbeat_enabled() const
 {
+	std::scoped_lock lock(settingsMutex);
 	return aogHeartbeatEnabled;
 }
 
 bool Settings::set_aog_heartbeat_enabled(bool enabled, bool save)
 {
-	aogHeartbeatEnabled = enabled;
-	if (save)
-	{
-		return this->save();
-	}
-	return true;
+	return set_boolean(aogHeartbeatEnabled, enabled, save);
 }
 
 std::uint8_t Settings::get_tc_version() const
 {
+	std::scoped_lock lock(settingsMutex);
 	return tcVersion;
 }
 
 bool Settings::set_tc_version(std::uint8_t version, bool save)
 {
+	std::scoped_lock lock(settingsMutex);
 	if (version > 4)
 	{
 		std::cout << "[" << get_timestamp() << "] Invalid TC version " << static_cast<int>(version) << ", using default " << static_cast<int>(DEFAULT_TC_VERSION) << std::endl;
@@ -245,11 +299,13 @@ bool Settings::set_tc_version(std::uint8_t version, bool save)
 
 std::string Settings::get_language_code() const
 {
+	std::scoped_lock lock(settingsMutex);
 	return languageCode;
 }
 
 bool Settings::set_language_code(std::string code, bool save)
 {
+	std::scoped_lock lock(settingsMutex);
 	languageCode = code;
 	if (save)
 	{
@@ -260,11 +316,13 @@ bool Settings::set_language_code(std::string code, bool save)
 
 std::string Settings::get_country_code() const
 {
+	std::scoped_lock lock(settingsMutex);
 	return countryCode;
 }
 
 bool Settings::set_country_code(std::string code, bool save)
 {
+	std::scoped_lock lock(settingsMutex);
 	countryCode = code;
 	if (save)
 	{

@@ -16,6 +16,7 @@
 #include <bitset>
 #include <fstream>
 #include <iostream>
+#include <set>
 
 // Sanitize a string for use as a filename by replacing invalid characters with underscores
 static std::string sanitize_filename(const std::string &input)
@@ -183,65 +184,87 @@ bool ClientState::has_element_number_for_ddi(isobus::DataDescriptionIndex ddi) c
 
 bool ClientState::is_element_or_parent_off(std::uint16_t elementNumber) const
 {
-	// Check if this element is off
-	bool elementWorkState;
-	if (try_get_element_work_state(elementNumber, elementWorkState) && !elementWorkState)
-	{
-		return true; // Element is off
-	}
-
-	// Find the parent element(s) by searching through the pool
-	// Use const_cast to access non-const methods on the pool from a const context
+	std::set<std::uint16_t> visitedElements;
 	auto &nonConstPool = const_cast<isobus::DeviceDescriptorObjectPool &>(pool);
-	for (std::uint32_t i = 0; i < nonConstPool.size(); i++)
+
+	while (visitedElements.insert(elementNumber).second)
 	{
-		auto object = nonConstPool.get_object_by_index(i);
-		if (object->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceElement)
+		bool elementWorkState;
+		if (try_get_element_work_state(elementNumber, elementWorkState) && !elementWorkState)
 		{
+			return true;
+		}
+
+		bool parentFound = false;
+		std::uint16_t parentElementNumber = 0;
+		for (std::uint32_t i = 0; (i < nonConstPool.size()) && !parentFound; i++)
+		{
+			auto object = nonConstPool.get_object_by_index(i);
+			if (!object || (object->get_object_type() != isobus::task_controller_object::ObjectTypes::DeviceElement))
+			{
+				continue;
+			}
+
 			auto elementObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceElementObject>(object);
-			// Check if this element has elementNumber as a child
+			if (!elementObject)
+			{
+				continue;
+			}
+
 			for (std::uint16_t childId : elementObject->get_child_object_ids())
 			{
-				// Find the child object
 				for (std::uint32_t j = 0; j < nonConstPool.size(); j++)
 				{
 					auto childObject = nonConstPool.get_object_by_index(j);
-					if (childObject && childObject->get_object_id() == childId)
+					if (!childObject || (childObject->get_object_id() != childId))
 					{
-						// Check if child is a DeviceElement with matching element number
-						if (childObject->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceElement)
+						continue;
+					}
+
+					if (childObject->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceElement)
+					{
+						auto childElementObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceElementObject>(childObject);
+						if (childElementObject &&
+						    (childElementObject->get_element_number() == elementNumber) &&
+						    (elementObject->get_element_number() != elementNumber))
 						{
-							auto childElementObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceElementObject>(childObject);
-							if (childElementObject && childElementObject->get_element_number() == elementNumber)
-							{
-								// Found the parent, recursively check if parent or its parents are off
-								return is_element_or_parent_off(elementObject->get_element_number());
-							}
+							parentElementNumber = elementObject->get_element_number();
+							parentFound = true;
 						}
-						// Check if child is a DeviceProcessData whose DDI is mapped to the target element number
-						else if (childObject->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceProcessData)
+					}
+					else if (childObject->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceProcessData)
+					{
+						auto processDataObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceProcessDataObject>(childObject);
+						if (processDataObject)
 						{
-							auto processDataObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceProcessDataObject>(childObject);
-							if (processDataObject)
+							auto ddi = static_cast<isobus::DataDescriptionIndex>(processDataObject->get_ddi());
+							if (has_element_number_for_ddi(ddi) &&
+							    (get_element_number_for_ddi(ddi) == elementNumber) &&
+							    (elementObject->get_element_number() != elementNumber))
 							{
-								auto ddi = static_cast<isobus::DataDescriptionIndex>(processDataObject->get_ddi());
-								auto parentElementNumber = elementObject->get_element_number();
-								if (has_element_number_for_ddi(ddi) &&
-								    get_element_number_for_ddi(ddi) == elementNumber &&
-								    parentElementNumber != elementNumber)
-								{
-									// Found a different parent element, recursively check if it or its parents are off
-									return is_element_or_parent_off(parentElementNumber);
-								}
+								parentElementNumber = elementObject->get_element_number();
+								parentFound = true;
 							}
 						}
 					}
+
+					break;
+				}
+				if (parentFound)
+				{
+					break;
 				}
 			}
 		}
+
+		if (!parentFound)
+		{
+			return false;
+		}
+		elementNumber = parentElementNumber;
 	}
 
-	return false; // No parent found or no parents are off
+	return false; // A cycle was found without an OFF element.
 }
 
 void ClientState::set_element_work_state(std::uint16_t elementNumber, bool isWorking)
