@@ -1,0 +1,40 @@
+name: Validate IOP
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  validate_iop:
+    name: Validate object pool
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build
+
+      - name: Configure (CMake)
+        run: >
+          cmake -S . -B build -G Ninja
+          -DBUILD_EXAMPLES=OFF
+          -DBUILD_TESTING=OFF
+          -DAOG_TC_VALIDATE_IOP=ON
+          -DCMAKE_BUILD_TYPE=Release
+          -Wno-dev
+
+      - name: Build
+        run: cmake --build build --config Release --target iop_validator
+
+      - name: Validate object pool
+        run: ctest --test-dir build --output-on-failure
