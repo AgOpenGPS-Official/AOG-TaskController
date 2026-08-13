@@ -1,0 +1,45 @@
+name: Validate IOP
+
+on:
+  workflow_call:
+    inputs:
+      os:
+        description: 'Runner OS label (e.g. ubuntu-latest, windows-latest)'
+        required: true
+        type: string
+      arch:
+        description: 'Architecture label used in job names (e.g. x86_64, aarch64, win64)'
+        required: true
+        type: string
+
+jobs:
+  validate:
+    name: Validate IOP (${{ inputs.arch }})
+    runs-on: ${{ inputs.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build deps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build
+
+      - name: Configure (CMake)
+        run: >
+          cmake -S . -B build
+          -DBUILD_EXAMPLES=OFF
+          -DBUILD_TESTING=OFF
+          -DAOG_TC_VALIDATE_IOP=ON
+          -DCMAKE_BUILD_TYPE=Release
+          -Wno-dev
+
+      - name: Build
+        run: cmake --build build --config Release --target iop_validator
+
+      - name: Validate object pool
+        run: ctest --test-dir build --output-on-failure
