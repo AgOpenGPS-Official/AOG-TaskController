@@ -133,6 +133,47 @@ target_link_libraries(
 
 install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION bin COMPONENT applications)
 
+option(AOG_TC_VALIDATE_IOP "Build and register the object pool validator test"
+       ON)
+if(AOG_TC_VALIDATE_IOP)
+  # BUILD_TESTING stays off so FetchContent dependencies do not add their suites
+  enable_testing()
+  add_executable(iop_validator
+                 ${CMAKE_CURRENT_LIST_DIR}/tools/iop_validator.cpp)
+  target_compile_features(iop_validator PRIVATE cxx_std_20)
+  set_target_properties(iop_validator PROPERTIES CXX_EXTENSIONS OFF)
+  target_link_libraries(iop_validator PRIVATE isobus::Isobus isobus::Utility)
+  add_test(NAME object_pool_attributes_in_range COMMAND iop_validator
+                                                        "${AOG_TC_IOP_SOURCE}")
+
+  # A deliberately broken pool, so the suite asserts more than "today's pool
+  # passes". One case per message, since a shared exit code stays green as long
+  # as any one check still fires.
+  set(AOG_TC_MALFORMED_IOP
+      ${CMAKE_CURRENT_LIST_DIR}/tools/testdata/malformed_pool.iop)
+  add_test(NAME malformed_pool_coerced_attribute
+           COMMAND iop_validator "${AOG_TC_MALFORMED_IOP}")
+  set_tests_properties(
+    malformed_pool_coerced_attribute
+    PROPERTIES PASS_REGULAR_EXPRESSION "format byte has undefined value")
+  add_test(NAME malformed_pool_dangling_reference
+           COMMAND iop_validator "${AOG_TC_MALFORMED_IOP}")
+  set_tests_properties(
+    malformed_pool_dangling_reference
+    PROPERTIES PASS_REGULAR_EXPRESSION "active mask references object 4660")
+  add_test(NAME malformed_pool_value_out_of_range
+           COMMAND iop_validator "${AOG_TC_MALFORMED_IOP}")
+  set_tests_properties(
+    malformed_pool_value_out_of_range PROPERTIES PASS_REGULAR_EXPRESSION
+                                                 "InputBoolean value 24")
+
+  # PASS_REGULAR_EXPRESSION makes CTest ignore the exit code, which is the part
+  # a CI gate actually reads.
+  add_test(NAME malformed_pool_exit_status COMMAND iop_validator
+                                                   "${AOG_TC_MALFORMED_IOP}")
+  set_tests_properties(malformed_pool_exit_status PROPERTIES WILL_FAIL TRUE)
+endif()
+
 if(WIN32)
   add_custom_command(
     TARGET ${PROJECT_NAME}

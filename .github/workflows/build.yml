@@ -55,6 +55,8 @@ jobs:
         run: cmake -S . -B build -G Ninja -DBUILD_EXAMPLES=OFF -DBUILD_TESTING=OFF -DCMAKE_BUILD_TYPE=Release -Wno-dev
       - name: Build
         run: cmake --build build --config Release
+      - name: Validate object pool
+        run: ctest --test-dir build --output-on-failure
       - name: Stage tarball
         run: |
           set -euo pipefail
