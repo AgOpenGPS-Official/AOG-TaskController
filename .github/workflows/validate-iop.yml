@@ -1,29 +1,24 @@
 name: Validate IOP
 
 on:
-  workflow_call:
-    inputs:
-      os:
-        description: 'Runner OS label (e.g. ubuntu-latest, windows-latest)'
-        required: true
-        type: string
-      arch:
-        description: 'Architecture label used in job names (e.g. x86_64, aarch64, win64)'
-        required: true
-        type: string
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    types: [opened, synchronize, reopened]
 
 jobs:
-  validate:
-    name: Validate IOP (${{ inputs.arch }})
-    runs-on: ${{ inputs.os }}
+  validate_iop:
+    name: Validate object pool
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Install build deps (Linux)
-        if: runner.os == 'Linux'
+      - name: Install build deps
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -31,7 +26,7 @@ jobs:
 
       - name: Configure (CMake)
         run: >
-          cmake -S . -B build
+          cmake -S . -B build -G Ninja
           -DBUILD_EXAMPLES=OFF
           -DBUILD_TESTING=OFF
           -DAOG_TC_VALIDATE_IOP=ON

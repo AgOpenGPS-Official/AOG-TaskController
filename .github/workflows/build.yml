@@ -22,7 +22,7 @@ jobs:
       - name: Compile
         run: |
           mkdir build
-          cmake -S . -B build -DBUILD_EXAMPLES=OFF -DBUILD_TESTING=OFF -Wno-dev
+          cmake -S . -B build -DBUILD_EXAMPLES=OFF -DBUILD_TESTING=OFF -DAOG_TC_VALIDATE_IOP=OFF -Wno-dev
           cmake --build build --config Release --target package
       - name: 'Upload Windows Installer'
         uses: actions/upload-artifact@v4
@@ -70,24 +70,3 @@ jobs:
         with:
           name: 'Linux Tarball (${{ matrix.arch }})'
           path: AOG-TaskController-linux-${{ matrix.arch }}.tar.gz
-
-  validate_iop_linux_x86_64:
-    name: Validate IOP (Linux x86_64)
-    uses: ./.github/workflows/validate-iop.yml
-    with:
-      os: ubuntu-latest
-      arch: x86_64
-
-  validate_iop_linux_aarch64:
-    name: Validate IOP (Linux aarch64)
-    uses: ./.github/workflows/validate-iop.yml
-    with:
-      os: ubuntu-24.04-arm
-      arch: aarch64
-
-  validate_iop_windows:
-    name: Validate IOP (Windows)
-    uses: ./.github/workflows/validate-iop.yml
-    with:
-      os: windows-latest
-      arch: win64
