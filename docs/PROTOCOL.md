@@ -170,7 +170,7 @@ The TC reads `settings.json` from a per-user config directory:
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `subnet` | `int[3]` | `[192, 168, 5]` | First three octets of the LAN AgIO/AgValonia lives on. Used for NIC selection and broadcast destination. |
-| `tecuEnabled` | `bool` | `true` | If `true`, the TC also impersonates a Tractor ECU on the CAN bus (claims address 128, broadcasts Speed Messages/NMEA2000, announces Class 1 BasicTractorECUServer). Set `false` when the tractor already has a TECU. |
+| `tecuEnabled` | `bool` | `true` | If `true`, the TC also impersonates a Tractor ECU on the CAN bus (claims address 240, broadcasts Speed Messages/NMEA2000, announces Class 1 BasicTractorECUServer). Set `false` when the tractor already has a TECU. |
 | `nmeaSendEnabled` | `bool` | `true` | Enable cyclic NMEA2000 COG/SOG transmission. Requires `tecuEnabled`; the VT disables this control when no TECU interface exists. |
 | `aogHeartbeatEnabled` | `bool` | `true` | Send `0xF0` heartbeat to AgIO/AgValonia every 100 ms even with no implement. Disable for AOG < v6.8.2 beta 5. |
 | `vtEnabled` | `bool` | `true` | Register the Virtual Terminal client and display the TC UI when a VT is present. |
@@ -209,8 +209,8 @@ Two control functions, both claiming addresses via standard J1939-81 address cla
 
 | CF | NAME function | Address | Notes |
 |---|---|---|---|
-| Task Controller | `TaskController` (function code 61) | Preferred `233` (ISO 11783-10 MappingComputer). Walks if claimed. | Always present. |
-| Tractor ECU | `TractorECU` (function code 132) | Fixed `128` (non-arbitrary-address-capable per ISO 11783-9). | Only present if `tecuEnabled: true`. |
+| Task Controller | `TaskController` (function code 61) | Preferred `247` (ISO 11783-10 MappingComputer). Walks if claimed. | Always present. |
+| Tractor ECU | `TractorECU` (function code 132) | Fixed `240` (non-arbitrary-address-capable per ISO 11783-9). | Only present if `tecuEnabled: true`. |
 
 Common NAME fields: Industry Group `2` (Agricultural), Device Class `0`, Manufacturer Code `1407`, Identity `20`. Override these in `app.cpp` if you fork.
 

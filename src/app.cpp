@@ -314,8 +314,7 @@ bool Application::setup_control_functions()
 			tecuClaimAttempts++;
 		}
 
-		// Check if TECU successfully claimed its FIXED address (128)
-		// TECU is non-arbitrary-address-capable and MUST use address 128
+		// TECU is non-arbitrary-address-capable: it must land on its preferred address or not at all
 		if (tecuCF->get_address_valid() && tecuCF->get_address() == isobus::preferred_addresses::IndustryGroup2::TractorECU)
 		{
 			// Record when the address was actually claimed for the 250ms delay calculation
@@ -341,11 +340,11 @@ bool Application::setup_control_functions()
 		{
 			if (tecuCF->get_address_valid())
 			{
-				std::cout << "[" << get_timestamp() << "] [Warning] TECU claimed unexpected address " << static_cast<int>(tecuCF->get_address()) << " instead of 128!" << std::endl;
+				std::cout << "[" << get_timestamp() << "] [Warning] TECU claimed unexpected address " << static_cast<int>(tecuCF->get_address()) << " instead of " << static_cast<int>(isobus::preferred_addresses::IndustryGroup2::TractorECU) << "!" << std::endl;
 			}
 			else
 			{
-				std::cout << "[" << get_timestamp() << "] [Warning] TECU failed to claim address 128! Another TECU may be on the bus." << std::endl;
+				std::cout << "[" << get_timestamp() << "] [Warning] TECU failed to claim address " << static_cast<int>(isobus::preferred_addresses::IndustryGroup2::TractorECU) << "! Another TECU may be on the bus." << std::endl;
 			}
 			std::cout << "[" << get_timestamp() << "] [Warning] TECU functionality will be disabled." << std::endl;
 			tecuCF.reset(); // Release the failed control function
