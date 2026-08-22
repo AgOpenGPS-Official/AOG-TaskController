@@ -128,7 +128,36 @@ All PGNs sent **by the TC to AgIO/AgValonia** use source `0x80`.
 
 | PGN | Name | Length | Frequency | Payload |
 |---|---|---|---|---|
+| `0xDD` (221) | Hardware message | 2 + T | On event | `[duration, colour, text0, text1, ...]` — `T` = UTF-8 text bytes |
 | `0xF0` (240) | Section heartbeat / state | 2 + ⌈N/8⌉ | 100 ms | `[mode, num_sections, byte0, byte1, ...]` |
+
+#### `0xDD` — Hardware message
+
+Displays a text banner across the top of the AgOpenGPS map so the operator can see TC state that would otherwise only reach the console log. Payload:
+
+- byte 0: `duration` — see the caveat below
+- byte 1: `colour` — `0` renders a Salmon background (alert), any other value renders Bisque (info). The TC sends `1` for info.
+- bytes 2..: the message text, UTF-8, **not** NUL-terminated
+
+The frame's `Length` field is therefore `text_bytes + 2`, and AOG reads exactly `Length - 2` bytes starting at wire offset 7. The TC caps text at 60 bytes and truncates on a UTF-8 character boundary — splitting a multi-byte sequence would render as U+FFFD, and the display label clips long text anyway.
+
+**`duration` is frames, not seconds.** AOG stores `duration × 10` into a counter that it decrements once per OpenGL render tick, so the banner lasts `duration × 10` redraws — roughly `duration` seconds at AOG's nominal 10 Hz, but it stretches or shrinks with frame rate. **A condition that persists must be re-sent**; do not send once with a large duration and expect the banner to hold. The operator can also dismiss a banner early by clicking it.
+
+**AgOpenGPS ignores the source byte for this PGN** — it dispatches on the PGN byte alone. The TC still sends `0x80` per §2.2.
+
+**Display is opt-in on the AOG side.** AgOpenGPS drops these frames unless *Config → Data → Hardware Messages* is enabled; the setting defaults to **off**. A correct implementation looks like a no-op until it is switched on, which is the first thing to check when testing. There is no corresponding TC-side setting — the TC always sends.
+
+Messages the TC currently emits:
+
+| Text | Colour | Duration | Trigger |
+|---|---|---|---|
+| `Implement: <name> (<n> sections, <w> m)` | Info | 5 | An implement with sections registers. The `, <w> m` clause is omitted when the DDOP has no usable geometry. |
+| `Implement lost: <name>` | Alert | 10 | A previously seen implement disappears from the client list. |
+| `TC address conflict: preferred address in use` | Alert | 20 | Another control function claiming `NAME::Function::TaskController` holds address `0xF7`. Re-sent every 15 s while true. |
+| `TC address conflict resolved` | Info | 5 | The above clears. |
+| `TECU failed to claim address 240` | Alert | 10 | Once at startup, when the TECU is enabled but could not claim its fixed address. |
+
+The conflict messages surface on the operator's screen what the TC already writes to its console log; the console warning remains and keeps its own 30 s throttle.
 
 #### `0xF0` — Section heartbeat / state
 
