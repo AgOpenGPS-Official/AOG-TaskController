@@ -655,11 +655,39 @@ void Application::setup_udp_connections()
 			bool newTramRight = (data[3] & 0x02) != 0;
 
 			// Update synthetic track provider (edge detection + context generation)
-			currentTrackContext = trackProvider.update(newTramLeft, newTramRight);
+			// Only used as fallback when PGN 0xF4 (real guidance) is not available.
+			auto syntheticCtx = trackProvider.update(newTramLeft, newTramRight);
+
+			// Use real guidance context if available and fresh (within 1 second),
+			// otherwise fall back to synthetic tram-marker-based context.
+			if (lastRealGuidanceMs == 0 ||
+			    isobus::SystemTiming::time_expired_ms(lastRealGuidanceMs, 1000))
+			{
+				currentTrackContext = syntheticCtx;
+			}
 
 			// Cache tram marker state for VT display only
 			tramLeftActive = newTramLeft;
 			tramRightActive = newTramRight;
+		}
+		else if (pgn == 0xF4) // 244 - Guidance Track Context (AOG real guidance data)
+		{
+			lastAogPacketMs = isobus::SystemTiming::get_timestamp_ms();
+
+			if (data.size() < RealGuidanceTrackProvider::MIN_PAYLOAD_SIZE)
+			{
+				std::cout << "[" << get_timestamp() << "] [AOG] PGN 0xF4 received but too short (len=" << data.size() << ")" << std::endl;
+				return;
+			}
+
+			// Parse real guidance track context from AOG PGN 0xF4
+			auto realCtx = realTrackProvider.parse(data);
+			if (realCtx.valid)
+			{
+				// Real data takes priority over synthetic
+				currentTrackContext = realCtx;
+				lastRealGuidanceMs = isobus::SystemTiming::get_timestamp_ms();
+			}
 		}
 		else if (pgn == 0xF2 && data.size() >= 6) // Process Data
 		{

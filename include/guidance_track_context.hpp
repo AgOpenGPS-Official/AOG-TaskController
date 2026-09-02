@@ -14,13 +14,13 @@
 
 #include <cstdint>
 #include <iostream>
+#include <span>
 
 #include "logging_utils.hpp"
 
-// TODO(AOG integration): When AOG/AgValonia exposes real guidance-track context
-// (guidanceReferenceLineId, actualTrackNumber, trackNumberRight, trackNumberLeft),
-// replace SyntheticGuidanceTrackProvider with a RealGuidanceTrackProvider that
-// consumes the AOG PGN directly. The rest of the TRACK code should not change.
+// TODO(AOG integration): RealGuidanceTrackProvider now consumes PGN 0xF4 from AOG.
+// SyntheticGuidanceTrackProvider (PGN 0xEF tram bits) remains as fallback when
+// AOG does not send PGN 0xF4 (older versions, no guidance track active, etc.).
 
 /**
  * @brief Immutable snapshot of guidance-track state consumed by the ISOBUS TRACK sender.
@@ -204,4 +204,108 @@ private:
 			return n - r; // e.g. snap(1, 3) = 0, snap(-2, 3) = -3
 		return n + (m - r); // e.g. snap(2, 3) = 3, snap(-1, 3) = 0
 	}
+};
+
+/**
+ * @brief Real guidance-track provider that consumes AOG PGN 0xF4 (244) data.
+ *
+ * PGN 0xF4 payload layout (10 data bytes):
+ *   Byte 0: Sequence counter (0–255)
+ *   Byte 1: Flags (bit 0 = valid, bit 1 = heading same way, bit 2 = curve mode)
+ *   Bytes 2-3: Guidance Reference ID (uint16 LE)
+ *   Bytes 4-5: Current Track Number (int16 LE, signed)
+ *   Bytes 6-7: Track Number Left (int16 LE, signed)
+ *   Bytes 8-9: Track Number Right (int16 LE, signed)
+ *
+ * The provider validates CRC and sequence freshness. Returns a context with
+ * synthetic = false when data is valid, or an invalid context otherwise.
+ */
+class RealGuidanceTrackProvider
+{
+public:
+	/// Minimum payload size (10 data bytes)
+	static constexpr std::size_t MIN_PAYLOAD_SIZE = 10;
+
+	/**
+	 * @brief Parse AOG PGN 0xF4 payload and produce a GuidanceTrackContext.
+	 *
+	 * @param data Payload bytes (after UDP header stripping)
+	 * @return GuidanceTrackContext with valid=true if parse succeeded and flags indicate valid data
+	 */
+	GuidanceTrackContext parse(std::span<const std::uint8_t> data)
+	{
+		GuidanceTrackContext ctx;
+		ctx.synthetic = false;
+
+		if (data.size() < MIN_PAYLOAD_SIZE)
+		{
+			std::cout << "[" << get_timestamp() << "] [TRACK][real] PGN 0xF4 too short (len="
+			          << data.size() << ")" << std::endl;
+			return ctx;
+		}
+
+		// Parse fields
+		std::uint8_t sequence = data[0];
+		std::uint8_t flags = data[1];
+		bool isValid = (flags & 0x01) != 0;
+
+		std::uint16_t refId =
+		  static_cast<std::uint16_t>(data[2]) |
+		  (static_cast<std::uint16_t>(data[3]) << 8);
+
+		std::int16_t currentTrack =
+		  static_cast<std::int16_t>(
+		    static_cast<std::uint16_t>(data[4]) |
+		    (static_cast<std::uint16_t>(data[5]) << 8));
+
+		std::int16_t trackLeft =
+		  static_cast<std::int16_t>(
+		    static_cast<std::uint16_t>(data[6]) |
+		    (static_cast<std::uint16_t>(data[7]) << 8));
+
+		std::int16_t trackRight =
+		  static_cast<std::int16_t>(
+		    static_cast<std::uint16_t>(data[8]) |
+		    (static_cast<std::uint16_t>(data[9]) << 8));
+
+		// Update sequence tracking for freshness detection
+		lastSequence_ = sequence;
+
+		if (!isValid || refId == 0)
+		{
+			// No active guidance track
+			return ctx; // valid=false, synthetic=false
+		}
+
+		ctx.guidanceReferenceLineId = refId;
+		ctx.actualTrackNumber = currentTrack;
+		ctx.trackNumberLeft = trackLeft;
+		ctx.trackNumberRight = trackRight;
+		ctx.valid = true;
+
+		// Log on change
+		if (currentTrack != lastLoggedTrack_ || refId != lastLoggedRefId_)
+		{
+			std::cout << "[" << get_timestamp() << "] [TRACK][real] ref=" << ctx.guidanceReferenceLineId
+			          << " actual=" << ctx.actualTrackNumber
+			          << " left=" << ctx.trackNumberLeft
+			          << " right=" << ctx.trackNumberRight
+			          << " seq=" << static_cast<int>(sequence) << std::endl;
+			lastLoggedTrack_ = currentTrack;
+			lastLoggedRefId_ = refId;
+		}
+
+		return ctx;
+	}
+
+	/// @brief Get the last received sequence number
+	std::uint8_t get_last_sequence() const
+	{
+		return lastSequence_;
+	}
+
+private:
+	std::uint8_t lastSequence_ = 0;
+	std::int16_t lastLoggedTrack_ = 0;
+	std::uint16_t lastLoggedRefId_ = 0;
 };

@@ -93,10 +93,11 @@ private:
 	std::uint32_t lastDistanceMm = 0;
 	std::uint32_t lastAogPacketMs = 0;
 
-	// Guidance track context — synthetic provider derives from AOG tram marker bits.
-	// TEMPORARY: Replace with real AOG guidance-track data when available.
+	// Guidance track context — real provider (PGN 0xF4) preferred, synthetic (PGN 0xEF) fallback.
+	RealGuidanceTrackProvider realTrackProvider;
 	SyntheticGuidanceTrackProvider trackProvider;
 	GuidanceTrackContext currentTrackContext;
+	std::uint32_t lastRealGuidanceMs = 0; ///< Timestamp of last valid PGN 0xF4 (0 = never)
 	bool tramLeftActive = false; ///< Left tramline marker active (cached for VT display)
 	bool tramRightActive = false; ///< Right tramline marker active (cached for VT display)
 	bool trackControlEnabled = false; ///< Track control enabled (separate from section control)
