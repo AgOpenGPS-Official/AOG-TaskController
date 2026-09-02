@@ -39,6 +39,7 @@ public:
 	std::uint8_t get_section_actual_state(std::uint8_t section) const;
 	std::uint16_t get_element_number_for_section(std::uint8_t section) const;
 	void set_element_number_for_section(std::uint8_t section, std::uint16_t elementNumber);
+	bool try_get_section_for_element(std::uint16_t elementNumber, std::uint8_t &section) const;
 	bool is_any_section_setpoint_on() const;
 	bool get_setpoint_work_state() const;
 	void set_setpoint_work_state(bool state);
@@ -46,6 +47,10 @@ public:
 	void set_actual_work_state(bool state);
 	bool is_section_control_enabled() const;
 	void set_section_control_enabled(bool state);
+	bool uses_per_element_control() const;
+	void set_uses_per_element_control(bool state);
+	std::uint16_t get_per_element_setpoint_ddi() const;
+	void set_per_element_setpoint_ddi(std::uint16_t ddi);
 	isobus::DeviceDescriptorObjectPool &get_pool();
 	bool are_measurement_commands_sent() const;
 	void mark_measurement_commands_sent();
@@ -66,10 +71,13 @@ private:
 	std::vector<std::uint8_t> sectionSetpointStates; // 2 bits per section (0 = off, 1 = on, 2 = error, 3 = not installed)
 	std::vector<std::uint8_t> sectionActualStates; // 2 bits per section (0 = off, 1 = on, 2 = error, 3 = not installed)
 	std::vector<std::uint16_t> sectionToElementNumber; // Maps section index to element number for hierarchy checking
+	std::map<std::uint16_t, std::uint8_t> elementToSection; ///< Reverse mapping: element number -> section index
 	bool setpointWorkState = false; ///< The overall work state desired (DDI 289)
 	bool actualWorkState = false; ///< The overall work state actual
 	std::map<std::uint16_t, bool> elementWorkStates; ///< Work state per element (element number -> is working)
 	bool isSectionControlEnabled = false; ///< Stores auto vs manual mode setting
+	bool usesPerElementControl = false; ///< Legacy mode: use per-element setpoint instead of condensed
+	std::uint16_t perElementSetpointDDI = 0; ///< The DDI to use for per-element setpoints (289 or 141), 0 if not applicable
 };
 
 // Create the task controller server object, this will handle all the ISOBUS communication for us
