@@ -222,6 +222,7 @@ Common NAME fields: Industry Group `2` (Agricultural), Device Class `0`, Manufac
 | `0x1F903` (NMEA2000 XTE) | 1 Hz | TC | Cross-track error, derived from AOG's guidance-line deviation PGN. |
 | `0xFEE8` (PGN 65256 Speed/Direction) | 100 ms | TECU | Ground/Wheel/Machine-selected speed + machine direction, J1939 format. Only when TECU enabled. |
 | `0xFC8E` (Control Function Functionalities) | At claim + periodic | TECU | Announces Class 1 BasicTractorECUServer (no options). |
+| `0xFE09` (PGN 65033 Tractor Facilities) | Power-up + on request | TECU | 8-byte facility bitmask advertising which PGNs the TECU actually broadcasts. See §5.6. |
 | NMEA2000 COG/SOG | Periodic | TECU | Optional course/speed over ground. |
 
 The TC also receives all ISOBUS Process Data (PGN 0xCB00) and Section Control commands from connected implements.
@@ -232,6 +233,7 @@ The TC also receives all ISOBUS Process Data (PGN 0xCB00) and Section Control co
 - **Condensed actual work-state DDIs** (160, 161, 290, plus the extended range 16001–16016 per the standard): mapped into the per-client section model and forwarded to AgIO/AgValonia as PGN `0xF0`.
 - **Section control state DDI**: tracked per client.
 - **Process data acknowledges (PDACK)**: logged.
+- **PGN 65033 requests**: answered with the Tractor Facilities response (§5.6). An implement may also send PGN 65032 (Required Tractor Facilities) to advertise what it needs; the TC logs this at debug level but does not change its response.
 
 ### 5.4 ISOBUS feature scope
 
@@ -250,6 +252,39 @@ The roughly 12 KB VT object pool is embedded in the executable, so deployment do
 The pool was authored for a 480-pixel data mask and an 80-pixel softkey designator. The client asks AgIsoStack to scale both before initialization, and includes that scaling contract in the VT cache version so a terminal cannot reuse a pool cached by an older unscaled build. The UI defines five virtual navigation softkeys; terminals with fewer than five physical softkeys must support paging.
 
 At connection, the TC logs the VT version, screen dimensions, softkey dimensions, and virtual/physical softkey counts. It warns when fewer than five virtual softkeys are available. If a VT address is detected but the client has not connected after 30 seconds, it logs the reported capabilities and recovery guidance. Clear the terminal's stored/cached object pools first when diagnosing an upload failure, because stale pools and full non-volatile pool storage can prevent an otherwise compatible upload.
+
+### 5.6 Tractor Facilities (PGN 65033)
+
+When the TECU is enabled, the TC responds to PGN 65033 requests (ISO 11783-7 B.24.3) and broadcasts the response once on power-up. The 8-byte payload is a bitfield where each bit signals that the TECU actually transmits the corresponding PGN at its defined repetition rate.
+
+**Facilities advertised (bits set to 1):**
+
+| Byte | Bit(s) | Facility | Condition |
+|---|---|---|---|
+| 1 | 8,7 | TECU class | Always `00` (Class 1). |
+| 1 | 2 | Ground-based speed (PGN 65097) | `speedMessagesInterface` exists (always true when TECU is enabled). |
+| 1 | 3 | Wheel-based speed (PGN 65096) | `speedMessagesInterface` exists (always true when TECU is enabled). |
+| 3 | 7,6 | Ground-based distance + direction | Same as ground-based speed. |
+| 3 | 5,4 | Wheel-based distance + direction | Same as wheel-based speed. |
+
+**Facilities NOT advertised (bits always 0):**
+
+- Engine speed — no engine CAN access.
+- Power management — no key switch or power timer signals.
+- Hitch position / in-work / draft — the hydraulic lift output is a command we issue, not measured feedback; implements would trust it for work-state logic.
+- PTO shaft speed / engagement — no PTO sensor.
+- Lighting — no lighting controller.
+- Language command storage (PGN 65039) — not broadcast by the TECU.
+- Time/date (PGN 65254) — no `TimeDateInterface` registered.
+- Auxiliary valve commands / status — no valve interface.
+- Selected speed (PGN 65265) — not broadcast.
+- Navigation position data / high-output position — NMEA 2000 position PGNs are not forwarded over Fast Packet.
+- Front hitch / PTO — no front hitch or PTO sensors.
+- All reserved bits (byte 2 bits 2–1, byte 4 bits 3–1, byte 5 bit 5, byte 7, byte 8 including the reserved-bit indicator at bit 1).
+
+**Default payload** (TECU enabled, speed broadcasts active): `[0x0C, 0x00, 0xF0, 0x00, 0x00, 0x00, 0x00, 0x00]`.
+
+**PGN 65032 (Required Tractor Facilities):** When an implement broadcasts what it needs, the TC logs the request at debug level. The response is not modified based on the implement's requirements — a facility bit is set to 1 only when backed by a live broadcast.
 
 ---
 

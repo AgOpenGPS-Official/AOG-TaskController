@@ -13,6 +13,7 @@
 #include "isobus/hardware_integration/can_hardware_interface.hpp"
 #include "isobus/isobus/can_internal_control_function.hpp"
 #include "isobus/isobus/can_network_manager.hpp"
+#include "isobus/isobus/can_parameter_group_number_request_protocol.hpp"
 #include "isobus/isobus/isobus_device_descriptor_object_pool_helpers.hpp"
 #include "isobus/isobus/isobus_preferred_addresses.hpp"
 #include "isobus/isobus/isobus_standard_data_description_indices.hpp"
@@ -21,12 +22,14 @@
 #include "isobus/utility/system_timing.hpp"
 
 #include "task_controller.hpp"
+#include "tractor_facilities.hpp"
 
 #include "AOG_TC.iop.h"
 
 #include "logging_utils.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <iomanip>
 #include <iostream>
 #include <span>
@@ -40,6 +43,90 @@ static std::string format_hex_address(std::uint8_t address)
 	std::ostringstream value;
 	value << "0x" << std::hex << std::uppercase << std::setw(2) << std::setfill('0') << static_cast<int>(address);
 	return value.str();
+}
+
+// Helper: populate TimeDateInterface::TimeAndDate from the system clock.
+// Used as the callback for TimeDateInterface to provide wall-clock time
+// for PGN 65254 (FEE6) broadcasts.
+static bool get_system_time(isobus::TimeDateInterface::TimeAndDate &td)
+{
+	auto now = std::chrono::system_clock::now();
+	auto time_t_now = std::chrono::system_clock::to_time_t(now);
+	auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+	            now.time_since_epoch())
+	            .count() %
+	          1000;
+
+	struct tm tm_now;
+#ifdef _WIN32
+	localtime_s(&tm_now, &time_t_now);
+#else
+	localtime_r(&time_t_now, &tm_now);
+#endif
+
+	td.year = static_cast<std::uint16_t>(tm_now.tm_year + 1900);
+	td.month = static_cast<std::uint8_t>(tm_now.tm_mon + 1);
+	td.day = static_cast<std::uint8_t>(tm_now.tm_mday);
+	td.hours = static_cast<std::uint8_t>(tm_now.tm_hour);
+	td.minutes = static_cast<std::uint8_t>(tm_now.tm_min);
+	td.seconds = static_cast<std::uint8_t>(tm_now.tm_sec);
+	td.milliseconds = static_cast<std::uint16_t>((ms / 250) * 250); // J1939: 0.25s resolution
+	td.quarterDays = static_cast<std::uint8_t>(tm_now.tm_hour / 6);
+	td.localHourOffset = 0;
+	td.localMinuteOffset = 0;
+	return true;
+}
+
+// Diagnostic callback: log any Request for Repetition Rate (PGN 0xCC00)
+// that is properly addressed to one of our control functions.  We never
+// comply (return false) – this is purely for bus analysis.
+static bool log_repetition_rate_request(
+  std::uint32_t requestedPGN,
+  std::shared_ptr<isobus::ControlFunction> requestingCF,
+  std::shared_ptr<isobus::ControlFunction> /*targetCF*/,
+  std::uint32_t repetitionRate,
+  void * /*parentPointer*/)
+{
+	std::uint8_t srcAddr = requestingCF ? requestingCF->get_address() : 0xFF;
+	std::cout << "[" << get_timestamp() << "] [Diag] Repetition-rate request from SA "
+	          << static_cast<int>(srcAddr)
+	          << ": PGN " << requestedPGN
+	          << " (0x" << std::hex << requestedPGN << std::dec
+	          << "), rate=" << repetitionRate << " ms" << std::endl;
+	return false; // We don't comply; just logging.
+}
+
+// Diagnostic callback: log broadcast PGN 0xCC00 messages that AgIsoStack
+// warns about ("malformed or broadcast request for repetition rate").
+// These bypass the per-ICF callback, so we catch them with a global
+// PGN listener.
+static void log_broadcast_repetition_rate(
+  const isobus::CANMessage &message, void * /*parentPointer*/)
+{
+	const auto &data = message.get_data();
+	if (data.size() < 8)
+	{
+		return;
+	}
+
+	auto sourceCF = message.get_source_control_function();
+	std::uint8_t srcAddr = sourceCF ? sourceCF->get_address() : 0xFF;
+
+	// PGN is a 3-byte little-endian value at bytes 0-2.
+	std::uint32_t requestedPGN =
+	  static_cast<std::uint32_t>(data[0]) |
+	  (static_cast<std::uint32_t>(data[1]) << 8) |
+	  (static_cast<std::uint32_t>(data[2]) << 16);
+	std::uint16_t requestedRate =
+	  static_cast<std::uint16_t>(data[3]) |
+	  (static_cast<std::uint16_t>(data[4]) << 8);
+
+	std::cout << "[" << get_timestamp() << "] [Diag] Broadcast repetition-rate request from SA "
+	          << static_cast<int>(srcAddr)
+	          << ": PGN " << requestedPGN
+	          << " (0x" << std::hex << requestedPGN << std::dec
+	          << "), rate=" << requestedRate << " ms"
+	          << " (broadcast – AgIsoStack will warn and ignore)" << std::endl;
 }
 
 // Enumerate and log all Control Functions on the bus
@@ -406,6 +493,14 @@ void Application::setup_task_controller_server()
 	  true);
 	tcFunctionalities->set_task_controller_section_control_server_option_state(1, 64);
 	std::cout << "[" << get_timestamp() << "] [Init] TC announced TC-BAS and TC-SC (1 boom / 64 sections) via PGN 64654" << std::endl;
+
+	// Register repetition-rate diagnostic on the TC's PGN request protocol
+	auto tcPgnReq = tcCF->get_pgn_request_protocol().lock();
+	if (tcPgnReq)
+	{
+		tcPgnReq->register_request_for_repetition_rate_callback(
+		  0xFFFF /* Any PGN */, &log_repetition_rate_request, nullptr);
+	}
 }
 
 void Application::setup_tecu_interfaces()
@@ -438,6 +533,55 @@ void Application::setup_tecu_interfaces()
 		nmea2000MessageInterface = std::make_unique<isobus::NMEA2000MessageInterface>(tecuCF, settings->is_nmea_send_enabled(), false, false, false, false, false, false);
 		nmea2000MessageInterface->initialize();
 		std::cout << "[" << get_timestamp() << "] [Init] NMEA2000 Message Interface created and initialized." << std::endl;
+
+		// Initialize Tractor Facilities (PGN 65033 / 65032)
+		tractorFacilities = std::make_unique<TractorFacilities>(tecuCF, settings);
+		tractorFacilities->set_speed_messages_interface(speedMessagesInterface.get());
+		tractorFacilities->set_nmea2000_message_interface(nmea2000MessageInterface.get());
+		tractorFacilities->initialize();
+
+		// Initialize TimeDateInterface for PGN 65254 (FEE6) broadcasting.
+		// We broadcast FEE6 proactively so implements can discover us as a
+		// time source without needing to send a REQRR. If another ECU is
+		// already providing FEE6, we stay silent (duplicate provider detection).
+		timeDateInterface = std::make_unique<isobus::TimeDateInterface>(tecuCF, get_system_time);
+		timeDateInterface->initialize();
+
+		// Listen for FEE6 from other ECUs to detect duplicate providers.
+		// If we see FEE6 from another ECU, we suppress our own broadcast.
+		timeDateInterface->get_event_dispatcher().add_listener(
+		  [this](const isobus::TimeDateInterface::TimeAndDateInformation &info) {
+			  if (info.controlFunction && tecuCF &&
+			      info.controlFunction->get_address() != tecuCF->get_address())
+			  {
+				  if (lastExternalFee6Ms == 0)
+				  {
+					  std::cout << "[" << get_timestamp() << "] [TECU] FEE6 provider detected at SA "
+					            << static_cast<int>(info.controlFunction->get_address())
+					            << " — suppressing our FEE6 broadcast" << std::endl;
+					  if (fee6Broadcasting && tractorFacilities)
+					  {
+						  tractorFacilities->set_time_date_active(false);
+						  fee6Broadcasting = false;
+					  }
+				  }
+				  lastExternalFee6Ms = isobus::SystemTiming::get_timestamp_ms();
+			  }
+		  });
+		std::cout << "[" << get_timestamp() << "] [Init] Time/Date interface (PGN 65254 / FEE6) created, interval="
+		          << FEE6_TX_INTERVAL_MS << " ms" << std::endl;
+
+		// Register repetition-rate diagnostic on the TECU's PGN request protocol
+		auto tecuPgnReq = tecuCF->get_pgn_request_protocol().lock();
+		if (tecuPgnReq)
+		{
+			tecuPgnReq->register_request_for_repetition_rate_callback(
+			  0xFFFF /* Any PGN */, &log_repetition_rate_request, nullptr);
+		}
+
+		// Also catch broadcast PGN 0xCC00 messages that AgIsoStack warns about
+		isobus::CANNetworkManager::CANNetwork.add_global_parameter_group_number_callback(
+		  0xCC00 /* RequestForRepetitionRate */, &log_broadcast_repetition_rate, nullptr);
 	}
 	else
 	{
@@ -580,6 +724,64 @@ bool Application::update()
 		speedMessagesInterface->update();
 	if (nmea2000MessageInterface)
 		nmea2000MessageInterface->update();
+
+	// Periodic FEE6 (Time/Date, PGN 65254) broadcast.
+	// Only transmit if no other FEE6 provider is active on the bus.
+	if (timeDateInterface && tecuCF && tecuCF->get_address_valid())
+	{
+		const bool otherProviderActive =
+		  (lastExternalFee6Ms != 0) &&
+		  !isobus::SystemTiming::time_expired_ms(lastExternalFee6Ms, FEE6_PROVIDER_TIMEOUT_MS);
+
+		if (otherProviderActive)
+		{
+			// Another ECU is broadcasting FEE6 — stay silent.
+			if (fee6Broadcasting)
+			{
+				std::cout << "[" << get_timestamp() << "] [TECU] Stopping FEE6 broadcast; another provider active" << std::endl;
+				fee6Broadcasting = false;
+				if (tractorFacilities)
+				{
+					tractorFacilities->set_time_date_active(false);
+				}
+			}
+		}
+		else
+		{
+			// No other provider — broadcast FEE6 at our configured interval.
+			if (!fee6Broadcasting)
+			{
+				std::cout << "[" << get_timestamp() << "] [TECU] Starting FEE6 broadcast (no other provider detected)" << std::endl;
+				fee6Broadcasting = true;
+				lastFee6TransmitMs = 0; // Force immediate first transmission
+				if (tractorFacilities)
+				{
+					tractorFacilities->set_time_date_active(true);
+				}
+			}
+
+			if (isobus::SystemTiming::time_expired_ms(lastFee6TransmitMs, FEE6_TX_INTERVAL_MS))
+			{
+				isobus::TimeDateInterface::TimeAndDate td;
+				if (get_system_time(td))
+				{
+					if (timeDateInterface->send_time_and_date(td))
+					{
+						lastFee6TransmitMs = isobus::SystemTiming::get_timestamp_ms();
+					}
+				}
+			}
+		}
+	}
+
+	// Transmit PGN 65033 once on power-up (ISO 11783-7 B.24.3 repetition
+	// rate: "on power-up, and then on request").
+	if (!tractorFacilitiesSentOnPowerUp && tractorFacilities)
+	{
+		tractorFacilities->send_facilities_response();
+		tractorFacilitiesSentOnPowerUp = true;
+	}
+
 	if (vtClient)
 		update_vt_client();
 
