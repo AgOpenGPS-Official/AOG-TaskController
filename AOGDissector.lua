@@ -569,13 +569,17 @@ function AOGProtocol_proto.dissector(buffer, pinfo, tree)
         end
 
         if MajorPGN == 0x80 then -- 128 AOG-TaskController
-            if MinorPGN == 0xdd and buffer(4, 1):uint() > 2 then -- 221 hardware message
+            if MinorPGN == 0xdd and buffer:len() >= 5 and buffer(4, 1):uint() > 2 then -- 221 hardware message
                 local textLength = buffer(4, 1):uint() - 2
-                subtree:add(AOGFields.hwMsgDuration, buffer(5, 1)):append_text(" (x10 render frames)")
-                subtree:add(AOGFields.hwMsgColor, buffer(6, 1)):append_text(buffer(6, 1):uint() == 0 and
-                                                                                " (Salmon, alert)" or " (Bisque, info)")
-                subtree:add(AOGFields.hwMsgText, buffer(7, textLength))
-                pinfo.cols.info = "TC hardware message: " .. buffer(7, textLength):string()
+                -- text starts after the 7-byte header (2 sync + major + minor + len + duration + color);
+                -- a truncated capture would otherwise throw out of the dissector
+                if buffer:len() >= 7 + textLength then
+                    subtree:add(AOGFields.hwMsgDuration, buffer(5, 1)):append_text(" (x10 render frames)")
+                    subtree:add(AOGFields.hwMsgColor, buffer(6, 1)):append_text(buffer(6, 1):uint() == 0 and
+                                                                                    " (Salmon, alert)" or " (Bisque, info)")
+                    subtree:add(AOGFields.hwMsgText, buffer(7, textLength))
+                    pinfo.cols.info = "TC hardware message: " .. buffer(7, textLength):string()
+                end
             end
         end
 

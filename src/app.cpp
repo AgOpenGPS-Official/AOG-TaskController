@@ -742,9 +742,9 @@ void Application::send_hardware_message(const std::string &text, std::uint8_t du
 			std::vector<std::uint8_t> data = { duration, color };
 			data.reserve(2 + message.size());
 			data.insert(data.end(), message.begin(), message.end());
-			udpConnections->send(0x80, 0xDD, data);
+			const bool sent = udpConnections->send(0x80, 0xDD, data);
 
-			std::cout << "[" << get_timestamp() << "] [Hardware Message] " << message << std::endl;
+			std::cout << "[" << get_timestamp() << "] [Hardware Message] " << (sent ? "" : "(send failed) ") << message << std::endl;
 		}
 	}
 }
