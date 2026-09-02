@@ -91,72 +91,64 @@ static void enumerate_bus_control_functions(const std::string &context)
 }
 
 // Check for TC address conflicts and log warning if we couldn't claim preferred address
-static void check_tc_address_conflict(const std::shared_ptr<isobus::InternalControlFunction> &ourTC)
+static bool check_tc_address_conflict(const std::shared_ptr<isobus::InternalControlFunction> &ourTC)
 {
-	if (!ourTC || !ourTC->get_address_valid())
-		return;
-
 	static constexpr std::uint8_t PREFERRED_TC_ADDRESS = isobus::preferred_addresses::IndustryGroup2::TaskController_MappingComputer;
 	static std::uint32_t lastWarnTime = 0;
 	static bool conflictDetected = false;
+	bool conflictActive = false;
+	const bool havePreferredAddress = ourTC && ourTC->get_address_valid() && (ourTC->get_address() == PREFERRED_TC_ADDRESS);
 
-	// Check if we have the preferred address
-	if (ourTC->get_address() == PREFERRED_TC_ADDRESS)
+	if (ourTC && !havePreferredAddress)
 	{
-		// We have the preferred address, clear conflict state
-		if (conflictDetected)
+		// We don't have the preferred address - check if another TC has it.
+		auto allCFs = isobus::CANNetworkManager::CANNetwork.get_control_functions(false);
+		for (const auto &cf : allCFs)
 		{
-			conflictDetected = false;
-			std::cout << "[" << get_timestamp() << "] [TC Address] Successfully claimed preferred address " << static_cast<int>(PREFERRED_TC_ADDRESS) << std::endl;
-		}
-		return;
-	}
-
-	// We don't have the preferred address - check if another TC has it
-	auto allCFs = isobus::CANNetworkManager::CANNetwork.get_control_functions(false);
-
-	for (const auto &cf : allCFs)
-	{
-		if (!cf || !cf->get_address_valid())
-			continue;
-
-		if (cf->get_address() == PREFERRED_TC_ADDRESS && cf != ourTC)
-		{
-			isobus::NAME otherName = cf->get_NAME();
-
-			// Check if it's actually a TC
-			std::uint8_t funcCode = otherName.get_function_code();
-			if (funcCode == static_cast<std::uint8_t>(isobus::NAME::Function::TaskController))
+			if (cf && cf->get_address_valid() && (cf->get_address() == PREFERRED_TC_ADDRESS) && (cf != ourTC))
 			{
-				// Periodic warning every 30 seconds
-				if (isobus::SystemTiming::time_expired_ms(lastWarnTime, 30000))
+				const isobus::NAME otherName = cf->get_NAME();
+				const std::uint8_t funcCode = otherName.get_function_code();
+				if (funcCode == static_cast<std::uint8_t>(isobus::NAME::Function::TaskController))
 				{
-					conflictDetected = true;
-					std::cout << "\n";
-					std::cout << "[" << get_timestamp() << "] [WARN] ==================================================" << std::endl;
-					std::cout << "[" << get_timestamp() << "] [WARN] TC ADDRESS CONFLICT - Another TC at preferred address " << static_cast<int>(PREFERRED_TC_ADDRESS) << std::endl;
-					std::cout << "[" << get_timestamp() << "] [WARN] Conflicting TC: Mfg=" << otherName.get_manufacturer_code()
-					          << ", Func=" << static_cast<int>(funcCode)
-					          << ", Identity=" << otherName.get_identity_number()
-					          << ", ECU Inst=" << static_cast<int>(otherName.get_ecu_instance())
-					          << ", Func Inst=" << static_cast<int>(otherName.get_function_instance()) << std::endl;
-					std::cout << "[" << get_timestamp() << "] [WARN] Our TC using address: " << static_cast<int>(ourTC->get_address()) << std::endl;
-					std::cout << "[" << get_timestamp() << "] [WARN] ==================================================" << std::endl;
-					std::cout << "\n";
-					lastWarnTime = isobus::SystemTiming::get_timestamp_ms();
+					conflictActive = true;
+
+					// Periodic warning every 30 seconds. Conflict detection itself is not throttled.
+					if (isobus::SystemTiming::time_expired_ms(lastWarnTime, 30000))
+					{
+						std::cout << "\n";
+						std::cout << "[" << get_timestamp() << "] [WARN] ==================================================" << std::endl;
+						std::cout << "[" << get_timestamp() << "] [WARN] TC ADDRESS CONFLICT - Another TC at preferred address " << static_cast<int>(PREFERRED_TC_ADDRESS) << std::endl;
+						std::cout << "[" << get_timestamp() << "] [WARN] Conflicting TC: Mfg=" << otherName.get_manufacturer_code()
+						          << ", Func=" << static_cast<int>(funcCode)
+						          << ", Identity=" << otherName.get_identity_number()
+						          << ", ECU Inst=" << static_cast<int>(otherName.get_ecu_instance())
+						          << ", Func Inst=" << static_cast<int>(otherName.get_function_instance()) << std::endl;
+						std::cout << "[" << get_timestamp() << "] [WARN] Our TC using address: " << static_cast<int>(ourTC->get_address()) << std::endl;
+						std::cout << "[" << get_timestamp() << "] [WARN] ==================================================" << std::endl;
+						std::cout << "\n";
+						lastWarnTime = isobus::SystemTiming::get_timestamp_ms();
+					}
+					break;
 				}
-				return; // Only report first conflicting TC found
 			}
 		}
 	}
 
-	// If we get here, we didn't find a conflicting TC at the preferred address
-	// This means we arbitrated to a different address for another reason
-	if (conflictDetected)
+	if (conflictDetected && !conflictActive)
 	{
-		conflictDetected = false;
-		std::cout << "[" << get_timestamp() << "] [TC Address] TC address conflict resolved" << std::endl;
+		if (havePreferredAddress)
+		{
+			std::cout << "[" << get_timestamp() << "] [TC Address] Successfully claimed preferred address " << static_cast<int>(PREFERRED_TC_ADDRESS) << std::endl;
+		}
+		else
+		{
+			std::cout << "[" << get_timestamp() << "] [TC Address] TC address conflict resolved" << std::endl;
+		}
 	}
+	conflictDetected = conflictActive;
+
+	return conflictActive;
 }
 
 Application::Application(std::shared_ptr<isobus::CANHardwarePlugin> canDriver) :
@@ -314,8 +306,7 @@ bool Application::setup_control_functions()
 			tecuClaimAttempts++;
 		}
 
-		// Check if TECU successfully claimed its FIXED address (128)
-		// TECU is non-arbitrary-address-capable and MUST use address 128
+		// TECU is non-arbitrary-address-capable: it must land on its preferred address or not at all
 		if (tecuCF->get_address_valid() && tecuCF->get_address() == isobus::preferred_addresses::IndustryGroup2::TractorECU)
 		{
 			// Record when the address was actually claimed for the 250ms delay calculation
@@ -339,13 +330,14 @@ bool Application::setup_control_functions()
 		}
 		else
 		{
+			tecuAddressClaimFailed = true;
 			if (tecuCF->get_address_valid())
 			{
-				std::cout << "[" << get_timestamp() << "] [Warning] TECU claimed unexpected address " << static_cast<int>(tecuCF->get_address()) << " instead of 128!" << std::endl;
+				std::cout << "[" << get_timestamp() << "] [Warning] TECU claimed unexpected address " << static_cast<int>(tecuCF->get_address()) << " instead of " << static_cast<int>(isobus::preferred_addresses::IndustryGroup2::TractorECU) << "!" << std::endl;
 			}
 			else
 			{
-				std::cout << "[" << get_timestamp() << "] [Warning] TECU failed to claim address 128! Another TECU may be on the bus." << std::endl;
+				std::cout << "[" << get_timestamp() << "] [Warning] TECU failed to claim address " << static_cast<int>(isobus::preferred_addresses::IndustryGroup2::TractorECU) << "! Another TECU may be on the bus." << std::endl;
 			}
 			std::cout << "[" << get_timestamp() << "] [Warning] TECU functionality will be disabled." << std::endl;
 			tecuCF.reset(); // Release the failed control function
@@ -587,8 +579,66 @@ bool Application::update()
 	static std::uint32_t lastConflictCheck = 0;
 	if (isobus::SystemTiming::time_expired_ms(lastConflictCheck, 15000))
 	{
-		check_tc_address_conflict(tcCF);
+		const bool conflictActive = check_tc_address_conflict(tcCF);
+		if (conflictActive)
+		{
+			send_hardware_message("TC address conflict: preferred address in use", 20, HW_MSG_ALERT);
+		}
+		else if (tcAddressConflictActive)
+		{
+			send_hardware_message("TC address conflict resolved", 5, HW_MSG_INFO);
+		}
+		tcAddressConflictActive = conflictActive;
 		lastConflictCheck = isobus::SystemTiming::get_timestamp_ms();
+	}
+
+	// Diff active implement clients once per second so disconnect messages retain prior metadata.
+	static std::uint32_t lastImplementScanMs = 0;
+	if (isobus::SystemTiming::time_expired_ms(lastImplementScanMs, 1000))
+	{
+		std::map<std::uint64_t, ImplementSnapshot> currentImplementSnapshots;
+		for (auto &client : tcServer->get_clients())
+		{
+			auto &state = client.second;
+			if (state.get_number_of_sections() > 0)
+			{
+				const ImplementDetails details = derive_implement_details(state);
+				currentImplementSnapshots[client.first->get_NAME().get_full_name()] = { details.displayName, details.sections, details.widthText };
+			}
+		}
+
+		for (const auto &[name, implement] : currentImplementSnapshots)
+		{
+			if (implementSnapshots.find(name) == implementSnapshots.end())
+			{
+				std::ostringstream message;
+				message << "Implement: " << implement.displayName << " (" << static_cast<int>(implement.sections) << " sections";
+				if (!implement.widthText.empty())
+				{
+					message << ", " << implement.widthText << " m";
+				}
+				message << ")";
+				send_hardware_message(message.str(), 5, HW_MSG_INFO);
+			}
+		}
+
+		for (const auto &[name, implement] : implementSnapshots)
+		{
+			if (currentImplementSnapshots.find(name) == currentImplementSnapshots.end())
+			{
+				send_hardware_message("Implement lost: " + implement.displayName, 10, HW_MSG_ALERT);
+			}
+		}
+
+		implementSnapshots = std::move(currentImplementSnapshots);
+		lastImplementScanMs = isobus::SystemTiming::get_timestamp_ms();
+	}
+
+	// This is deferred from setup_control_functions() until UDP is ready.
+	if (tecuAddressClaimFailed)
+	{
+		send_hardware_message("TECU failed to claim address " + std::to_string(static_cast<int>(isobus::preferred_addresses::IndustryGroup2::TractorECU)), 10, HW_MSG_ALERT);
+		tecuAddressClaimFailed = false;
 	}
 
 	// Send section control heartbeat to AOG every 100ms (PGN 0xF0, source 0x80)
@@ -669,6 +719,116 @@ bool Application::update()
 	}
 
 	return true;
+}
+
+void Application::send_hardware_message(const std::string &text, std::uint8_t duration, std::uint8_t color)
+{
+	if (!text.empty())
+	{
+		static constexpr std::size_t MAX_TEXT_BYTES = 60;
+		std::size_t textLength = text.size();
+		if (textLength > MAX_TEXT_BYTES)
+		{
+			textLength = MAX_TEXT_BYTES;
+			while ((textLength > 0) && ((static_cast<unsigned char>(text[textLength]) & 0xC0) == 0x80))
+			{
+				textLength--;
+			}
+		}
+
+		const std::string message = text.substr(0, textLength);
+		if (!message.empty())
+		{
+			std::vector<std::uint8_t> data = { duration, color };
+			data.reserve(2 + message.size());
+			data.insert(data.end(), message.begin(), message.end());
+			udpConnections->send(0x80, 0xDD, data);
+
+			std::cout << "[" << get_timestamp() << "] [Hardware Message] " << message << std::endl;
+		}
+	}
+}
+
+Application::ImplementDetails Application::derive_implement_details(ClientState &state) const
+{
+	ImplementDetails details;
+	details.sections = state.get_number_of_sections();
+	auto &pool = state.get_pool();
+	if (auto deviceObject = pool.get_object_by_index(0))
+	{
+		const std::string designator = deviceObject->get_designator();
+		if (!designator.empty())
+		{
+			details.displayName = designator;
+		}
+	}
+
+	std::int32_t totalWidthMillimetres = 0;
+	const auto geometry = isobus::DeviceDescriptorObjectPoolHelper::get_implement_geometry(pool);
+	if (!geometry.booms.empty())
+	{
+		const auto &boom = geometry.booms.front();
+		if (boom.xOffset_mm || boom.yOffset_mm)
+		{
+			std::ostringstream offsetText;
+			offsetText << std::fixed << std::setprecision(2);
+			if (boom.xOffset_mm)
+			{
+				offsetText << "X:" << std::showpos
+				           << (static_cast<double>(boom.xOffset_mm.get()) / 1000.0)
+				           << std::noshowpos;
+			}
+			else
+			{
+				offsetText << "X:n/a";
+			}
+			offsetText << " ";
+			if (boom.yOffset_mm)
+			{
+				offsetText << "Y:" << std::showpos
+				           << (static_cast<double>(boom.yOffset_mm.get()) / 1000.0)
+				           << std::noshowpos;
+			}
+			else
+			{
+				offsetText << "Y:n/a";
+			}
+			details.boomOffsetText = offsetText.str();
+		}
+	}
+
+	for (const auto &boom : geometry.booms)
+	{
+		for (const auto &section : boom.sections)
+		{
+			if (section.width_mm)
+			{
+				totalWidthMillimetres += section.width_mm.get();
+			}
+		}
+		for (const auto &subBoom : boom.subBooms)
+		{
+			if (subBoom.sections.empty() && subBoom.width_mm)
+			{
+				totalWidthMillimetres += subBoom.width_mm.get();
+			}
+			for (const auto &section : subBoom.sections)
+			{
+				if (section.width_mm)
+				{
+					totalWidthMillimetres += section.width_mm.get();
+				}
+			}
+		}
+	}
+	if (totalWidthMillimetres > 0)
+	{
+		std::ostringstream widthText;
+		widthText << std::fixed << std::setprecision(2) << (static_cast<double>(totalWidthMillimetres) / 1000.0);
+		details.widthText = widthText.str();
+	}
+
+	return details;
 }
 
 void Application::send_task_controller_status_message()
@@ -1039,77 +1199,12 @@ void Application::update_vt_status_strings(bool aogConnected)
 	if (!clients.empty())
 	{
 		auto &state = clients.begin()->second;
-		auto &pool = state.get_pool();
-		if (auto deviceObject = pool.get_object_by_index(0))
-		{
-			implementName = deviceObject->get_designator();
-		}
+		const ImplementDetails details = derive_implement_details(state);
+		implementName = details.displayName;
 		sectionControl = state.is_section_control_enabled() ? "ENABLED" : "DISABLED";
-		implementSections = state.get_number_of_sections();
-
-		std::int32_t totalWidthMillimetres = 0;
-		const auto geometry = isobus::DeviceDescriptorObjectPoolHelper::get_implement_geometry(pool);
-		if (!geometry.booms.empty())
-		{
-			const auto &boom = geometry.booms.front();
-			if (boom.xOffset_mm || boom.yOffset_mm)
-			{
-				std::ostringstream offsetText;
-				offsetText << std::fixed << std::setprecision(2);
-				if (boom.xOffset_mm)
-				{
-					offsetText << "X:" << std::showpos
-					           << (static_cast<double>(boom.xOffset_mm.get()) / 1000.0)
-					           << std::noshowpos;
-				}
-				else
-				{
-					offsetText << "X:n/a";
-				}
-				offsetText << " ";
-				if (boom.yOffset_mm)
-				{
-					offsetText << "Y:" << std::showpos
-					           << (static_cast<double>(boom.yOffset_mm.get()) / 1000.0)
-					           << std::noshowpos;
-				}
-				else
-				{
-					offsetText << "Y:n/a";
-				}
-				boomOffset = offsetText.str();
-			}
-		}
-		for (const auto &boom : geometry.booms)
-		{
-			for (const auto &section : boom.sections)
-			{
-				if (section.width_mm)
-				{
-					totalWidthMillimetres += section.width_mm.get();
-				}
-			}
-			for (const auto &subBoom : boom.subBooms)
-			{
-				if (subBoom.sections.empty() && subBoom.width_mm)
-				{
-					totalWidthMillimetres += subBoom.width_mm.get();
-				}
-				for (const auto &section : subBoom.sections)
-				{
-					if (section.width_mm)
-					{
-						totalWidthMillimetres += section.width_mm.get();
-					}
-				}
-			}
-		}
-		if (totalWidthMillimetres > 0)
-		{
-			std::ostringstream widthText;
-			widthText << std::fixed << std::setprecision(2) << (static_cast<double>(totalWidthMillimetres) / 1000.0);
-			workingWidth = widthText.str();
-		}
+		implementSections = details.sections;
+		workingWidth = details.widthText.empty() ? "n/a" : details.widthText;
+		boomOffset = details.boomOffsetText.empty() ? "n/a" : details.boomOffsetText;
 	}
 	const std::string implementDisplayName = implementName.substr(0, 16);
 	const std::string activeDDOP = clients.empty() ? "none" : implementDisplayName;
