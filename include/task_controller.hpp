@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include "guidance_track_context.hpp"
 #include "isobus/isobus/isobus_data_dictionary.hpp"
 #include "isobus/isobus/isobus_device_descriptor_object_pool.hpp"
 #include "isobus/isobus/isobus_standard_data_description_indices.hpp"
@@ -26,6 +27,16 @@ enum SectionState : std::uint8_t
 	ON = 1, ///< Section is on
 	ERROR_SATE = 2, ///< Section is in an error state
 	NOT_INSTALLED = 3 ///< Section is not installed
+};
+
+// Tramline control level bitmask (ISO 11783-10)
+// An implement may support any combination of levels.
+enum class TramlineLevel : std::uint8_t
+{
+	None = 0,
+	Level1 = 1, ///< Track info: ActualTrackNumber, adjacent tracks, swath width
+	Level2 = 2, ///< Control state: TramlineControlState, SequenceNumber
+	Level3 = 4 ///< Direct valve control: SetpointTramlineCondensedWorkState
 };
 
 class ClientState
@@ -57,6 +68,35 @@ public:
 	void set_element_work_state(std::uint16_t elementNumber, bool isWorking);
 	bool try_get_element_work_state(std::uint16_t elementNumber, bool &isWorking) const;
 
+	// Tramline support — DDI 505 bitmask from implement (raw value, not inferred)
+	int get_supported_tramline_levels_bitmask() const;
+	void set_supported_tramline_levels_bitmask(int bitmask);
+
+	// Track negotiation state (DDI 505/506 handshake complete)
+	bool is_track_negotiation_complete() const;
+	void set_track_negotiation_complete(bool complete);
+
+	// Track control enabled (separate from section control, Requirement 7)
+	bool is_track_control_enabled() const;
+	void set_track_control_enabled(bool enabled);
+
+	void set_actual_tramline_control_state(std::int32_t value);
+	std::int32_t get_actual_tramline_control_state() const;
+	std::uint32_t get_tramline_sequence_number() const;
+	void increment_tramline_sequence_number();
+
+	// Last sent track number — used to detect changes for DDI 507 sequence increment
+	std::int32_t get_last_sent_track_number() const;
+	void set_last_sent_track_number(std::int32_t trackNumber);
+
+	// DDI 505/506 presence flags
+	bool get_has_tramline_control_level() const;
+	void set_has_tramline_control_level(bool has);
+	bool get_has_setpoint_tramline_control_level() const;
+	void set_has_setpoint_tramline_control_level(bool has);
+	bool is_setpoint_level_sent() const;
+	void set_setpoint_level_sent(bool sent);
+
 private:
 	isobus::DeviceDescriptorObjectPool pool; ///< The device descriptor object pool (DDOP) for the TC
 	bool areMeasurementCommandsSent = false; ///< Whether or not the measurement commands have been sent
@@ -70,6 +110,15 @@ private:
 	bool actualWorkState = false; ///< The overall work state actual
 	std::map<std::uint16_t, bool> elementWorkStates; ///< Work state per element (element number -> is working)
 	bool isSectionControlEnabled = false; ///< Stores auto vs manual mode setting
+	int supportedTramlineLevelsBitmask = 0; ///< Raw DDI 505 bitmask from implement (bit 0=L1, bit 1=L2, bit 2=L3)
+	bool trackNegotiationComplete = false; ///< DDI 505/506 handshake completed
+	bool trackControlEnabled = false; ///< Track control enabled (separate from section control)
+	std::int32_t actualTramlineControlState = 0; ///< Actual tramline control state reported by implement (DDI 0x0203)
+	std::int32_t lastSentTrackNumber = 0; ///< Last track number sent, for DDI 507 change detection
+	std::uint32_t tramlineSequenceNumber = 0; ///< Per-client tramline sequence number (DDI 507)
+	bool hasTramlineControlLevelDDI = false; ///< Implement has DDI 505 (TramlineControlLevel)
+	bool hasSetpointTramlineControlLevelDDI = false; ///< Implement has DDI 506 (SetpointTramlineControlLevel)
+	bool setpointLevelSent = false; ///< Whether we've already written DDI 506
 };
 
 // Create the task controller server object, this will handle all the ISOBUS communication for us
@@ -99,6 +148,8 @@ public:
 	void request_measurement_commands();
 	void update_section_states(std::vector<bool> &sectionStates);
 	void update_section_control_enabled(bool enabled);
+	void update_track_control_enabled(bool enabled);
+	void send_tramline_track_data(const GuidanceTrackContext &ctx, std::int32_t swathWidthMm, std::int32_t lineDeviationMm);
 
 private:
 	void send_section_setpoint_states(std::shared_ptr<isobus::ControlFunction> client, std::uint8_t ddiOffset);

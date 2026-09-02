@@ -22,6 +22,7 @@
 #include "isobus/isobus/isobus_virtual_terminal_client_update_helper.hpp"
 #include "isobus/isobus/nmea2000_message_interface.hpp"
 
+#include "guidance_track_context.hpp"
 #include "logging_utils.hpp"
 #include "settings.hpp"
 #include "task_controller.hpp"
@@ -91,6 +92,15 @@ private:
 	std::int32_t lastXteValue = 0;
 	std::uint32_t lastDistanceMm = 0;
 	std::uint32_t lastAogPacketMs = 0;
+
+	// Guidance track context — synthetic provider derives from AOG tram marker bits.
+	// TEMPORARY: Replace with real AOG guidance-track data when available.
+	SyntheticGuidanceTrackProvider trackProvider;
+	GuidanceTrackContext currentTrackContext;
+	bool tramLeftActive = false; ///< Left tramline marker active (cached for VT display)
+	bool tramRightActive = false; ///< Right tramline marker active (cached for VT display)
+	bool trackControlEnabled = false; ///< Track control enabled (separate from section control)
+
 	bool tractorFacilitiesSentOnPowerUp = false;
 	std::uint32_t vtDisconnectedSinceMs = 0;
 	std::uint32_t lastVtStatusUpdateMs = 0;

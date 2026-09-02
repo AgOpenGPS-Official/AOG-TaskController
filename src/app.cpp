@@ -55,7 +55,7 @@ static bool get_system_time(isobus::TimeDateInterface::TimeAndDate &td)
 	auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
 	            now.time_since_epoch())
 	            .count() %
-	          1000;
+	  1000;
 
 	struct tm tm_now;
 #ifdef _WIN32
@@ -101,7 +101,8 @@ static bool log_repetition_rate_request(
 // These bypass the per-ICF callback, so we catch them with a global
 // PGN listener.
 static void log_broadcast_repetition_rate(
-  const isobus::CANMessage &message, void * /*parentPointer*/)
+  const isobus::CANMessage &message,
+  void * /*parentPointer*/)
 {
 	const auto &data = message.get_data();
 	if (data.size() < 8)
@@ -492,7 +493,16 @@ void Application::setup_task_controller_server()
 	  1,
 	  true);
 	tcFunctionalities->set_task_controller_section_control_server_option_state(1, 64);
-	std::cout << "[" << get_timestamp() << "] [Init] TC announced TC-BAS and TC-SC (1 boom / 64 sections) via PGN 64654" << std::endl;
+
+	// Announce Task Controller Tramline (TRACK) Server — Functionality 27
+	// This tells the implement we support tramline control.
+	// The AgIsoStack library doesn't have this enum value yet, so cast it directly.
+	tcFunctionalities->set_functionality_is_supported(
+	  static_cast<isobus::ControlFunctionFunctionalities::Functionalities>(27),
+	  1, // Version 1
+	  true);
+
+	std::cout << "[" << get_timestamp() << "] [Init] TC announced TC-BAS, TC-SC (1 boom / 64 sections), and TC-TRAM (TRACK) via PGN 64654" << std::endl;
 
 	// Register repetition-rate diagnostic on the TC's PGN request protocol
 	auto tcPgnReq = tcCF->get_pgn_request_protocol().lock();
@@ -626,6 +636,30 @@ void Application::setup_udp_connections()
 			std::uint8_t sectionControlState = data[0];
 			std::cout << "[" << get_timestamp() << "] Received request from AOG to change section control state to " << (sectionControlState == 1 ? "enabled" : "disabled") << std::endl;
 			tcServer->update_section_control_enabled(sectionControlState == 1);
+			tcServer->update_track_control_enabled(sectionControlState == 1);
+		}
+		else if (pgn == 0xEF) // 239 - Machine Data
+		{
+			lastAogPacketMs = isobus::SystemTiming::get_timestamp_ms();
+
+			if (data.size() < 4)
+			{
+				std::cout << "[" << get_timestamp() << "] [AOG] PGN 0xEF received but too short (len=" << data.size() << ")" << std::endl;
+				return;
+			}
+
+			// PGN 239 wire layout: [sentinel 0x80 0x81] [src] [pgn] [len] [uturn speed hydLift TRAM geoStop ... SC1to8 SC9to16]
+			// Tram is at frame byte 8 (Lua buffer(8,1)) = payload byte 3 (data[3])
+			// bit 0 = left marker, bit 1 = right marker (verify polarity against AOG CTram)
+			bool newTramLeft = (data[3] & 0x01) != 0;
+			bool newTramRight = (data[3] & 0x02) != 0;
+
+			// Update synthetic track provider (edge detection + context generation)
+			currentTrackContext = trackProvider.update(newTramLeft, newTramRight);
+
+			// Cache tram marker state for VT display only
+			tramLeftActive = newTramLeft;
+			tramRightActive = newTramRight;
 		}
 		else if (pgn == 0xF2 && data.size() >= 6) // Process Data
 		{
@@ -698,6 +732,25 @@ void Application::setup_udp_connections()
 					speedMessagesInterface->wheelBasedSpeedTransmitData.set_machine_distance(lastDistanceMm);
 					speedMessagesInterface->machineSelectedSpeedTransmitData.set_machine_distance(lastDistanceMm);
 				}
+			}
+		}
+		else
+		{
+			// Log any PGN we don't explicitly handle — helps discover what AOG actually sends
+			static std::uint32_t lastUnknownPgnLogMs = 0;
+			if (isobus::SystemTiming::time_expired_ms(lastUnknownPgnLogMs, 5000))
+			{
+				std::cout << "[" << get_timestamp() << "] [AOG] Received unknown PGN 0x" << std::hex << static_cast<int>(pgn)
+				          << std::dec << " (len=" << data.size() << ")";
+				if (!data.empty())
+				{
+					std::cout << " data:";
+					for (size_t i = 0; i < data.size() && i < 16; i++)
+						std::cout << " " << std::hex << static_cast<int>(data[i]);
+					std::cout << std::dec;
+				}
+				std::cout << std::endl;
+				lastUnknownPgnLogMs = isobus::SystemTiming::get_timestamp_ms();
 			}
 		}
 	};
@@ -868,6 +921,20 @@ bool Application::update()
 			std::cout << "[" << get_timestamp() << "] [TC Status] First TC Status message sent (PGN 0xCB00)" << std::endl;
 			firstStatusSent = true;
 		}
+	}
+
+	// Send tramline track data to implement every 250 ms
+	static std::uint32_t lastTramlineSendMs = 0;
+	if (tcServer && isobus::SystemTiming::time_expired_ms(lastTramlineSendMs, 250))
+	{
+		// GuidanceLineDeviation (DDI 0x0201) from AOG's XTE
+		std::int32_t lineDevMm = lastXteValue;
+
+		// GuidanceLineSwathWidth (DDI 0x0200) — 6000mm for ESPRO; TODO: derive from DDOP geometry
+		std::int32_t swathMm = 6000;
+
+		tcServer->send_tramline_track_data(currentTrackContext, swathMm, lineDevMm);
+		lastTramlineSendMs = isobus::SystemTiming::get_timestamp_ms();
 	}
 
 	return true;
@@ -1238,79 +1305,87 @@ void Application::update_vt_status_strings(bool aogConnected)
 	std::string workingWidth = "n/a";
 	std::string boomOffset = "n/a";
 	std::uint8_t implementSections = 0;
-	if (!clients.empty())
-	{
-		auto &state = clients.begin()->second;
-		auto &pool = state.get_pool();
-		if (auto deviceObject = pool.get_object_by_index(0))
-		{
-			implementName = deviceObject->get_designator();
-		}
-		sectionControl = state.is_section_control_enabled() ? "ENABLED" : "DISABLED";
-		implementSections = state.get_number_of_sections();
+	int implementTramlineLevels = 0;
 
-		std::int32_t totalWidthMillimetres = 0;
-		const auto geometry = isobus::DeviceDescriptorObjectPoolHelper::get_implement_geometry(pool);
-		if (!geometry.booms.empty())
+	// Find the first client with sections (the implement), skip tractors with 0 sections
+	for (auto &client : clients)
+	{
+		if (client.second.get_number_of_sections() > 0)
 		{
-			const auto &boom = geometry.booms.front();
-			if (boom.xOffset_mm || boom.yOffset_mm)
+			auto &state = client.second;
+			auto &pool = state.get_pool();
+			if (auto deviceObject = pool.get_object_by_index(0))
 			{
-				std::ostringstream offsetText;
-				offsetText << std::fixed << std::setprecision(2);
-				if (boom.xOffset_mm)
-				{
-					offsetText << "X:" << std::showpos
-					           << (static_cast<double>(boom.xOffset_mm.get()) / 1000.0)
-					           << std::noshowpos;
-				}
-				else
-				{
-					offsetText << "X:n/a";
-				}
-				offsetText << " ";
-				if (boom.yOffset_mm)
-				{
-					offsetText << "Y:" << std::showpos
-					           << (static_cast<double>(boom.yOffset_mm.get()) / 1000.0)
-					           << std::noshowpos;
-				}
-				else
-				{
-					offsetText << "Y:n/a";
-				}
-				boomOffset = offsetText.str();
+				implementName = deviceObject->get_designator();
 			}
-		}
-		for (const auto &boom : geometry.booms)
-		{
-			for (const auto &section : boom.sections)
+			sectionControl = state.is_section_control_enabled() ? "ENABLED" : "DISABLED";
+			implementSections = state.get_number_of_sections();
+			implementTramlineLevels = state.get_supported_tramline_levels_bitmask();
+
+			std::int32_t totalWidthMillimetres = 0;
+			const auto geometry = isobus::DeviceDescriptorObjectPoolHelper::get_implement_geometry(pool);
+			if (!geometry.booms.empty())
 			{
-				if (section.width_mm)
+				const auto &boom = geometry.booms.front();
+				if (boom.xOffset_mm || boom.yOffset_mm)
 				{
-					totalWidthMillimetres += section.width_mm.get();
+					std::ostringstream offsetText;
+					offsetText << std::fixed << std::setprecision(2);
+					if (boom.xOffset_mm)
+					{
+						offsetText << "X:" << std::showpos
+						           << (static_cast<double>(boom.xOffset_mm.get()) / 1000.0)
+						           << std::noshowpos;
+					}
+					else
+					{
+						offsetText << "X:n/a";
+					}
+					offsetText << " ";
+					if (boom.yOffset_mm)
+					{
+						offsetText << "Y:" << std::showpos
+						           << (static_cast<double>(boom.yOffset_mm.get()) / 1000.0)
+						           << std::noshowpos;
+					}
+					else
+					{
+						offsetText << "Y:n/a";
+					}
+					boomOffset = offsetText.str();
 				}
 			}
-			for (const auto &subBoom : boom.subBooms)
+			for (const auto &boom : geometry.booms)
 			{
-				if (subBoom.sections.empty() && subBoom.width_mm)
-				{
-					totalWidthMillimetres += subBoom.width_mm.get();
-				}
-				for (const auto &section : subBoom.sections)
+				for (const auto &section : boom.sections)
 				{
 					if (section.width_mm)
 					{
 						totalWidthMillimetres += section.width_mm.get();
 					}
 				}
+				for (const auto &subBoom : boom.subBooms)
+				{
+					if (subBoom.sections.empty() && subBoom.width_mm)
+					{
+						totalWidthMillimetres += subBoom.width_mm.get();
+					}
+					for (const auto &section : subBoom.sections)
+					{
+						if (section.width_mm)
+						{
+							totalWidthMillimetres += section.width_mm.get();
+						}
+					}
+				}
 			}
-		}
-		if (totalWidthMillimetres > 0)
-		{
-			std::ostringstream widthText;
-			widthText << std::fixed << std::setprecision(2) << (static_cast<double>(totalWidthMillimetres) / 1000.0);
-			workingWidth = widthText.str();
+			if (totalWidthMillimetres > 0)
+			{
+				std::ostringstream widthText;
+				widthText << std::fixed << std::setprecision(2) << (static_cast<double>(totalWidthMillimetres) / 1000.0);
+				workingWidth = widthText.str();
+			}
+			break; // Use the first implement with sections
 		}
 	}
 	const std::string implementDisplayName = implementName.substr(0, 16);
@@ -1340,6 +1415,36 @@ void Application::update_vt_status_strings(bool aogConnected)
 	mainImplementStatus << "Name             " << implementDisplayName << '\n'
 	                    << "Sections         " << totalSections << '\n'
 	                    << "Section control  " << sectionControl;
+
+	// Live tramline state from AOG + capability level from implement
+	{
+		std::string tramLive;
+		if (aogConnected)
+		{
+			std::ostringstream liveStr;
+			liveStr << "L:" << (tramLeftActive ? 1 : 0)
+			        << " R:" << (tramRightActive ? 1 : 0)
+			        << "  Track " << currentTrackContext.actualTrackNumber;
+			tramLive = liveStr.str();
+		}
+		else
+		{
+			tramLive = "n/a";
+		}
+
+		std::string tramCaps;
+		if (implementTramlineLevels & static_cast<int>(TramlineLevel::Level1))
+			tramCaps += "L1 ";
+		if (implementTramlineLevels & static_cast<int>(TramlineLevel::Level2))
+			tramCaps += "L2 ";
+		if (implementTramlineLevels & static_cast<int>(TramlineLevel::Level3))
+			tramCaps += "L3 ";
+		if (tramCaps.empty())
+			tramCaps = "NONE";
+
+		mainImplementStatus << "\nTram state       " << tramLive
+		                    << "\nTram levels      " << tramCaps;
+	}
 	send_vt_string_if_changed(VTSectionsFromAOGS, mainImplementStatus.str());
 
 	std::ostringstream distanceText;
