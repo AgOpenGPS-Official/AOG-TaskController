@@ -343,6 +343,16 @@ void ClientState::set_last_sent_track_number(std::int32_t trackNumber)
 	lastSentTrackNumber = trackNumber;
 }
 
+std::uint32_t ClientState::get_last_sent_reference_line_id() const
+{
+	return lastSentReferenceLineId;
+}
+
+void ClientState::set_last_sent_reference_line_id(std::uint32_t referenceLineId)
+{
+	lastSentReferenceLineId = referenceLineId;
+}
+
 bool ClientState::get_has_tramline_control_level() const
 {
 	return hasTramlineControlLevelDDI;
@@ -1117,13 +1127,10 @@ bool MyTCServer::is_ddi_settable(std::shared_ptr<isobus::ControlFunction> client
 	return false;
 }
 
-void MyTCServer::send_tramline_track_data(const GuidanceTrackContext &ctx, std::int32_t swathWidthMm, std::int32_t lineDeviationMm)
+void MyTCServer::send_tramline_track_data(const GuidanceTrackContext &ctx, std::int32_t swathWidthMm, std::int32_t lineDeviationMm, std::uint8_t gnssFixQuality)
 {
 	// Send coherent TRACK context to all clients that have completed DDI 505/506 negotiation.
 	// Do NOT send track data before negotiation is complete (Requirement 9).
-	if (!ctx.valid)
-		return;
-
 	for (auto &client : clients)
 	{
 		auto &state = client.second;
@@ -1143,38 +1150,47 @@ void MyTCServer::send_tramline_track_data(const GuidanceTrackContext &ctx, std::
 			}
 		};
 
-		// DDI 507 sequence: increment when track context changes (not on section control toggle).
-		// Detect change by comparing actual track number against last sent value.
-		bool contextChanged = (ctx.actualTrackNumber != state.get_last_sent_track_number());
-		if (contextChanged)
+		// Track-specific DDIs (507-511, swath, deviation) only make sense while a track is
+		// actually active — GNSS quality below is independent and sent regardless of ctx.valid.
+		if (ctx.valid)
 		{
-			state.increment_tramline_sequence_number();
-			state.set_last_sent_track_number(ctx.actualTrackNumber);
+			// DDI 507 sequence: increment when track context changes (not on section control toggle).
+			// Detect change by comparing the actual track number AND the reference line ID against
+			// the last sent values — a line switch can land on the same track index.
+			bool contextChanged = (ctx.actualTrackNumber != state.get_last_sent_track_number()) ||
+			  (ctx.guidanceReferenceLineId != state.get_last_sent_reference_line_id());
+			if (contextChanged)
+			{
+				state.increment_tramline_sequence_number();
+				state.set_last_sent_track_number(ctx.actualTrackNumber);
+				state.set_last_sent_reference_line_id(ctx.guidanceReferenceLineId);
+			}
+
+			// Send DDIs in coherent ordering per the TRACK guideline:
+			// 507 (sequence) -> 508 (ref line ID) -> 509 (actual track) -> 510 (right) -> 511 (left)
+			if (state.has_element_number_for_ddi(isobus::DataDescriptionIndex::TramlineSequenceNumber))
+			{
+				trySend(isobus::DataDescriptionIndex::TramlineSequenceNumber,
+				        static_cast<std::int32_t>(state.get_tramline_sequence_number()));
+			}
+			trySend(isobus::DataDescriptionIndex::UniqueABGuidanceReferenceLineID,
+			        static_cast<std::int32_t>(ctx.guidanceReferenceLineId));
+			trySend(isobus::DataDescriptionIndex::ActualTrackNumber, ctx.actualTrackNumber);
+			trySend(isobus::DataDescriptionIndex::TrackNumberToTheRight, ctx.trackNumberRight);
+			trySend(isobus::DataDescriptionIndex::TrackNumberToTheLeft, ctx.trackNumberLeft);
+
+			// Supplemental Level 1 DDIs
+			if (swathWidthMm > 0)
+			{
+				trySend(isobus::DataDescriptionIndex::GuidanceLineSwathWidth, swathWidthMm);
+			}
+			trySend(isobus::DataDescriptionIndex::GuidanceLineDeviation, lineDeviationMm);
 		}
 
-		// Send DDIs in coherent ordering per the TRACK guideline:
-		// 507 (sequence) -> 508 (ref line ID) -> 509 (actual track) -> 510 (right) -> 511 (left)
-		if (state.has_element_number_for_ddi(isobus::DataDescriptionIndex::TramlineSequenceNumber))
-		{
-			trySend(isobus::DataDescriptionIndex::TramlineSequenceNumber,
-			        static_cast<std::int32_t>(state.get_tramline_sequence_number()));
-		}
-		trySend(isobus::DataDescriptionIndex::UniqueABGuidanceReferenceLineID,
-		        static_cast<std::int32_t>(ctx.guidanceReferenceLineId));
-		trySend(isobus::DataDescriptionIndex::ActualTrackNumber, ctx.actualTrackNumber);
-		trySend(isobus::DataDescriptionIndex::TrackNumberToTheRight, ctx.trackNumberRight);
-		trySend(isobus::DataDescriptionIndex::TrackNumberToTheLeft, ctx.trackNumberLeft);
-
-		// Supplemental Level 1 DDIs
-		if (swathWidthMm > 0)
-		{
-			trySend(isobus::DataDescriptionIndex::GuidanceLineSwathWidth, swathWidthMm);
-		}
-		trySend(isobus::DataDescriptionIndex::GuidanceLineDeviation, lineDeviationMm);
-
-		// GNSS Quality (DDI 514): 0=No GPS, 1=GNSS, 2=DGNSS, 3=Precise, 4=RTK Fixed, 5=RTK Float
-		// Fake RTK Fixed (4) to satisfy implement requirements
-		trySend(isobus::DataDescriptionIndex::GNSSQuality, 4);
+		// GNSS Quality (DDI 514): sourced from AOG PGN 0xD6 fix quality byte. Independent of
+		// track validity, so it's sent whenever the client has the element, active track or not.
+		// 0=No GPS, 1=GNSS, 2=DGNSS, 3=Precise, 4=RTK Fixed, 5=RTK Float
+		trySend(isobus::DataDescriptionIndex::GNSSQuality, static_cast<std::int32_t>(gnssFixQuality));
 
 		// TramlineControlState (DDI 515) is owned solely by update_track_control_enabled().
 		// Do NOT write it from here.

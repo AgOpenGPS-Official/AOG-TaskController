@@ -57,23 +57,33 @@ static bool get_system_time(isobus::TimeDateInterface::TimeAndDate &td)
 	            .count() %
 	  1000;
 
-	struct tm tm_now;
+	struct tm tm_utc;
+	struct tm tm_local;
 #ifdef _WIN32
-	localtime_s(&tm_now, &time_t_now);
+	gmtime_s(&tm_utc, &time_t_now);
+	localtime_s(&tm_local, &time_t_now);
+	const std::time_t localAsIfUtc = _mkgmtime(&tm_local);
 #else
-	localtime_r(&time_t_now, &tm_now);
+	gmtime_r(&time_t_now, &tm_utc);
+	localtime_r(&time_t_now, &tm_local);
+	const std::time_t localAsIfUtc = timegm(&tm_local);
 #endif
 
-	td.year = static_cast<std::uint16_t>(tm_now.tm_year + 1900);
-	td.month = static_cast<std::uint8_t>(tm_now.tm_mon + 1);
-	td.day = static_cast<std::uint8_t>(tm_now.tm_mday);
-	td.hours = static_cast<std::uint8_t>(tm_now.tm_hour);
-	td.minutes = static_cast<std::uint8_t>(tm_now.tm_min);
-	td.seconds = static_cast<std::uint8_t>(tm_now.tm_sec);
+	// PGN 65254 (FEE6) requires the main fields to be UTC; localHourOffset/localMinuteOffset
+	// are what a receiver adds to UTC to reconstruct local time. Derive the real, DST-aware
+	// offset by comparing the local wall-clock fields (reinterpreted as UTC) against true UTC.
+	const long offsetSeconds = static_cast<long>(localAsIfUtc - time_t_now);
+
+	td.year = static_cast<std::uint16_t>(tm_utc.tm_year + 1900);
+	td.month = static_cast<std::uint8_t>(tm_utc.tm_mon + 1);
+	td.day = static_cast<std::uint8_t>(tm_utc.tm_mday);
+	td.hours = static_cast<std::uint8_t>(tm_utc.tm_hour);
+	td.minutes = static_cast<std::uint8_t>(tm_utc.tm_min);
+	td.seconds = static_cast<std::uint8_t>(tm_utc.tm_sec);
 	td.milliseconds = static_cast<std::uint16_t>((ms / 250) * 250); // J1939: 0.25s resolution
-	td.quarterDays = static_cast<std::uint8_t>(tm_now.tm_hour / 6);
-	td.localHourOffset = 0;
-	td.localMinuteOffset = 0;
+	td.quarterDays = static_cast<std::uint8_t>(tm_utc.tm_hour / 6);
+	td.localHourOffset = static_cast<std::int8_t>(offsetSeconds / 3600);
+	td.localMinuteOffset = static_cast<std::int8_t>((offsetSeconds % 3600) / 60);
 	return true;
 }
 
@@ -612,6 +622,38 @@ void Application::setup_udp_connections()
 	static std::uint32_t lastXteTransmit = 0;
 
 	auto packetHandler = [this](std::uint8_t src, std::uint8_t pgn, std::span<std::uint8_t> data) {
+		// PGN 0xD6 (214) — GPS/IMU data from AOG (src=0x7C, frame [0x80,0x81,0x7C,0xD6,...]).
+		// Only the fix-quality byte is consumed today; the rest of the frame (position,
+		// heading, speed, etc.) is not yet parsed by this TC.
+		static constexpr std::size_t GNSS_FIX_QUALITY_OFFSET = 38; // frame byte 43
+		static constexpr std::size_t MIN_0xD6_PAYLOAD_SIZE = GNSS_FIX_QUALITY_OFFSET + 1;
+		if (src == 0x7C && pgn == 0xD6)
+		{
+			static std::uint8_t lastLoggedQuality = 0xFF;
+			if (data.size() < MIN_0xD6_PAYLOAD_SIZE)
+			{
+				std::cout << "[" << get_timestamp() << "] [AOG] PGN 0xD6 received but too short for fix quality (len="
+				          << data.size() << ")" << std::endl;
+				return;
+			}
+
+			std::uint8_t quality = data[GNSS_FIX_QUALITY_OFFSET];
+			// AOG fix values: 0=invalid, 1=GPS, 2=DGPS, 3=PPS, 4=RTK Fix, 5=Float, 6+=Estimated/Manual/Simulated.
+			// 6+ are not valid ISOBUS quality levels but still represent an active (non-GPS) position
+			// source — e.g. AOG's Simulator mode — so map them to the weakest real fix (1=GNSS)
+			// rather than 0=No GPS, which would falsely claim there is no position at all.
+			gnssFixQuality = (quality <= 5) ? quality : 1;
+			lastGnssQualityMs = isobus::SystemTiming::get_timestamp_ms();
+
+			if (quality != lastLoggedQuality)
+			{
+				std::cout << "[" << get_timestamp() << "] [TRACK][gnss] fix quality byte=" << static_cast<int>(quality)
+				          << " -> DDI514=" << static_cast<int>(gnssFixQuality) << std::endl;
+				lastLoggedQuality = quality;
+			}
+			return;
+		}
+
 		if (src != 0x7F)
 		{
 			return;
@@ -640,54 +682,23 @@ void Application::setup_udp_connections()
 		}
 		else if (pgn == 0xEF) // 239 - Machine Data
 		{
+			// Wire layout (payload bytes, for future reference — none of this is parsed today):
+			//   [0]=uturn speed  [1]=hydLift  [2]=geoStop  [3]=TRAM (bit0=left marker, bit1=right marker)
+			//   [4..]=section states, SC1-8 then SC9-16 (condensed bitfields)
+			// Guidance/tramline state now comes exclusively from PGN 0xF4 (see GuidanceTrackProvider);
+			// the tram bits here were only used by the removed synthetic fallback provider.
 			lastAogPacketMs = isobus::SystemTiming::get_timestamp_ms();
-
-			if (data.size() < 4)
-			{
-				std::cout << "[" << get_timestamp() << "] [AOG] PGN 0xEF received but too short (len=" << data.size() << ")" << std::endl;
-				return;
-			}
-
-			// PGN 239 wire layout: [sentinel 0x80 0x81] [src] [pgn] [len] [uturn speed hydLift TRAM geoStop ... SC1to8 SC9to16]
-			// Tram is at frame byte 8 (Lua buffer(8,1)) = payload byte 3 (data[3])
-			// bit 0 = left marker, bit 1 = right marker (verify polarity against AOG CTram)
-			bool newTramLeft = (data[3] & 0x01) != 0;
-			bool newTramRight = (data[3] & 0x02) != 0;
-
-			// Update synthetic track provider (edge detection + context generation)
-			// Only used as fallback when PGN 0xF4 (real guidance) is not available.
-			auto syntheticCtx = trackProvider.update(newTramLeft, newTramRight);
-
-			// Use real guidance context if available and fresh (within 1 second),
-			// otherwise fall back to synthetic tram-marker-based context.
-			if (lastRealGuidanceMs == 0 ||
-			    isobus::SystemTiming::time_expired_ms(lastRealGuidanceMs, 1000))
-			{
-				currentTrackContext = syntheticCtx;
-			}
-
-			// Cache tram marker state for VT display only
-			tramLeftActive = newTramLeft;
-			tramRightActive = newTramRight;
 		}
 		else if (pgn == 0xF4) // 244 - Guidance Track Context (AOG real guidance data)
 		{
 			lastAogPacketMs = isobus::SystemTiming::get_timestamp_ms();
 
-			if (data.size() < RealGuidanceTrackProvider::MIN_PAYLOAD_SIZE)
-			{
-				std::cout << "[" << get_timestamp() << "] [AOG] PGN 0xF4 received but too short (len=" << data.size() << ")" << std::endl;
-				return;
-			}
-
-			// Parse real guidance track context from AOG PGN 0xF4
-			auto realCtx = realTrackProvider.parse(data);
-			if (realCtx.valid)
-			{
-				// Real data takes priority over synthetic
-				currentTrackContext = realCtx;
-				lastRealGuidanceMs = isobus::SystemTiming::get_timestamp_ms();
-			}
+			// Parse real guidance track context from AOG PGN 0xF4.
+			// Always update currentTrackContext: when AOG sends valid=false
+			// (guidance off / no active track), the context must be invalidated
+			// so the TC stops broadcasting stale track data.
+			// Note: parse() handles short-payload validation internally.
+			currentTrackContext = trackProvider.parse(data);
 		}
 		else if (pgn == 0xF2 && data.size() >= 6) // Process Data
 		{
@@ -760,25 +771,6 @@ void Application::setup_udp_connections()
 					speedMessagesInterface->wheelBasedSpeedTransmitData.set_machine_distance(lastDistanceMm);
 					speedMessagesInterface->machineSelectedSpeedTransmitData.set_machine_distance(lastDistanceMm);
 				}
-			}
-		}
-		else
-		{
-			// Log any PGN we don't explicitly handle — helps discover what AOG actually sends
-			static std::uint32_t lastUnknownPgnLogMs = 0;
-			if (isobus::SystemTiming::time_expired_ms(lastUnknownPgnLogMs, 5000))
-			{
-				std::cout << "[" << get_timestamp() << "] [AOG] Received unknown PGN 0x" << std::hex << static_cast<int>(pgn)
-				          << std::dec << " (len=" << data.size() << ")";
-				if (!data.empty())
-				{
-					std::cout << " data:";
-					for (size_t i = 0; i < data.size() && i < 16; i++)
-						std::cout << " " << std::hex << static_cast<int>(data[i]);
-					std::cout << std::dec;
-				}
-				std::cout << std::endl;
-				lastUnknownPgnLogMs = isobus::SystemTiming::get_timestamp_ms();
 			}
 		}
 	};
@@ -955,17 +947,39 @@ bool Application::update()
 	static std::uint32_t lastTramlineSendMs = 0;
 	if (tcServer && isobus::SystemTiming::time_expired_ms(lastTramlineSendMs, 250))
 	{
+		// AOG only sends PGN 0xF4 when the guidance track actually changes (no heartbeat) —
+		// long gaps between packets are the normal state while driving straight, not staleness.
+		// Only clear the context on a real AOG disconnect (edge-triggered, not every tick).
+		const bool aogConnectedNow = is_aog_connected();
+		if (!aogConnectedNow && aogWasConnectedForTrack)
+		{
+			currentTrackContext.valid = false;
+			trackProvider.reset(); // Treat next packet as fresh start after the gap
+		}
+		aogWasConnectedForTrack = aogConnectedNow;
+
 		// GuidanceLineDeviation (DDI 0x0201) from AOG's XTE
 		std::int32_t lineDevMm = lastXteValue;
 
 		// GuidanceLineSwathWidth (DDI 0x0200) — 6000mm for ESPRO; TODO: derive from DDOP geometry
 		std::int32_t swathMm = 6000;
 
-		tcServer->send_tramline_track_data(currentTrackContext, swathMm, lineDevMm);
+		// PGN 0xD6 (GPS fix quality) is a separate, independently-timed stream from 0xF4 —
+		// treat it as unknown if it goes stale on its own, even while AOG overall is connected.
+		const bool gnssQualityFresh = (lastGnssQualityMs != 0) &&
+		  !isobus::SystemTiming::time_expired_ms(lastGnssQualityMs, GNSS_QUALITY_TIMEOUT_MS);
+		const std::uint8_t effectiveGnssQuality = gnssQualityFresh ? gnssFixQuality : 0;
+
+		tcServer->send_tramline_track_data(currentTrackContext, swathMm, lineDevMm, effectiveGnssQuality);
 		lastTramlineSendMs = isobus::SystemTiming::get_timestamp_ms();
 	}
 
 	return true;
+}
+
+bool Application::is_aog_connected() const
+{
+	return (lastAogPacketMs != 0) && !isobus::SystemTiming::time_expired_ms(lastAogPacketMs, AOG_CONNECTION_TIMEOUT_MS);
 }
 
 void Application::send_task_controller_status_message()
@@ -1296,7 +1310,7 @@ void Application::update_vt_client()
 
 	sync_vt_config_once();
 
-	const bool aogConnected = (lastAogPacketMs != 0) && !isobus::SystemTiming::time_expired_ms(lastAogPacketMs, 3000);
+	const bool aogConnected = is_aog_connected();
 	vtUpdateHelper->set_numeric_value(VTSpeedValue, aogConnected ? static_cast<std::uint32_t>(std::abs(lastSpeedValue)) : 0U);
 
 	vtUpdateHelper->set_numeric_value(VTXteValue, aogConnected ? (static_cast<std::uint32_t>(lastXteValue) ^ 0x80000000U) : 0x80000000U);
@@ -1444,20 +1458,23 @@ void Application::update_vt_status_strings(bool aogConnected)
 	                    << "Sections         " << totalSections << '\n'
 	                    << "Section control  " << sectionControl;
 
-	// Live tramline state from AOG + capability level from implement
+	// Live guidance-track state from AOG + capability level from implement
 	{
 		std::string tramLive;
-		if (aogConnected)
+		if (!aogConnected)
+		{
+			tramLive = "n/a";
+		}
+		else if (currentTrackContext.valid)
 		{
 			std::ostringstream liveStr;
-			liveStr << "L:" << (tramLeftActive ? 1 : 0)
-			        << " R:" << (tramRightActive ? 1 : 0)
-			        << "  Track " << currentTrackContext.actualTrackNumber;
+			liveStr << "ref:" << currentTrackContext.guidanceReferenceLineId
+			        << " track:" << currentTrackContext.actualTrackNumber;
 			tramLive = liveStr.str();
 		}
 		else
 		{
-			tramLive = "n/a";
+			tramLive = "OFF";
 		}
 
 		std::string tramCaps;

@@ -58,6 +58,8 @@ private:
 
 	void send_vt_string_if_changed(std::uint16_t objectID, const std::string &value);
 
+	bool is_aog_connected() const;
+
 	std::shared_ptr<Settings> settings = std::make_shared<Settings>();
 	boost::asio::io_context ioContext = boost::asio::io_context();
 	std::shared_ptr<UdpConnections> udpConnections = std::make_shared<UdpConnections>(settings, ioContext);
@@ -92,14 +94,15 @@ private:
 	std::int32_t lastXteValue = 0;
 	std::uint32_t lastDistanceMm = 0;
 	std::uint32_t lastAogPacketMs = 0;
+	static constexpr std::uint32_t AOG_CONNECTION_TIMEOUT_MS = 3000; ///< No AOG packet for this long = disconnected
+	std::uint8_t gnssFixQuality = 0; ///< AOG fix quality: 0=invalid, 1=GPS, 2=DGPS, 3=PPS, 4=RTK Fix, 5=Float
+	std::uint32_t lastGnssQualityMs = 0; ///< Timestamp of last PGN 0xD6 fix-quality update (0 = never received)
+	static constexpr std::uint32_t GNSS_QUALITY_TIMEOUT_MS = 2000; ///< No PGN 0xD6 for this long = fix quality unknown
 
-	// Guidance track context — real provider (PGN 0xF4) preferred, synthetic (PGN 0xEF) fallback.
-	RealGuidanceTrackProvider realTrackProvider;
-	SyntheticGuidanceTrackProvider trackProvider;
+	// Guidance track context — real data from AOG PGN 0xF4.
+	GuidanceTrackProvider trackProvider;
 	GuidanceTrackContext currentTrackContext;
-	std::uint32_t lastRealGuidanceMs = 0; ///< Timestamp of last valid PGN 0xF4 (0 = never)
-	bool tramLeftActive = false; ///< Left tramline marker active (cached for VT display)
-	bool tramRightActive = false; ///< Right tramline marker active (cached for VT display)
+	bool aogWasConnectedForTrack = false; ///< Edge-detection for AOG connect/disconnect transitions
 	bool trackControlEnabled = false; ///< Track control enabled (separate from section control)
 
 	bool tractorFacilitiesSentOnPowerUp = false;

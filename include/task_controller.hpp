@@ -85,9 +85,11 @@ public:
 	std::uint32_t get_tramline_sequence_number() const;
 	void increment_tramline_sequence_number();
 
-	// Last sent track number — used to detect changes for DDI 507 sequence increment
+	// Last sent track number / reference line ID — used to detect changes for DDI 507 sequence increment
 	std::int32_t get_last_sent_track_number() const;
 	void set_last_sent_track_number(std::int32_t trackNumber);
+	std::uint32_t get_last_sent_reference_line_id() const;
+	void set_last_sent_reference_line_id(std::uint32_t referenceLineId);
 
 	// DDI 505/506 presence flags
 	bool get_has_tramline_control_level() const;
@@ -115,6 +117,7 @@ private:
 	bool trackControlEnabled = false; ///< Track control enabled (separate from section control)
 	std::int32_t actualTramlineControlState = 0; ///< Actual tramline control state reported by implement (DDI 0x0203)
 	std::int32_t lastSentTrackNumber = 0; ///< Last track number sent, for DDI 507 change detection
+	std::uint32_t lastSentReferenceLineId = 0; ///< Last reference line ID sent, for DDI 507 change detection
 	std::uint32_t tramlineSequenceNumber = 0; ///< Per-client tramline sequence number (DDI 507)
 	bool hasTramlineControlLevelDDI = false; ///< Implement has DDI 505 (TramlineControlLevel)
 	bool hasSetpointTramlineControlLevelDDI = false; ///< Implement has DDI 506 (SetpointTramlineControlLevel)
@@ -149,7 +152,7 @@ public:
 	void update_section_states(std::vector<bool> &sectionStates);
 	void update_section_control_enabled(bool enabled);
 	void update_track_control_enabled(bool enabled);
-	void send_tramline_track_data(const GuidanceTrackContext &ctx, std::int32_t swathWidthMm, std::int32_t lineDeviationMm);
+	void send_tramline_track_data(const GuidanceTrackContext &ctx, std::int32_t swathWidthMm, std::int32_t lineDeviationMm, std::uint8_t gnssFixQuality);
 
 private:
 	void send_section_setpoint_states(std::shared_ptr<isobus::ControlFunction> client, std::uint8_t ddiOffset);
