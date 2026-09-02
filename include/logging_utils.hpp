@@ -3,10 +3,10 @@
 #include <chrono>
 #include <ctime>
 #include <iomanip>
+#include <iostream>
 #include <sstream>
 #include <string>
 
-// Utility function to get current timestamp string (HH:MM:SS.mmm)
 inline std::string get_timestamp()
 {
 	auto now = std::chrono::system_clock::now();
@@ -26,4 +26,14 @@ inline std::string get_timestamp()
 	    << std::setfill('0') << std::setw(2) << localTime.tm_sec << "."
 	    << std::setfill('0') << std::setw(3) << ms.count();
 	return oss.str();
+}
+
+inline std::ostream &log()
+{
+	return std::cout << "[" << get_timestamp() << "] ";
+}
+
+inline std::ostream &log(const std::string &tag)
+{
+	return log() << "[" << tag << "] ";
 }
