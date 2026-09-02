@@ -38,6 +38,8 @@
 
 using boost::asio::ip::udp;
 
+static constexpr std::uint8_t PREFERRED_TC_ADDRESS = isobus::preferred_addresses::IndustryGroup2::TaskController_MappingComputer;
+
 static std::string format_hex_address(std::uint8_t address)
 {
 	std::ostringstream value;
@@ -144,10 +146,10 @@ static void log_broadcast_repetition_rate(
 static void enumerate_bus_control_functions(const std::string &context)
 {
 	std::cout << "\n";
-	std::cout << "[" << get_timestamp() << "] [Bus CFs] " << context << std::endl;
-	std::cout << "[" << get_timestamp() << "] [Bus CFs] ==================================================" << std::endl;
-	std::cout << "[" << get_timestamp() << "] [Bus CFs] Control Functions on ISOBUS:" << std::endl;
-	std::cout << "[" << get_timestamp() << "] [Bus CFs] --------------------------------------------------" << std::endl;
+	log("Bus CFs") << context << std::endl;
+	log("Bus CFs") << "==================================================" << std::endl;
+	log("Bus CFs") << "Control Functions on ISOBUS:" << std::endl;
+	log("Bus CFs") << "--------------------------------------------------" << std::endl;
 
 	// Get all control functions; offline CFs are filtered out below.
 	auto allCFs = isobus::CANNetworkManager::CANNetwork.get_control_functions(false);
@@ -167,94 +169,85 @@ static void enumerate_bus_control_functions(const std::string &context)
 		isobus::NAME name = cf->get_NAME();
 		bool isInternal = (cf->get_type() == isobus::ControlFunction::Type::Internal);
 
-		std::cout << "[" << get_timestamp() << "] [Bus CFs]   Address: " << std::setw(3) << std::right << static_cast<int>(cf->get_address())
-		          << " | Mfg: " << std::left << std::setw(5) << name.get_manufacturer_code()
-		          << " | Func: " << std::left << std::setw(3) << static_cast<int>(name.get_function_code())
-		          << " | IG: " << static_cast<int>(name.get_industry_group())
-		          << " | Identity: " << std::setw(6) << std::right << name.get_identity_number()
-		          << " | ECU Inst: " << static_cast<int>(name.get_ecu_instance())
-		          << " | Func Inst: " << static_cast<int>(name.get_function_instance())
-		          << (isInternal ? " [INTERNAL]" : "")
-		          << std::endl;
+		log("Bus CFs") << "  Address: " << std::setw(3) << std::right << static_cast<int>(cf->get_address())
+		               << " | Mfg: " << std::left << std::setw(5) << name.get_manufacturer_code()
+		               << " | Func: " << std::left << std::setw(3) << static_cast<int>(name.get_function_code())
+		               << " | IG: " << static_cast<int>(name.get_industry_group())
+		               << " | Identity: " << std::setw(6) << std::right << name.get_identity_number()
+		               << " | ECU Inst: " << static_cast<int>(name.get_ecu_instance())
+		               << " | Func Inst: " << static_cast<int>(name.get_function_instance())
+		               << (isInternal ? " [INTERNAL]" : "")
+		               << std::endl;
 	}
 
 	if (cfCount == 0)
 	{
-		std::cout << "[" << get_timestamp() << "] [Bus CFs]   (No control functions detected on bus)" << std::endl;
+		log("Bus CFs") << "  (No control functions detected on bus)" << std::endl;
 	}
 
-	std::cout << "[" << get_timestamp() << "] [Bus CFs] ==================================================" << std::endl;
-	std::cout << "[" << get_timestamp() << "] [Bus CFs] Total CFs found: " << cfCount << std::endl;
+	log("Bus CFs") << "==================================================" << std::endl;
+	log("Bus CFs") << "Total CFs found: " << cfCount << std::endl;
 	std::cout << "\n";
 }
 
 // Check for TC address conflicts and log warning if we couldn't claim preferred address
-static void check_tc_address_conflict(const std::shared_ptr<isobus::InternalControlFunction> &ourTC)
+static bool check_tc_address_conflict(const std::shared_ptr<isobus::InternalControlFunction> &ourTC)
 {
-	if (!ourTC || !ourTC->get_address_valid())
-		return;
-
-	static constexpr std::uint8_t PREFERRED_TC_ADDRESS = isobus::preferred_addresses::IndustryGroup2::TaskController_MappingComputer;
 	static std::uint32_t lastWarnTime = 0;
 	static bool conflictDetected = false;
+	bool conflictActive = false;
+	const bool havePreferredAddress = ourTC && ourTC->get_address_valid() && (ourTC->get_address() == PREFERRED_TC_ADDRESS);
 
-	// Check if we have the preferred address
-	if (ourTC->get_address() == PREFERRED_TC_ADDRESS)
+	if (ourTC && !havePreferredAddress)
 	{
-		// We have the preferred address, clear conflict state
-		if (conflictDetected)
+		// We don't have the preferred address - check if another TC has it.
+		auto allCFs = isobus::CANNetworkManager::CANNetwork.get_control_functions(false);
+		for (const auto &cf : allCFs)
 		{
-			conflictDetected = false;
-			std::cout << "[" << get_timestamp() << "] [TC Address] Successfully claimed preferred address " << static_cast<int>(PREFERRED_TC_ADDRESS) << std::endl;
-		}
-		return;
-	}
-
-	// We don't have the preferred address - check if another TC has it
-	auto allCFs = isobus::CANNetworkManager::CANNetwork.get_control_functions(false);
-
-	for (const auto &cf : allCFs)
-	{
-		if (!cf || !cf->get_address_valid())
-			continue;
-
-		if (cf->get_address() == PREFERRED_TC_ADDRESS && cf != ourTC)
-		{
-			isobus::NAME otherName = cf->get_NAME();
-
-			// Check if it's actually a TC
-			std::uint8_t funcCode = otherName.get_function_code();
-			if (funcCode == static_cast<std::uint8_t>(isobus::NAME::Function::TaskController))
+			if (cf && cf->get_address_valid() && (cf->get_address() == PREFERRED_TC_ADDRESS) && (cf != ourTC))
 			{
-				// Periodic warning every 30 seconds
-				if (isobus::SystemTiming::time_expired_ms(lastWarnTime, 30000))
+				const isobus::NAME otherName = cf->get_NAME();
+				const std::uint8_t funcCode = otherName.get_function_code();
+				if (funcCode == static_cast<std::uint8_t>(isobus::NAME::Function::TaskController))
 				{
-					conflictDetected = true;
-					std::cout << "\n";
-					std::cout << "[" << get_timestamp() << "] [WARN] ==================================================" << std::endl;
-					std::cout << "[" << get_timestamp() << "] [WARN] TC ADDRESS CONFLICT - Another TC at preferred address " << static_cast<int>(PREFERRED_TC_ADDRESS) << std::endl;
-					std::cout << "[" << get_timestamp() << "] [WARN] Conflicting TC: Mfg=" << otherName.get_manufacturer_code()
-					          << ", Func=" << static_cast<int>(funcCode)
-					          << ", Identity=" << otherName.get_identity_number()
-					          << ", ECU Inst=" << static_cast<int>(otherName.get_ecu_instance())
-					          << ", Func Inst=" << static_cast<int>(otherName.get_function_instance()) << std::endl;
-					std::cout << "[" << get_timestamp() << "] [WARN] Our TC using address: " << static_cast<int>(ourTC->get_address()) << std::endl;
-					std::cout << "[" << get_timestamp() << "] [WARN] ==================================================" << std::endl;
-					std::cout << "\n";
-					lastWarnTime = isobus::SystemTiming::get_timestamp_ms();
+					conflictActive = true;
+
+					// Periodic warning every 30 seconds. Conflict detection itself is not throttled.
+					if (isobus::SystemTiming::time_expired_ms(lastWarnTime, 30000))
+					{
+						std::cout << "\n";
+						log("WARN") << "==================================================" << std::endl;
+						log("WARN") << "TC ADDRESS CONFLICT - Another TC at preferred address " << static_cast<int>(PREFERRED_TC_ADDRESS) << std::endl;
+						log("WARN") << "Conflicting TC: Mfg=" << otherName.get_manufacturer_code()
+						            << ", Func=" << static_cast<int>(funcCode)
+						            << ", Identity=" << otherName.get_identity_number()
+						            << ", ECU Inst=" << static_cast<int>(otherName.get_ecu_instance())
+						            << ", Func Inst=" << static_cast<int>(otherName.get_function_instance()) << std::endl;
+						log("WARN") << "Our TC using address: " << static_cast<int>(ourTC->get_address()) << std::endl;
+						log("WARN") << "==================================================" << std::endl;
+						std::cout << "\n";
+						lastWarnTime = isobus::SystemTiming::get_timestamp_ms();
+					}
+					break;
 				}
-				return; // Only report first conflicting TC found
 			}
 		}
 	}
 
-	// If we get here, we didn't find a conflicting TC at the preferred address
-	// This means we arbitrated to a different address for another reason
-	if (conflictDetected)
+	if (conflictDetected && !conflictActive)
 	{
-		conflictDetected = false;
-		std::cout << "[" << get_timestamp() << "] [TC Address] TC address conflict resolved" << std::endl;
+		if (havePreferredAddress)
+		{
+			log("TC Address") << "Successfully claimed preferred address " << static_cast<int>(PREFERRED_TC_ADDRESS) << std::endl;
+		}
+		else
+		{
+			log("TC Address") << "TC address conflict resolved" << std::endl;
+		}
 	}
+	conflictDetected = conflictActive;
+
+	return conflictActive;
 }
 
 Application::Application(std::shared_ptr<isobus::CANHardwarePlugin> canDriver) :
@@ -272,7 +265,7 @@ bool Application::initialize()
 		setup_task_controller_server();
 		setup_tecu_interfaces();
 
-		std::cout << "[" << get_timestamp() << "] Task controller server started." << std::endl;
+		log() << "Task controller server started." << std::endl;
 
 		if (settings->is_vt_enabled())
 		{
@@ -280,7 +273,7 @@ bool Application::initialize()
 		}
 		else
 		{
-			std::cout << "[" << get_timestamp() << "] [Info] VT UI disabled in settings, skipping VT client." << std::endl;
+			log("Info") << "VT UI disabled in settings, skipping VT client." << std::endl;
 		}
 
 		setup_udp_connections();
@@ -294,7 +287,7 @@ bool Application::setup_can_hardware()
 {
 	if (nullptr == canDriver)
 	{
-		std::cout << "[" << get_timestamp() << "] Unable to find a CAN driver. Please make sure the selected driver is installed." << std::endl;
+		log() << "Unable to find a CAN driver. Please make sure the selected driver is installed." << std::endl;
 		return false;
 	}
 	isobus::CANHardwareInterface::set_number_of_can_channels(1);
@@ -302,7 +295,7 @@ bool Application::setup_can_hardware()
 
 	if ((!isobus::CANHardwareInterface::start()) || (!canDriver->get_is_valid()))
 	{
-		std::cout << "[" << get_timestamp() << "] Failed to start CAN hardware interface." << std::endl;
+		log() << "Failed to start CAN hardware interface." << std::endl;
 		return false;
 	}
 
@@ -344,7 +337,7 @@ bool Application::setup_control_functions()
 	tecuNAME.set_arbitrary_address_capable(false); // TECU address is fixed
 	tecuNAME.set_ecu_instance(0);
 
-	std::cout << "[" << get_timestamp() << "] [Init] Creating Task Controller control function..." << std::endl;
+	log("Init") << "Creating Task Controller control function..." << std::endl;
 	tcCF = isobus::CANNetworkManager::CANNetwork.create_internal_control_function(tcNAME, 0, isobus::preferred_addresses::IndustryGroup2::TaskController_MappingComputer); // The preferred address for a TC is defined in ISO 11783
 
 	// Wait for TC address claim with bounded wait loop (no async to avoid blocking on destruction)
@@ -368,20 +361,20 @@ bool Application::setup_control_functions()
 
 	if (!tcAddressClaimed)
 	{
-		std::cout << "[" << get_timestamp() << "] Failed to claim address for TC server. The control function might be invalid." << std::endl;
+		log() << "Failed to claim address for TC server. The control function might be invalid." << std::endl;
 		return false;
 	}
 
 	// Record when the address was actually claimed for the 250ms delay calculation
 	auto tcAddressClaimedTime = isobus::SystemTiming::get_timestamp_ms();
-	std::cout << "[" << get_timestamp() << "] [Init] TC claimed address " << static_cast<int>(tcCF->get_address()) << std::endl;
+	log("Init") << "TC claimed address " << static_cast<int>(tcCF->get_address()) << std::endl;
 
 	// Ensure minimum 250ms delay after address claim per J1939-81
 	auto tcClaimElapsedMs = isobus::SystemTiming::get_time_elapsed_ms(tcAddressClaimedTime);
 	if (tcClaimElapsedMs < MINIMUM_ADDRESS_CLAIM_DELAY_MS)
 	{
 		auto remainingDelay = MINIMUM_ADDRESS_CLAIM_DELAY_MS - tcClaimElapsedMs;
-		std::cout << "[" << get_timestamp() << "] [Init] Waiting " << remainingDelay << "ms after address claim (J1939-81 250ms rule)..." << std::endl;
+		log("Init") << "Waiting " << remainingDelay << "ms after address claim (J1939-81 250ms rule)..." << std::endl;
 		// Process CAN messages during the delay to prevent timeouts
 		auto delayStart = isobus::SystemTiming::get_timestamp_ms();
 		while (isobus::SystemTiming::get_time_elapsed_ms(delayStart) < remainingDelay)
@@ -396,11 +389,11 @@ bool Application::setup_control_functions()
 	// TODO: If there's already a TECU on the bus we should not create ours
 	if (tcCF && settings->is_tecu_enabled())
 	{ // Only create TECU if TC was created and ECU is enabled
-		std::cout << "[" << get_timestamp() << "] [Init] Creating Tractor ECU control function..." << std::endl;
+		log("Init") << "Creating Tractor ECU control function..." << std::endl;
 		tecuCF = isobus::CANNetworkManager::CANNetwork.create_internal_control_function(tecuNAME, 0, isobus::preferred_addresses::IndustryGroup2::TractorECU);
 
 		// Wait for TECU address claim with minimum 250ms delay per J1939-81 section 4.4.4.1
-		std::cout << "[" << get_timestamp() << "] [Init] Tractor ECU control function created, waiting for address claim..." << std::endl;
+		log("Init") << "Tractor ECU control function created, waiting for address claim..." << std::endl;
 
 		// Update the network manager to process TECU CF claiming
 		int tecuClaimAttempts = 0;
@@ -412,20 +405,19 @@ bool Application::setup_control_functions()
 			tecuClaimAttempts++;
 		}
 
-		// Check if TECU successfully claimed its FIXED address (128)
-		// TECU is non-arbitrary-address-capable and MUST use address 128
+		// TECU is non-arbitrary-address-capable: it must land on its preferred address or not at all
 		if (tecuCF->get_address_valid() && tecuCF->get_address() == isobus::preferred_addresses::IndustryGroup2::TractorECU)
 		{
 			// Record when the address was actually claimed for the 250ms delay calculation
 			auto tecuAddressClaimedTime = isobus::SystemTiming::get_timestamp_ms();
-			std::cout << "[" << get_timestamp() << "] [Init] TECU claimed address " << static_cast<int>(tecuCF->get_address()) << std::endl;
+			log("Init") << "TECU claimed address " << static_cast<int>(tecuCF->get_address()) << std::endl;
 
 			// Ensure minimum 250ms delay after address claim per J1939-81
 			auto tecuClaimElapsedMs = isobus::SystemTiming::get_time_elapsed_ms(tecuAddressClaimedTime);
 			if (tecuClaimElapsedMs < MINIMUM_ADDRESS_CLAIM_DELAY_MS)
 			{
 				auto remainingDelay = MINIMUM_ADDRESS_CLAIM_DELAY_MS - tecuClaimElapsedMs;
-				std::cout << "[" << get_timestamp() << "] [Init] Waiting " << remainingDelay << "ms after TECU address claim (J1939-81 250ms rule)..." << std::endl;
+				log("Init") << "Waiting " << remainingDelay << "ms after TECU address claim (J1939-81 250ms rule)..." << std::endl;
 				// Process CAN messages during the delay to prevent timeouts
 				auto delayStart = isobus::SystemTiming::get_timestamp_ms();
 				while (isobus::SystemTiming::get_time_elapsed_ms(delayStart) < remainingDelay)
@@ -437,15 +429,16 @@ bool Application::setup_control_functions()
 		}
 		else
 		{
+			tecuAddressClaimFailed = true;
 			if (tecuCF->get_address_valid())
 			{
-				std::cout << "[" << get_timestamp() << "] [Warning] TECU claimed unexpected address " << static_cast<int>(tecuCF->get_address()) << " instead of 128!" << std::endl;
+				log("Warning") << "TECU claimed unexpected address " << static_cast<int>(tecuCF->get_address()) << " instead of " << static_cast<int>(isobus::preferred_addresses::IndustryGroup2::TractorECU) << "!" << std::endl;
 			}
 			else
 			{
-				std::cout << "[" << get_timestamp() << "] [Warning] TECU failed to claim address 128! Another TECU may be on the bus." << std::endl;
+				log("Warning") << "TECU failed to claim address " << static_cast<int>(isobus::preferred_addresses::IndustryGroup2::TractorECU) << "! Another TECU may be on the bus." << std::endl;
 			}
-			std::cout << "[" << get_timestamp() << "] [Warning] TECU functionality will be disabled." << std::endl;
+			log("Warning") << "TECU functionality will be disabled." << std::endl;
 			tecuCF.reset(); // Release the failed control function
 		}
 	}
@@ -512,7 +505,7 @@ void Application::setup_task_controller_server()
 	  1, // Version 1
 	  true);
 
-	std::cout << "[" << get_timestamp() << "] [Init] TC announced TC-BAS, TC-SC (1 boom / 64 sections), and TC-TRAM (TRACK) via PGN 64654" << std::endl;
+	log("Init") << "TC announced TC-BAS, TC-SC (1 boom / 64 sections), and TC-TRAM (TRACK) via PGN 64654" << std::endl;
 
 	// Register repetition-rate diagnostic on the TC's PGN request protocol
 	auto tcPgnReq = tcCF->get_pgn_request_protocol().lock();
@@ -528,7 +521,7 @@ void Application::setup_tecu_interfaces()
 	// Initialize speed and distance messages
 	if (tecuCF && tecuCF->get_address_valid())
 	{
-		std::cout << "[" << get_timestamp() << "] [Init] Creating TECU Control Function Functionalities..." << std::endl;
+		log("Init") << "Creating TECU Control Function Functionalities..." << std::endl;
 		tecuFunctionalities = std::make_unique<isobus::ControlFunctionFunctionalities>(tecuCF);
 		// Announce as Basic Tractor ECU Server Class 1 (ISO 11783-9 compliance)
 		tecuFunctionalities->set_functionality_is_supported(
@@ -538,21 +531,21 @@ void Application::setup_tecu_interfaces()
 		tecuFunctionalities->set_basic_tractor_ECU_server_option_state(
 		  isobus::ControlFunctionFunctionalities::BasicTractorECUOptions::Class1NoOptions,
 		  true);
-		std::cout << "[" << get_timestamp() << "] [Init] TECU announced as Class 1 Tractor ECU (PGN 64654)" << std::endl;
+		log("Init") << "TECU announced as Class 1 Tractor ECU (PGN 64654)" << std::endl;
 
-		std::cout << "[" << get_timestamp() << "] [Init] Creating Speed Messages Interface on TECU..." << std::endl;
+		log("Init") << "Creating Speed Messages Interface on TECU..." << std::endl;
 		speedMessagesInterface = std::make_unique<isobus::SpeedMessagesInterface>(tecuCF, true, true, true, false); //TODO: make configurable whether to send these messages
 		speedMessagesInterface->initialize();
 		speedMessagesInterface->wheelBasedSpeedTransmitData.set_implement_start_stop_operations_state(isobus::SpeedMessagesInterface::WheelBasedMachineSpeedData::ImplementStartStopOperations::NotAvailable);
 		speedMessagesInterface->wheelBasedSpeedTransmitData.set_key_switch_state(isobus::SpeedMessagesInterface::WheelBasedMachineSpeedData::KeySwitchState::NotAvailable);
 		speedMessagesInterface->wheelBasedSpeedTransmitData.set_operator_direction_reversed_state(isobus::SpeedMessagesInterface::WheelBasedMachineSpeedData::OperatorDirectionReversed::NotAvailable);
 		speedMessagesInterface->machineSelectedSpeedTransmitData.set_speed_source(isobus::SpeedMessagesInterface::MachineSelectedSpeedData::SpeedSource::NavigationBasedSpeed);
-		std::cout << "[" << get_timestamp() << "] [Init] Speed Messages Interface created and initialized." << std::endl;
+		log("Init") << "Speed Messages Interface created and initialized." << std::endl;
 
-		std::cout << "[" << get_timestamp() << "] [Init] Creating NMEA2000 Message Interface on TECU..." << std::endl;
+		log("Init") << "Creating NMEA2000 Message Interface on TECU..." << std::endl;
 		nmea2000MessageInterface = std::make_unique<isobus::NMEA2000MessageInterface>(tecuCF, settings->is_nmea_send_enabled(), false, false, false, false, false, false);
 		nmea2000MessageInterface->initialize();
-		std::cout << "[" << get_timestamp() << "] [Init] NMEA2000 Message Interface created and initialized." << std::endl;
+		log("Init") << "NMEA2000 Message Interface created and initialized." << std::endl;
 
 		// Initialize Tractor Facilities (PGN 65033 / 65032)
 		tractorFacilities = std::make_unique<TractorFacilities>(tecuCF, settings);
@@ -576,7 +569,7 @@ void Application::setup_tecu_interfaces()
 			  {
 				  if (lastExternalFee6Ms == 0)
 				  {
-					  std::cout << "[" << get_timestamp() << "] [TECU] FEE6 provider detected at SA "
+					  log("TECU") << "FEE6 provider detected at SA "
 					            << static_cast<int>(info.controlFunction->get_address())
 					            << " — suppressing our FEE6 broadcast" << std::endl;
 					  if (fee6Broadcasting && tractorFacilities)
@@ -588,7 +581,7 @@ void Application::setup_tecu_interfaces()
 				  lastExternalFee6Ms = isobus::SystemTiming::get_timestamp_ms();
 			  }
 		  });
-		std::cout << "[" << get_timestamp() << "] [Init] Time/Date interface (PGN 65254 / FEE6) created, interval="
+		log("Init") << "Time/Date interface (PGN 65254 / FEE6) created, interval="
 		          << FEE6_TX_INTERVAL_MS << " ms" << std::endl;
 
 		// Register repetition-rate diagnostic on the TECU's PGN request protocol
@@ -607,11 +600,11 @@ void Application::setup_tecu_interfaces()
 	{
 		if (!settings->is_tecu_enabled())
 		{
-			std::cout << "[" << get_timestamp() << "] [Info] Tractor ECU disabled in settings, skipping ECU initialization." << std::endl;
+			log("Info") << "Tractor ECU disabled in settings, skipping ECU initialization." << std::endl;
 		}
 		else
 		{
-			std::cout << "[" << get_timestamp() << "] [Warning] TECU Control Function not available, Speed/NMEA interfaces not created" << std::endl;
+			log("Warning") << "TECU Control Function not available, Speed/NMEA interfaces not created" << std::endl;
 		}
 	}
 }
@@ -676,7 +669,7 @@ void Application::setup_udp_connections()
 		{
 			lastAogPacketMs = isobus::SystemTiming::get_timestamp_ms();
 			std::uint8_t sectionControlState = data[0];
-			std::cout << "[" << get_timestamp() << "] Received request from AOG to change section control state to " << (sectionControlState == 1 ? "enabled" : "disabled") << std::endl;
+			log() << "Received request from AOG to change section control state to " << (sectionControlState == 1 ? "enabled" : "disabled") << std::endl;
 			tcServer->update_section_control_enabled(sectionControlState == 1);
 			tcServer->update_track_control_enabled(sectionControlState == 1);
 		}
@@ -777,7 +770,7 @@ void Application::setup_udp_connections()
 	udpConnections->set_packet_handler(packetHandler);
 	udpConnections->open();
 
-	std::cout << "[" << get_timestamp() << "] UDP connections opened." << std::endl;
+	log() << "UDP connections opened." << std::endl;
 }
 
 bool Application::update()
@@ -862,8 +855,66 @@ bool Application::update()
 	static std::uint32_t lastConflictCheck = 0;
 	if (isobus::SystemTiming::time_expired_ms(lastConflictCheck, 15000))
 	{
-		check_tc_address_conflict(tcCF);
+		const bool conflictActive = check_tc_address_conflict(tcCF);
+		if (conflictActive)
+		{
+			send_hardware_message("TC address conflict: preferred address in use", 20, HW_MSG_ALERT);
+		}
+		else if (tcAddressConflictActive)
+		{
+			send_hardware_message("TC address conflict resolved", 5, HW_MSG_INFO);
+		}
+		tcAddressConflictActive = conflictActive;
 		lastConflictCheck = isobus::SystemTiming::get_timestamp_ms();
+	}
+
+	// Diff active implement clients once per second so disconnect messages retain prior metadata.
+	static std::uint32_t lastImplementScanMs = 0;
+	if (isobus::SystemTiming::time_expired_ms(lastImplementScanMs, 1000))
+	{
+		std::map<std::uint64_t, ImplementSnapshot> currentImplementSnapshots;
+		for (auto &client : tcServer->get_clients())
+		{
+			auto &state = client.second;
+			if (state.get_number_of_sections() > 0)
+			{
+				const ImplementDetails details = derive_implement_details(state);
+				currentImplementSnapshots[client.first->get_NAME().get_full_name()] = { details.displayName, details.sections, details.widthText };
+			}
+		}
+
+		for (const auto &[name, implement] : currentImplementSnapshots)
+		{
+			if (implementSnapshots.find(name) == implementSnapshots.end())
+			{
+				std::ostringstream message;
+				message << "Implement: " << implement.displayName << " (" << static_cast<int>(implement.sections) << " sections";
+				if (!implement.widthText.empty())
+				{
+					message << ", " << implement.widthText << " m";
+				}
+				message << ")";
+				send_hardware_message(message.str(), 5, HW_MSG_INFO);
+			}
+		}
+
+		for (const auto &[name, implement] : implementSnapshots)
+		{
+			if (currentImplementSnapshots.find(name) == currentImplementSnapshots.end())
+			{
+				send_hardware_message("Implement lost: " + implement.displayName, 10, HW_MSG_ALERT);
+			}
+		}
+
+		implementSnapshots = std::move(currentImplementSnapshots);
+		lastImplementScanMs = isobus::SystemTiming::get_timestamp_ms();
+	}
+
+	// This is deferred from setup_control_functions() until UDP is ready.
+	if (tecuAddressClaimFailed)
+	{
+		send_hardware_message("TECU failed to claim address " + std::to_string(static_cast<int>(isobus::preferred_addresses::IndustryGroup2::TractorECU)), 10, HW_MSG_ALERT);
+		tecuAddressClaimFailed = false;
 	}
 
 	// Send section control heartbeat to AOG every 100ms (PGN 0xF0, source 0x80)
@@ -938,7 +989,7 @@ bool Application::update()
 		send_task_controller_status_message();
 		if (!firstStatusSent)
 		{
-			std::cout << "[" << get_timestamp() << "] [TC Status] First TC Status message sent (PGN 0xCB00)" << std::endl;
+			log("TC Status") << "First TC Status message sent (PGN 0xCB00)" << std::endl;
 			firstStatusSent = true;
 		}
 	}
@@ -980,6 +1031,116 @@ bool Application::update()
 bool Application::is_aog_connected() const
 {
 	return (lastAogPacketMs != 0) && !isobus::SystemTiming::time_expired_ms(lastAogPacketMs, AOG_CONNECTION_TIMEOUT_MS);
+}
+
+void Application::send_hardware_message(const std::string &text, std::uint8_t duration, std::uint8_t color)
+{
+	if (!text.empty())
+	{
+		static constexpr std::size_t MAX_TEXT_BYTES = 60;
+		std::size_t textLength = text.size();
+		if (textLength > MAX_TEXT_BYTES)
+		{
+			textLength = MAX_TEXT_BYTES;
+			while ((textLength > 0) && ((static_cast<unsigned char>(text[textLength]) & 0xC0) == 0x80))
+			{
+				textLength--;
+			}
+		}
+
+		const std::string message = text.substr(0, textLength);
+		if (!message.empty())
+		{
+			std::vector<std::uint8_t> data = { duration, color };
+			data.reserve(2 + message.size());
+			data.insert(data.end(), message.begin(), message.end());
+			const bool sent = udpConnections->send(0x80, 0xDD, data);
+
+			log("Hardware Message") << (sent ? "" : "(send failed) ") << message << std::endl;
+		}
+	}
+}
+
+Application::ImplementDetails Application::derive_implement_details(ClientState &state) const
+{
+	ImplementDetails details;
+	details.sections = state.get_number_of_sections();
+	auto &pool = state.get_pool();
+	if (auto deviceObject = pool.get_object_by_index(0))
+	{
+		const std::string designator = deviceObject->get_designator();
+		if (!designator.empty())
+		{
+			details.displayName = designator;
+		}
+	}
+
+	std::int32_t totalWidthMillimetres = 0;
+	const auto geometry = isobus::DeviceDescriptorObjectPoolHelper::get_implement_geometry(pool);
+	if (!geometry.booms.empty())
+	{
+		const auto &boom = geometry.booms.front();
+		if (boom.xOffset_mm || boom.yOffset_mm)
+		{
+			std::ostringstream offsetText;
+			offsetText << std::fixed << std::setprecision(2);
+			if (boom.xOffset_mm)
+			{
+				offsetText << "X:" << std::showpos
+				           << (static_cast<double>(boom.xOffset_mm.get()) / 1000.0)
+				           << std::noshowpos;
+			}
+			else
+			{
+				offsetText << "X:n/a";
+			}
+			offsetText << " ";
+			if (boom.yOffset_mm)
+			{
+				offsetText << "Y:" << std::showpos
+				           << (static_cast<double>(boom.yOffset_mm.get()) / 1000.0)
+				           << std::noshowpos;
+			}
+			else
+			{
+				offsetText << "Y:n/a";
+			}
+			details.boomOffsetText = offsetText.str();
+		}
+	}
+
+	for (const auto &boom : geometry.booms)
+	{
+		for (const auto &section : boom.sections)
+		{
+			if (section.width_mm)
+			{
+				totalWidthMillimetres += section.width_mm.get();
+			}
+		}
+		for (const auto &subBoom : boom.subBooms)
+		{
+			if (subBoom.sections.empty() && subBoom.width_mm)
+			{
+				totalWidthMillimetres += subBoom.width_mm.get();
+			}
+			for (const auto &section : subBoom.sections)
+			{
+				if (section.width_mm)
+				{
+					totalWidthMillimetres += section.width_mm.get();
+				}
+			}
+		}
+	}
+	if (totalWidthMillimetres > 0)
+	{
+		std::ostringstream widthText;
+		widthText << std::fixed << std::setprecision(2) << (static_cast<double>(totalWidthMillimetres) / 1000.0);
+		details.widthText = widthText.str();
+	}
+
+	return details;
 }
 
 void Application::send_task_controller_status_message()
@@ -1024,7 +1185,7 @@ void Application::send_task_controller_status_message()
 	const auto transmitAttemptTimestamp = isobus::SystemTiming::get_timestamp_ms();
 	if (!isobus::CANNetworkManager::CANNetwork.send_can_message(0xCB00, tcStatusData.data(), tcStatusData.size(), tcCF))
 	{
-		std::cout << "[" << get_timestamp() << "] [TC Status] Failed to send TC Status message!" << std::endl;
+		log("TC Status") << "Failed to send TC Status message!" << std::endl;
 	}
 
 	// Update the transmit timestamp for every send attempt so failed sends
@@ -1035,7 +1196,7 @@ void Application::send_task_controller_status_message()
 void Application::setup_vt_client()
 {
 	vtObjectPool.assign(std::begin(AOG_TC_IOP_DATA), std::end(AOG_TC_IOP_DATA));
-	std::cout << "[" << get_timestamp() << "] [VT] Loaded embedded object pool (" << vtObjectPool.size() << " bytes)" << std::endl;
+	log("VT") << "Loaded embedded object pool (" << vtObjectPool.size() << " bytes)" << std::endl;
 
 	// Partner filter for any Virtual Terminal server on the bus.
 	const isobus::NAMEFilter filterVirtualTerminal(isobus::NAME::NAMEParameters::FunctionCode, static_cast<std::uint8_t>(isobus::NAME::Function::VirtualTerminal));
@@ -1084,11 +1245,11 @@ void Application::setup_vt_client()
 		if (targetMask != 0xFFFF)
 		{
 			vtClient->send_change_active_mask(WorkingSet_0, targetMask);
-			std::cout << "[" << get_timestamp() << "] [VT] Navigating to mask " << targetMask << std::endl;
+			log("VT") << "Navigating to mask " << targetMask << std::endl;
 		}
 	});
 	vtClient->get_vt_button_event_dispatcher().add_listener([](const isobus::VirtualTerminalClient::VTKeyEvent &event) {
-		std::cout << "[" << get_timestamp() << "] [VT] Button event, key=" << static_cast<int>(event.keyNumber) << std::endl;
+		log("VT") << "Button event, key=" << static_cast<int>(event.keyNumber) << std::endl;
 	});
 	vtUpdateHelper = std::make_unique<isobus::VirtualTerminalClientUpdateHelper>(vtClient);
 	vtUpdateHelper->add_tracked_numeric_value(VTSpeedValue, 0);
@@ -1127,7 +1288,7 @@ void Application::setup_vt_client()
 		}
 		if (handled)
 		{
-			std::cout << "[" << get_timestamp() << "] [VT] " << (saved ? "Saved" : "Failed to save") << " configuration object " << objectID << " = " << enabled << std::endl;
+			log("VT") << (saved ? "Saved" : "Failed to save") << " configuration object " << objectID << " = " << enabled << std::endl;
 		}
 		if (handled && !saved)
 		{
@@ -1148,7 +1309,7 @@ void Application::setup_vt_client()
 	});
 	vtUpdateHelper->initialize();
 
-	std::cout << "[" << get_timestamp() << "] [VT] VT client created; waiting for a VT server on the bus." << std::endl;
+	log("VT") << "VT client created; waiting for a VT server on the bus." << std::endl;
 }
 
 void Application::send_vt_string_if_changed(std::uint16_t objectID, const std::string &value)
@@ -1170,7 +1331,7 @@ void Application::try_start_vt_client()
 		vtClient->initialize(false);
 		vtClientStarted = true;
 		vtDisconnectedSinceMs = isobus::SystemTiming::get_timestamp_ms();
-		std::cout << "[" << get_timestamp() << "] [VT] VT server detected at address " << static_cast<int>(vtPartner->get_address()) << ", VT client initialized (manual update mode)." << std::endl;
+		log("VT") << "VT server detected at address " << static_cast<int>(vtPartner->get_address()) << ", VT client initialized (manual update mode)." << std::endl;
 	}
 }
 
@@ -1191,7 +1352,7 @@ void Application::handle_vt_disconnected()
 	if ((!vtConnectionWarningLogged) &&
 	    isobus::SystemTiming::time_expired_ms(vtDisconnectedSinceMs, 30000))
 	{
-		std::cout << "[" << get_timestamp() << "] [VT] WARNING: VT address was detected, but the client did not connect within 30 seconds. "
+		log("VT") << "WARNING: VT address was detected, but the client did not connect within 30 seconds. "
 		          << "Reported VT capabilities: screen=" << vtClient->get_number_x_pixels() << "x" << vtClient->get_number_y_pixels()
 		          << ", softkey=" << static_cast<int>(vtClient->get_softkey_x_axis_pixels()) << "x" << static_cast<int>(vtClient->get_softkey_y_axis_pixels())
 		          << ", virtual softkeys=" << static_cast<int>(vtClient->get_number_virtual_softkeys())
@@ -1211,7 +1372,7 @@ void Application::log_vt_capabilities_once()
 	{
 		const auto virtualSoftkeys = vtClient->get_number_virtual_softkeys();
 		const auto physicalSoftkeys = vtClient->get_number_physical_softkeys();
-		std::cout << "[" << get_timestamp() << "] [VT] Connected to VT version "
+		log("VT") << "Connected to VT version "
 		          << static_cast<int>(vtClient->get_connected_vt_version())
 		          << ": screen=" << vtClient->get_number_x_pixels() << "x" << vtClient->get_number_y_pixels()
 		          << ", softkey=" << static_cast<int>(vtClient->get_softkey_x_axis_pixels()) << "x" << static_cast<int>(vtClient->get_softkey_y_axis_pixels())
@@ -1220,12 +1381,12 @@ void Application::log_vt_capabilities_once()
 		          << std::endl;
 		if (virtualSoftkeys < 5)
 		{
-			std::cout << "[" << get_timestamp() << "] [VT] WARNING: This object pool requires five virtual softkeys, but the VT reports "
+			log("VT") << "WARNING: This object pool requires five virtual softkeys, but the VT reports "
 			          << static_cast<int>(virtualSoftkeys) << "." << std::endl;
 		}
 		else if (physicalSoftkeys < 5)
 		{
-			std::cout << "[" << get_timestamp() << "] [VT] NOTICE: This object pool uses five navigation softkeys; this VT must provide softkey paging because it reports only "
+			log("VT") << "NOTICE: This object pool uses five navigation softkeys; this VT must provide softkey paging because it reports only "
 			          << static_cast<int>(physicalSoftkeys) << " physical softkeys." << std::endl;
 		}
 		vtCapabilitiesLogged = true;
@@ -1355,78 +1516,13 @@ void Application::update_vt_status_strings(bool aogConnected)
 		if (client.second.get_number_of_sections() > 0)
 		{
 			auto &state = client.second;
-			auto &pool = state.get_pool();
-			if (auto deviceObject = pool.get_object_by_index(0))
-			{
-				implementName = deviceObject->get_designator();
-			}
+			const ImplementDetails details = derive_implement_details(state);
+			implementName = details.displayName;
 			sectionControl = state.is_section_control_enabled() ? "ENABLED" : "DISABLED";
-			implementSections = state.get_number_of_sections();
+			implementSections = details.sections;
+			workingWidth = details.widthText.empty() ? "n/a" : details.widthText;
+			boomOffset = details.boomOffsetText.empty() ? "n/a" : details.boomOffsetText;
 			implementTramlineLevels = state.get_supported_tramline_levels_bitmask();
-
-			std::int32_t totalWidthMillimetres = 0;
-			const auto geometry = isobus::DeviceDescriptorObjectPoolHelper::get_implement_geometry(pool);
-			if (!geometry.booms.empty())
-			{
-				const auto &boom = geometry.booms.front();
-				if (boom.xOffset_mm || boom.yOffset_mm)
-				{
-					std::ostringstream offsetText;
-					offsetText << std::fixed << std::setprecision(2);
-					if (boom.xOffset_mm)
-					{
-						offsetText << "X:" << std::showpos
-						           << (static_cast<double>(boom.xOffset_mm.get()) / 1000.0)
-						           << std::noshowpos;
-					}
-					else
-					{
-						offsetText << "X:n/a";
-					}
-					offsetText << " ";
-					if (boom.yOffset_mm)
-					{
-						offsetText << "Y:" << std::showpos
-						           << (static_cast<double>(boom.yOffset_mm.get()) / 1000.0)
-						           << std::noshowpos;
-					}
-					else
-					{
-						offsetText << "Y:n/a";
-					}
-					boomOffset = offsetText.str();
-				}
-			}
-			for (const auto &boom : geometry.booms)
-			{
-				for (const auto &section : boom.sections)
-				{
-					if (section.width_mm)
-					{
-						totalWidthMillimetres += section.width_mm.get();
-					}
-				}
-				for (const auto &subBoom : boom.subBooms)
-				{
-					if (subBoom.sections.empty() && subBoom.width_mm)
-					{
-						totalWidthMillimetres += subBoom.width_mm.get();
-					}
-					for (const auto &section : subBoom.sections)
-					{
-						if (section.width_mm)
-						{
-							totalWidthMillimetres += section.width_mm.get();
-						}
-					}
-				}
-			}
-			if (totalWidthMillimetres > 0)
-			{
-				std::ostringstream widthText;
-				widthText << std::fixed << std::setprecision(2) << (static_cast<double>(totalWidthMillimetres) / 1000.0);
-				workingWidth = widthText.str();
-			}
 			break; // Use the first implement with sections
 		}
 	}
@@ -1437,7 +1533,6 @@ void Application::update_vt_status_strings(bool aogConnected)
 		boomOffset.resize(16);
 	}
 
-	static constexpr std::uint8_t PREFERRED_TC_ADDRESS = isobus::preferred_addresses::IndustryGroup2::TaskController_MappingComputer;
 	bool havePreferredAddress = tcCF && tcCF->get_address_valid() && (tcCF->get_address() == PREFERRED_TC_ADDRESS);
 	std::string status = !havePreferredAddress ? "ADDR!" : (aogConnected ? "OK" : "OFF");
 	send_vt_string_if_changed(VTWorkingSetStatusStr, status);

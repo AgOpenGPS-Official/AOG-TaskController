@@ -9,6 +9,7 @@
 #pragma once
 
 #include <boost/asio.hpp>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <string>
@@ -39,6 +40,21 @@ public:
 	void stop();
 
 private:
+	struct ImplementDetails
+	{
+		std::string displayName = "No implement";
+		std::uint8_t sections = 0;
+		std::string widthText;
+		std::string boomOffsetText;
+	};
+
+	struct ImplementSnapshot
+	{
+		std::string displayName;
+		std::uint8_t sections = 0;
+		std::string widthText;
+	};
+
 	void send_task_controller_status_message();
 
 	bool setup_can_hardware();
@@ -57,6 +73,11 @@ private:
 	void update_vt_status_strings(bool aogConnected);
 
 	void send_vt_string_if_changed(std::uint16_t objectID, const std::string &value);
+	void send_hardware_message(const std::string &text, std::uint8_t duration, std::uint8_t color);
+	ImplementDetails derive_implement_details(ClientState &state) const;
+
+	static constexpr std::uint8_t HW_MSG_ALERT = 0;
+	static constexpr std::uint8_t HW_MSG_INFO = 1;
 
 	bool is_aog_connected() const;
 
@@ -109,5 +130,8 @@ private:
 	std::uint32_t vtDisconnectedSinceMs = 0;
 	std::uint32_t lastVtStatusUpdateMs = 0;
 	std::uint32_t lastVtSectionUpdateMs = 0;
+	bool tcAddressConflictActive = false;
+	bool tecuAddressClaimFailed = false;
+	std::map<std::uint64_t, ImplementSnapshot> implementSnapshots;
 	std::map<std::uint16_t, std::string> lastVtStrings;
 };

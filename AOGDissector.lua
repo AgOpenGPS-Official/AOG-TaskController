@@ -7,7 +7,8 @@ ISOBUS_proto = Proto("ISOBUSVT", "AgISOStack")
 local MajorPGNs = {
     [0x7F] = "Steer module",
     [0xFE] = "From AutoSteer",
-    [0x70] = "ISOBUS"
+    [0x70] = "ISOBUS",
+    [0x80] = "AOG-TaskController"
 }
 local MinorPGNs = {
     [0x00] = "AOG -> ISOBUS",
@@ -111,7 +112,11 @@ local AOGFields = {
     genericSubnet = ProtoField.ipv4("GenericIP.IPSubnet", "Subnet", base.DEC),
     genericShortIPRange = ProtoField.string("GenericIP.IPSubnet", "Subnet", base.STRING),
 
-    freeFormMessage = ProtoField.string("Freeform.message", "Message", base.STRING)
+    freeFormMessage = ProtoField.string("Freeform.message", "Message", base.STRING),
+
+    hwMsgDuration = ProtoField.uint8("TaskController.HwMsgDuration", "Duration", base.DEC),
+    hwMsgColor = ProtoField.uint8("TaskController.HwMsgColor", "Background", base.DEC),
+    hwMsgText = ProtoField.string("TaskController.HwMsgText", "Message", base.STRING)
 }
 
 FixQuality = {
@@ -560,6 +565,20 @@ function AOGProtocol_proto.dissector(buffer, pinfo, tree)
                                                                                      to_binary(buffer(12, 1):uint(), 8) ..
                                                                                      ")")
                 pinfo.cols.info = "Steer data (from AgIO)"
+            end
+        end
+
+        if MajorPGN == 0x80 then -- 128 AOG-TaskController
+            if MinorPGN == 0xdd and buffer:len() >= 5 and buffer(4, 1):uint() > 2 then -- 221 hardware message
+                local textLength = buffer(4, 1):uint() - 2
+                -- a truncated capture would throw out of the dissector
+                if buffer:len() >= 7 + textLength then
+                    subtree:add(AOGFields.hwMsgDuration, buffer(5, 1)):append_text(" (x10 render frames)")
+                    subtree:add(AOGFields.hwMsgColor, buffer(6, 1)):append_text(buffer(6, 1):uint() == 0 and
+                                                                                    " (Salmon, alert)" or " (Bisque, info)")
+                    subtree:add(AOGFields.hwMsgText, buffer(7, textLength))
+                    pinfo.cols.info = "TC hardware message: " .. buffer(7, textLength):string()
+                end
             end
         end
 
