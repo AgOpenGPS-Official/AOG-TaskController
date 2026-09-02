@@ -600,6 +600,7 @@ bool MyTCServer::on_value_command(std::shared_ptr<isobus::ControlFunction> partn
 				clients[partner].set_section_actual_state(i + sectionIndexOffset, sectionState);
 				clients[partner].set_element_number_for_section(i + sectionIndexOffset, elementNumber);
 			}
+
 		}
 		break;
 
@@ -614,12 +615,18 @@ bool MyTCServer::on_value_command(std::shared_ptr<isobus::ControlFunction> partn
 			// Store the work state per element (used for parent-off checks)
 			clients[partner].set_element_work_state(elementNumber, processDataValue == 1);
 
-			// For legacy per-element devices: propagate to section actual states
-			// so the heartbeat (PGN 0xF0) can report them to AOG
-			std::uint8_t sectionIndex;
-			if (clients[partner].try_get_section_for_element(elementNumber, sectionIndex))
+			// For legacy per-element devices only: propagate to section actual states
+			// so the heartbeat (PGN 0xF0) can report them to AOG.
+			// Modern implements may report both DDI 141 and condensed DDIs (161/290)
+			// on the same element — only overwrite section states when per-element
+			// control is the active section control method.
+			if (clients[partner].uses_per_element_control())
 			{
-				clients[partner].set_section_actual_state(sectionIndex, (processDataValue == 1) ? SectionState::ON : SectionState::OFF);
+				std::uint8_t sectionIndex;
+				if (clients[partner].try_get_section_for_element(elementNumber, sectionIndex))
+				{
+					clients[partner].set_section_actual_state(sectionIndex, (processDataValue == 1) ? SectionState::ON : SectionState::OFF);
+				}
 			}
 		}
 	}
