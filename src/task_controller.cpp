@@ -623,7 +623,6 @@ bool MyTCServer::on_value_command(std::shared_ptr<isobus::ControlFunction> partn
 				clients[partner].set_section_actual_state(i + sectionIndexOffset, sectionState);
 				clients[partner].set_element_number_for_section(i + sectionIndexOffset, elementNumber);
 			}
-
 		}
 		break;
 
