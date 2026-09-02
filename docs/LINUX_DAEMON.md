@@ -121,7 +121,12 @@ The TC reads `settings.json` from `$XDG_CONFIG_HOME/AOG-TaskController/` (typica
 {
     "subnet": [192, 168, 5],
     "tecuEnabled": true,
-    "aogHeartbeatEnabled": true
+    "nmeaSendEnabled": true,
+    "aogHeartbeatEnabled": true,
+    "vtEnabled": true,
+    "tcVersion": 3,
+    "languageCode": "en",
+    "countryCode": "US"
 }
 ```
 
@@ -129,7 +134,12 @@ The TC reads `settings.json` from `$XDG_CONFIG_HOME/AOG-TaskController/` (typica
 |---|---|---|---|
 | `subnet` | `int[3]` | `[192, 168, 5]` | First three octets of the LAN the AgIO/AgValonia host lives on. TC enumerates NICs (via `getifaddrs(3)`) and binds the one whose IP starts with these octets. AgIO can override at runtime via the subnet-detection PGN. |
 | `tecuEnabled` | `bool` | `true` | Whether the TC also impersonates a Tractor ECU on the bus (Speed Messages, NMEA2000 COG/SOG, BasicTractorECUServer announce). Set `false` if the tractor already has a TECU on the harness. |
+| `nmeaSendEnabled` | `bool` | `true` | Whether the TECU sends cyclic NMEA2000 COG/SOG messages. Has no effect when `tecuEnabled` is `false`. |
 | `aogHeartbeatEnabled` | `bool` | `true` | Whether the TC sends a 100 ms heartbeat UDP packet to AgIO/AgValonia even when no implement is connected. **Set to `false` if pairing with AgOpenGPS pre-v6.8.2 beta 5** — older AOG versions choke on the heartbeat. |
+| `vtEnabled` | `bool` | `true` | Whether the TC registers its Virtual Terminal UI. |
+| `tcVersion` | `integer` | `3` | Task Controller version code (`0`–`4`); `3` selects Second Edition Draft. |
+| `languageCode` | `string` | `"en"` | Two-character ISOBUS language code. |
+| `countryCode` | `string` | `"US"` | Two-character ISOBUS country code. |
 
 See [PROTOCOL.md](PROTOCOL.md) for the full reference.
 
@@ -204,6 +214,9 @@ The address-claim arbitration walked up because either (a) the bus is empty and 
 
 **TECU collisions**
 If the tractor's factory TECU is on the bus, set `tecuEnabled: false` to avoid duplicate Speed Messages and NMEA2000 broadcasts. The TC will log `[Info] Tractor ECU disabled in settings...` at startup.
+
+**VT is detected but the UI never appears**
+The VT pool is embedded in the executable, so no external `.iop` file or service working directory is required. The pool scales from a 480-pixel data mask and 80-pixel softkey designator, and it uses five virtual navigation softkeys. Check the logged screen/softkey dimensions and softkey counts; a terminal with fewer than five physical keys must support paging. If the client remains disconnected for 30 seconds, the TC emits a detailed warning. Clear the VT's stored/cached object pools, then restart the TC and VT before retrying.
 
 ---
 

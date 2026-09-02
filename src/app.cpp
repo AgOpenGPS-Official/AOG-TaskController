@@ -8,25 +8,39 @@
  */
 #include "app.hpp"
 
+#include "AOG_TC_iop_data.hpp"
 #include "isobus/hardware_integration/available_can_drivers.hpp"
 #include "isobus/hardware_integration/can_hardware_interface.hpp"
 #include "isobus/isobus/can_internal_control_function.hpp"
 #include "isobus/isobus/can_network_manager.hpp"
+#include "isobus/isobus/isobus_device_descriptor_object_pool_helpers.hpp"
 #include "isobus/isobus/isobus_preferred_addresses.hpp"
 #include "isobus/isobus/isobus_standard_data_description_indices.hpp"
 #include "isobus/isobus/isobus_task_controller_server.hpp"
+#include "isobus/utility/iop_file_interface.hpp"
 #include "isobus/utility/system_timing.hpp"
 
 #include "task_controller.hpp"
 
+#include "AOG_TC.iop.h"
+
 #include "logging_utils.hpp"
 
+#include <algorithm>
 #include <iomanip>
 #include <iostream>
 #include <span>
+#include <sstream>
 #include <thread>
 
 using boost::asio::ip::udp;
+
+static std::string format_hex_address(std::uint8_t address)
+{
+	std::ostringstream value;
+	value << "0x" << std::hex << std::uppercase << std::setw(2) << std::setfill('0') << static_cast<int>(address);
+	return value.str();
+}
 
 // Enumerate and log all Control Functions on the bus
 static void enumerate_bus_control_functions(const std::string &context)
@@ -152,7 +166,34 @@ Application::Application(std::shared_ptr<isobus::CANHardwarePlugin> canDriver) :
 
 bool Application::initialize()
 {
+	bool initialized = false;
 	settings->load();
+
+	if (setup_can_hardware() && setup_control_functions())
+	{
+		setup_task_controller_server();
+		setup_tecu_interfaces();
+
+		std::cout << "[" << get_timestamp() << "] Task controller server started." << std::endl;
+
+		if (settings->is_vt_enabled())
+		{
+			setup_vt_client();
+		}
+		else
+		{
+			std::cout << "[" << get_timestamp() << "] [Info] VT UI disabled in settings, skipping VT client." << std::endl;
+		}
+
+		setup_udp_connections();
+		initialized = true;
+	}
+
+	return initialized;
+}
+
+bool Application::setup_can_hardware()
+{
 	if (nullptr == canDriver)
 	{
 		std::cout << "[" << get_timestamp() << "] Unable to find a CAN driver. Please make sure the selected driver is installed." << std::endl;
@@ -177,6 +218,11 @@ bool Application::initialize()
 		std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
 
+	return true;
+}
+
+bool Application::setup_control_functions()
+{
 	// Enumerate CFs on the bus BEFORE creating our own functions
 	enumerate_bus_control_functions("Before creating internal control functions");
 
@@ -309,6 +355,11 @@ bool Application::initialize()
 	// Enumerate CFs on the bus AFTER creating our internal functions
 	enumerate_bus_control_functions("After creating internal control functions");
 
+	return true;
+}
+
+void Application::setup_task_controller_server()
+{
 	// Map settings version to TaskControllerVersion enum
 	isobus::TaskControllerServer::TaskControllerVersion tcVersionEnum;
 	switch (settings->get_tc_version())
@@ -355,7 +406,10 @@ bool Application::initialize()
 	  true);
 	tcFunctionalities->set_task_controller_section_control_server_option_state(1, 64);
 	std::cout << "[" << get_timestamp() << "] [Init] TC announced TC-BAS and TC-SC (1 boom / 64 sections) via PGN 64654" << std::endl;
+}
 
+void Application::setup_tecu_interfaces()
+{
 	// Initialize speed and distance messages
 	if (tecuCF && tecuCF->get_address_valid())
 	{
@@ -381,9 +435,8 @@ bool Application::initialize()
 		std::cout << "[" << get_timestamp() << "] [Init] Speed Messages Interface created and initialized." << std::endl;
 
 		std::cout << "[" << get_timestamp() << "] [Init] Creating NMEA2000 Message Interface on TECU..." << std::endl;
-		nmea2000MessageInterface = std::make_unique<isobus::NMEA2000MessageInterface>(tecuCF, false, false, false, false, false, false, false);
+		nmea2000MessageInterface = std::make_unique<isobus::NMEA2000MessageInterface>(tecuCF, settings->is_nmea_send_enabled(), false, false, false, false, false, false);
 		nmea2000MessageInterface->initialize();
-		nmea2000MessageInterface->set_enable_sending_cog_sog_cyclically(true); // TODO: make configurable whether to send these messages
 		std::cout << "[" << get_timestamp() << "] [Init] NMEA2000 Message Interface created and initialized." << std::endl;
 	}
 	else
@@ -397,15 +450,22 @@ bool Application::initialize()
 			std::cout << "[" << get_timestamp() << "] [Warning] TECU Control Function not available, Speed/NMEA interfaces not created" << std::endl;
 		}
 	}
+}
 
-	std::cout << "[" << get_timestamp() << "] Task controller server started." << std::endl;
-
+void Application::setup_udp_connections()
+{
 	static std::uint8_t xteSid = 0;
 	static std::uint32_t lastXteTransmit = 0;
 
 	auto packetHandler = [this](std::uint8_t src, std::uint8_t pgn, std::span<std::uint8_t> data) {
-		if (src == 0x7F && pgn == 0xE5) // 229 - 64 sections PGN
+		if (src != 0x7F)
 		{
+			return;
+		}
+
+		if (pgn == 0xE5 && data.size() >= 8) // 229 - 64 sections PGN
+		{
+			lastAogPacketMs = isobus::SystemTiming::get_timestamp_ms();
 			std::vector<bool> sectionStates;
 			for (std::uint8_t j = 0; j < 8; j++)
 			{
@@ -416,17 +476,24 @@ bool Application::initialize()
 			}
 			tcServer->update_section_states(sectionStates);
 		}
-		else if (src == 0x7F && pgn == 0xF1) // 241 - Section Control
+		else if (pgn == 0xF1 && !data.empty()) // 241 - Section Control
 		{
+			lastAogPacketMs = isobus::SystemTiming::get_timestamp_ms();
 			std::uint8_t sectionControlState = data[0];
 			std::cout << "[" << get_timestamp() << "] Received request from AOG to change section control state to " << (sectionControlState == 1 ? "enabled" : "disabled") << std::endl;
 			tcServer->update_section_control_enabled(sectionControlState == 1);
 		}
-		else if (src == 0x7F && pgn == 0xF2) // Process Data
+		else if (pgn == 0xF2 && data.size() >= 6) // Process Data
 		{
+			lastAogPacketMs = isobus::SystemTiming::get_timestamp_ms();
 			auto identifier = static_cast<isobus::DataDescriptionIndex>(data[0] | (data[1] << 8));
 
-			std::int32_t value = data[2] | (data[3] << 8) | (data[4] << 16) | (data[5] << 24);
+			const std::uint32_t rawValue =
+			  static_cast<std::uint32_t>(data[2]) |
+			  (static_cast<std::uint32_t>(data[3]) << 8) |
+			  (static_cast<std::uint32_t>(data[4]) << 16) |
+			  (static_cast<std::uint32_t>(data[5]) << 24);
+			const std::int32_t value = static_cast<std::int32_t>(rawValue);
 			if (identifier == isobus::DataDescriptionIndex::ActualSpeed)
 			{
 				lastSpeedValue = value; // Store the full precision value
@@ -441,10 +508,6 @@ bool Application::initialize()
 					speedMessagesInterface->groundBasedSpeedTransmitData.set_machine_speed(speed);
 					speedMessagesInterface->wheelBasedSpeedTransmitData.set_machine_speed(speed);
 					speedMessagesInterface->machineSelectedSpeedTransmitData.set_machine_speed(speed);
-
-					speedMessagesInterface->groundBasedSpeedTransmitData.set_machine_distance(0); // TODO: Implement distance
-					speedMessagesInterface->wheelBasedSpeedTransmitData.set_machine_distance(0); // TODO: Implement distance
-					speedMessagesInterface->machineSelectedSpeedTransmitData.set_machine_distance(0); // TODO: Implement distance
 				}
 				if (nmea2000MessageInterface)
 				{
@@ -457,6 +520,7 @@ bool Application::initialize()
 			}
 			else if (identifier == isobus::DataDescriptionIndex::GuidanceLineDeviation)
 			{
+				lastXteValue = value;
 				std::int32_t xte = value / 1000; // Convert from mm to m
 				static const std::uint8_t xteMode = 0b00000001;
 				xteSid = xteSid % 253 + 1;
@@ -481,12 +545,15 @@ bool Application::initialize()
 					}
 				}
 			}
-			else if (static_cast<std::uint16_t>(identifier) == 597 /*isobus::DataDescriptionIndex::TotalDistance*/ && speedMessagesInterface)
+			else if (static_cast<std::uint16_t>(identifier) == 597 /*isobus::DataDescriptionIndex::TotalDistance*/)
 			{
-				auto distance = static_cast<std::uint32_t>(value);
-				speedMessagesInterface->groundBasedSpeedTransmitData.set_machine_distance(distance);
-				speedMessagesInterface->wheelBasedSpeedTransmitData.set_machine_distance(distance);
-				speedMessagesInterface->machineSelectedSpeedTransmitData.set_machine_distance(distance);
+				lastDistanceMm = (value < 0) ? 0 : static_cast<std::uint32_t>(value);
+				if (speedMessagesInterface)
+				{
+					speedMessagesInterface->groundBasedSpeedTransmitData.set_machine_distance(lastDistanceMm);
+					speedMessagesInterface->wheelBasedSpeedTransmitData.set_machine_distance(lastDistanceMm);
+					speedMessagesInterface->machineSelectedSpeedTransmitData.set_machine_distance(lastDistanceMm);
+				}
 			}
 		}
 	};
@@ -494,8 +561,6 @@ bool Application::initialize()
 	udpConnections->open();
 
 	std::cout << "[" << get_timestamp() << "] UDP connections opened." << std::endl;
-
-	return true;
 }
 
 bool Application::update()
@@ -515,6 +580,8 @@ bool Application::update()
 		speedMessagesInterface->update();
 	if (nmea2000MessageInterface)
 		nmea2000MessageInterface->update();
+	if (vtClient)
+		update_vt_client();
 
 	// Check for TC address conflicts every 15 seconds
 	static std::uint32_t lastConflictCheck = 0;
@@ -654,8 +721,529 @@ void Application::send_task_controller_status_message()
 	lastTCStatusTransmit = transmitAttemptTimestamp;
 }
 
+void Application::setup_vt_client()
+{
+	vtObjectPool.assign(std::begin(AOG_TC_IOP_DATA), std::end(AOG_TC_IOP_DATA));
+	std::cout << "[" << get_timestamp() << "] [VT] Loaded embedded object pool (" << vtObjectPool.size() << " bytes)" << std::endl;
+
+	// Partner filter for any Virtual Terminal server on the bus.
+	const isobus::NAMEFilter filterVirtualTerminal(isobus::NAME::NAMEParameters::FunctionCode, static_cast<std::uint8_t>(isobus::NAME::Function::VirtualTerminal));
+	auto partnerVT = isobus::CANNetworkManager::CANNetwork.create_partnered_control_function(0, { filterVirtualTerminal });
+
+	vtClient = std::make_shared<isobus::VirtualTerminalClient>(partnerVT, tcCF);
+
+	// Include the scaling contract in the VT cache key so terminals do not
+	// reuse an unscaled pool stored by an older build with the same IOP bytes.
+	auto poolVersionData = vtObjectPool;
+	const std::string scalingCacheSalt =
+	  "scaled:" + std::to_string(ISO_MASK_SIZE) + ":" + std::to_string(ISO_DESIGNATOR_HEIGHT) + ":v1";
+	poolVersionData.insert(poolVersionData.end(), scalingCacheSalt.begin(), scalingCacheSalt.end());
+	const std::string poolHash = isobus::IOPFileInterface::hash_object_pool_to_version(poolVersionData);
+	vtClient->set_object_pool(0, vtObjectPool.data(), static_cast<std::uint32_t>(vtObjectPool.size()), poolHash);
+	vtClient->set_object_pool_scaling(0, ISO_MASK_SIZE, ISO_DESIGNATOR_HEIGHT);
+
+	vtClient->get_vt_soft_key_event_dispatcher().add_listener([this](const isobus::VirtualTerminalClient::VTKeyEvent &event) {
+		if (event.keyEvent != isobus::VirtualTerminalClient::KeyActivationCode::ButtonPressedOrLatched)
+		{
+			return;
+		}
+
+		std::uint16_t targetMask = 0xFFFF;
+		switch (event.objectID)
+		{
+			case NavStatus:
+				targetMask = DataMask_1000;
+				break;
+			case NavNetwork:
+				targetMask = DataMask_Network;
+				break;
+			case NavImplement:
+				targetMask = DataMask_Implement;
+				break;
+			case NavDiagnostics:
+				targetMask = DataMask_Diagnostics;
+				break;
+			case NavConfig:
+				targetMask = DataMask_Config;
+				break;
+			default:
+				break;
+		}
+
+		if (targetMask != 0xFFFF)
+		{
+			vtClient->send_change_active_mask(WorkingSet_0, targetMask);
+			std::cout << "[" << get_timestamp() << "] [VT] Navigating to mask " << targetMask << std::endl;
+		}
+	});
+	vtClient->get_vt_button_event_dispatcher().add_listener([](const isobus::VirtualTerminalClient::VTKeyEvent &event) {
+		std::cout << "[" << get_timestamp() << "] [VT] Button event, key=" << static_cast<int>(event.keyNumber) << std::endl;
+	});
+	vtUpdateHelper = std::make_unique<isobus::VirtualTerminalClientUpdateHelper>(vtClient);
+	vtUpdateHelper->add_tracked_numeric_value(VTSpeedValue, 0);
+	vtUpdateHelper->add_tracked_numeric_value(VTXteValue, 0);
+	vtUpdateHelper->add_tracked_numeric_value(ConfigNmeaSend, settings->is_nmea_send_enabled());
+	vtUpdateHelper->add_tracked_numeric_value(ConfigTecuEnabled, settings->is_tecu_enabled());
+
+	vtClient->get_vt_change_numeric_value_event_dispatcher().add_listener([this](const isobus::VirtualTerminalClient::VTChangeNumericValueEvent &event) {
+		const std::uint16_t objectID = event.objectID;
+		const std::uint32_t value = event.value;
+		const bool enabled = (value != 0);
+		bool handled = true;
+		bool saved = true;
+		switch (objectID)
+		{
+			case ConfigNmeaSend:
+				if (nmea2000MessageInterface)
+				{
+					saved = settings->set_nmea_send_enabled(enabled);
+					if (saved)
+					{
+						nmea2000MessageInterface->set_enable_sending_cog_sog_cyclically(enabled);
+					}
+				}
+				else
+				{
+					saved = false;
+				}
+				break;
+			case ConfigTecuEnabled:
+				saved = settings->set_tecu_enabled(enabled);
+				break;
+			default:
+				handled = false;
+				break;
+		}
+		if (handled)
+		{
+			std::cout << "[" << get_timestamp() << "] [VT] " << (saved ? "Saved" : "Failed to save") << " configuration object " << objectID << " = " << enabled << std::endl;
+		}
+		if (handled && !saved)
+		{
+			bool storedValue = false;
+			switch (objectID)
+			{
+				case ConfigNmeaSend:
+					storedValue = settings->is_nmea_send_enabled();
+					break;
+				case ConfigTecuEnabled:
+					storedValue = settings->is_tecu_enabled();
+					break;
+				default:
+					break;
+			}
+			vtClient->send_change_numeric_value(objectID, storedValue ? 1U : 0U);
+		}
+	});
+	vtUpdateHelper->initialize();
+
+	std::cout << "[" << get_timestamp() << "] [VT] VT client created; waiting for a VT server on the bus." << std::endl;
+}
+
+void Application::send_vt_string_if_changed(std::uint16_t objectID, const std::string &value)
+{
+	auto cached = lastVtStrings.find(objectID);
+	if (cached != lastVtStrings.end() && cached->second == value)
+	{
+		return;
+	}
+	vtClient->send_change_string_value(objectID, value);
+	lastVtStrings[objectID] = value;
+}
+
+void Application::try_start_vt_client()
+{
+	auto vtPartner = vtClient->get_partner_control_function();
+	if (vtPartner && vtPartner->get_address_valid())
+	{
+		vtClient->initialize(false);
+		vtClientStarted = true;
+		vtDisconnectedSinceMs = isobus::SystemTiming::get_timestamp_ms();
+		std::cout << "[" << get_timestamp() << "] [VT] VT server detected at address " << static_cast<int>(vtPartner->get_address()) << ", VT client initialized (manual update mode)." << std::endl;
+	}
+}
+
+void Application::handle_vt_disconnected()
+{
+	if (vtWasConnected)
+	{
+		vtDisconnectedSinceMs = isobus::SystemTiming::get_timestamp_ms();
+		vtConnectionWarningLogged = false;
+		vtCapabilitiesLogged = false;
+	}
+	else if (vtDisconnectedSinceMs == 0)
+	{
+		vtDisconnectedSinceMs = isobus::SystemTiming::get_timestamp_ms();
+	}
+	vtWasConnected = false;
+
+	if ((!vtConnectionWarningLogged) &&
+	    isobus::SystemTiming::time_expired_ms(vtDisconnectedSinceMs, 30000))
+	{
+		std::cout << "[" << get_timestamp() << "] [VT] WARNING: VT address was detected, but the client did not connect within 30 seconds. "
+		          << "Reported VT capabilities: screen=" << vtClient->get_number_x_pixels() << "x" << vtClient->get_number_y_pixels()
+		          << ", softkey=" << static_cast<int>(vtClient->get_softkey_x_axis_pixels()) << "x" << static_cast<int>(vtClient->get_softkey_y_axis_pixels())
+		          << ", virtual softkeys=" << static_cast<int>(vtClient->get_number_virtual_softkeys())
+		          << ", physical softkeys=" << static_cast<int>(vtClient->get_number_physical_softkeys())
+		          << ". The pool requires five navigation softkeys. Check VT paging support and clear the terminal's cached/stored object pool before retrying."
+		          << std::endl;
+		vtConnectionWarningLogged = true;
+	}
+
+	lastVtStrings.clear();
+	vtConfigSynced = false;
+}
+
+void Application::log_vt_capabilities_once()
+{
+	if (!vtCapabilitiesLogged)
+	{
+		const auto virtualSoftkeys = vtClient->get_number_virtual_softkeys();
+		const auto physicalSoftkeys = vtClient->get_number_physical_softkeys();
+		std::cout << "[" << get_timestamp() << "] [VT] Connected to VT version "
+		          << static_cast<int>(vtClient->get_connected_vt_version())
+		          << ": screen=" << vtClient->get_number_x_pixels() << "x" << vtClient->get_number_y_pixels()
+		          << ", softkey=" << static_cast<int>(vtClient->get_softkey_x_axis_pixels()) << "x" << static_cast<int>(vtClient->get_softkey_y_axis_pixels())
+		          << ", virtual softkeys=" << static_cast<int>(virtualSoftkeys)
+		          << ", physical softkeys=" << static_cast<int>(physicalSoftkeys)
+		          << std::endl;
+		if (virtualSoftkeys < 5)
+		{
+			std::cout << "[" << get_timestamp() << "] [VT] WARNING: This object pool requires five virtual softkeys, but the VT reports "
+			          << static_cast<int>(virtualSoftkeys) << "." << std::endl;
+		}
+		else if (physicalSoftkeys < 5)
+		{
+			std::cout << "[" << get_timestamp() << "] [VT] NOTICE: This object pool uses five navigation softkeys; this VT must provide softkey paging because it reports only "
+			          << static_cast<int>(physicalSoftkeys) << " physical softkeys." << std::endl;
+		}
+		vtCapabilitiesLogged = true;
+	}
+}
+
+void Application::sync_vt_config_once()
+{
+	if (!vtConfigSynced)
+	{
+		vtClient->send_enable_disable_object(
+		  ConfigHydliftAuxN,
+		  isobus::VirtualTerminalClient::EnableDisableObjectCommand::DisableObject);
+		vtClient->send_enable_disable_object(
+		  ConfigNmeaRead,
+		  isobus::VirtualTerminalClient::EnableDisableObjectCommand::DisableObject);
+		vtClient->send_enable_disable_object(
+		  ConfigNmeaSend,
+		  nmea2000MessageInterface ? isobus::VirtualTerminalClient::EnableDisableObjectCommand::EnableObject : isobus::VirtualTerminalClient::EnableDisableObjectCommand::DisableObject);
+		vtClient->send_change_numeric_value(ConfigNmeaSend, settings->is_nmea_send_enabled());
+		vtClient->send_change_numeric_value(ConfigTecuEnabled, settings->is_tecu_enabled());
+		vtConfigSynced = true;
+	}
+}
+
+void Application::update_vt_section_map()
+{
+	if (isobus::SystemTiming::time_expired_ms(lastVtSectionUpdateMs, 100))
+	{
+		std::string sectionMap = "No sections connected";
+		if (!tcServer->get_clients().empty())
+		{
+			auto &state = tcServer->get_clients().begin()->second;
+			const auto sectionCount = std::min<std::uint8_t>(state.get_number_of_sections(), 64);
+			if (sectionCount > 0)
+			{
+				sectionMap.clear();
+				for (std::uint8_t section = 0; section < sectionCount; ++section)
+				{
+					if (section != 0)
+					{
+						sectionMap.push_back((section % 16) == 0 ? '\n' : ' ');
+					}
+					sectionMap.push_back(state.get_section_actual_state(section) == SectionState::ON ? '1' : '0');
+				}
+			}
+		}
+		send_vt_string_if_changed(ImplementSectionMap, sectionMap);
+		lastVtSectionUpdateMs = isobus::SystemTiming::get_timestamp_ms();
+	}
+}
+
+void Application::update_vt_client()
+{
+	if (!vtClientStarted)
+	{
+		try_start_vt_client();
+		return;
+	}
+
+	vtClient->update();
+
+	if (!vtClient->get_is_connected())
+	{
+		handle_vt_disconnected();
+		return;
+	}
+
+	if (!vtWasConnected)
+	{
+		vtWasConnected = true;
+		vtDisconnectedSinceMs = 0;
+		vtConnectionWarningLogged = false;
+	}
+
+	log_vt_capabilities_once();
+
+	if (!vtUpdateHelper)
+	{
+		return;
+	}
+
+	sync_vt_config_once();
+
+	const bool aogConnected = (lastAogPacketMs != 0) && !isobus::SystemTiming::time_expired_ms(lastAogPacketMs, 3000);
+	vtUpdateHelper->set_numeric_value(VTSpeedValue, aogConnected ? static_cast<std::uint32_t>(std::abs(lastSpeedValue)) : 0U);
+
+	vtUpdateHelper->set_numeric_value(VTXteValue, aogConnected ? (static_cast<std::uint32_t>(lastXteValue) ^ 0x80000000U) : 0x80000000U);
+	vtUpdateHelper->set_numeric_value(ConfigNmeaSend, settings->is_nmea_send_enabled());
+	vtUpdateHelper->set_numeric_value(ConfigTecuEnabled, settings->is_tecu_enabled());
+
+	update_vt_section_map();
+
+	if (!isobus::SystemTiming::time_expired_ms(lastVtStatusUpdateMs, 1000))
+	{
+		return;
+	}
+	update_vt_status_strings(aogConnected);
+}
+
+void Application::update_vt_status_strings(bool aogConnected)
+{
+	lastVtStatusUpdateMs = isobus::SystemTiming::get_timestamp_ms();
+
+	send_vt_string_if_changed(VTWorkingSetStatusLabel, "AOG TC IP");
+	send_vt_string_if_changed(VTAogIPStr, udpConnections->get_bound_ip_address());
+	const std::string packetAge = (lastAogPacketMs == 0) ? "never" : (std::to_string(isobus::SystemTiming::get_time_elapsed_ms(lastAogPacketMs) / 1000) + " s");
+	const bool taskRunning = tcServer->get_task_totals_active();
+	auto &clients = tcServer->get_clients();
+
+	std::uint32_t totalSections = 0;
+	for (const auto &client : clients)
+	{
+		totalSections += client.second.get_number_of_sections();
+	}
+
+	std::string implementName = "No implement";
+	std::string sectionControl = "DISABLED";
+	std::string workingWidth = "n/a";
+	std::string boomOffset = "n/a";
+	std::uint8_t implementSections = 0;
+	if (!clients.empty())
+	{
+		auto &state = clients.begin()->second;
+		auto &pool = state.get_pool();
+		if (auto deviceObject = pool.get_object_by_index(0))
+		{
+			implementName = deviceObject->get_designator();
+		}
+		sectionControl = state.is_section_control_enabled() ? "ENABLED" : "DISABLED";
+		implementSections = state.get_number_of_sections();
+
+		std::int32_t totalWidthMillimetres = 0;
+		const auto geometry = isobus::DeviceDescriptorObjectPoolHelper::get_implement_geometry(pool);
+		if (!geometry.booms.empty())
+		{
+			const auto &boom = geometry.booms.front();
+			if (boom.xOffset_mm || boom.yOffset_mm)
+			{
+				std::ostringstream offsetText;
+				offsetText << std::fixed << std::setprecision(2);
+				if (boom.xOffset_mm)
+				{
+					offsetText << "X:" << std::showpos
+					           << (static_cast<double>(boom.xOffset_mm.get()) / 1000.0)
+					           << std::noshowpos;
+				}
+				else
+				{
+					offsetText << "X:n/a";
+				}
+				offsetText << " ";
+				if (boom.yOffset_mm)
+				{
+					offsetText << "Y:" << std::showpos
+					           << (static_cast<double>(boom.yOffset_mm.get()) / 1000.0)
+					           << std::noshowpos;
+				}
+				else
+				{
+					offsetText << "Y:n/a";
+				}
+				boomOffset = offsetText.str();
+			}
+		}
+		for (const auto &boom : geometry.booms)
+		{
+			for (const auto &section : boom.sections)
+			{
+				if (section.width_mm)
+				{
+					totalWidthMillimetres += section.width_mm.get();
+				}
+			}
+			for (const auto &subBoom : boom.subBooms)
+			{
+				if (subBoom.sections.empty() && subBoom.width_mm)
+				{
+					totalWidthMillimetres += subBoom.width_mm.get();
+				}
+				for (const auto &section : subBoom.sections)
+				{
+					if (section.width_mm)
+					{
+						totalWidthMillimetres += section.width_mm.get();
+					}
+				}
+			}
+		}
+		if (totalWidthMillimetres > 0)
+		{
+			std::ostringstream widthText;
+			widthText << std::fixed << std::setprecision(2) << (static_cast<double>(totalWidthMillimetres) / 1000.0);
+			workingWidth = widthText.str();
+		}
+	}
+	const std::string implementDisplayName = implementName.substr(0, 16);
+	const std::string activeDDOP = clients.empty() ? "none" : implementDisplayName;
+	if (boomOffset.size() > 16)
+	{
+		boomOffset.resize(16);
+	}
+
+	static constexpr std::uint8_t PREFERRED_TC_ADDRESS = isobus::preferred_addresses::IndustryGroup2::TaskController_MappingComputer;
+	bool havePreferredAddress = tcCF && tcCF->get_address_valid() && (tcCF->get_address() == PREFERRED_TC_ADDRESS);
+	std::string status = !havePreferredAddress ? "ADDR!" : (aogConnected ? "OK" : "OFF");
+	send_vt_string_if_changed(VTWorkingSetStatusStr, status);
+
+	// Count online control functions on the bus (ISOBUS network summary).
+	const auto controlFunctions = isobus::CANNetworkManager::CANNetwork.get_control_functions(false);
+	std::uint32_t cfCount = 0;
+	for (const auto &cf : controlFunctions)
+	{
+		if (cf && cf->get_address_valid())
+		{
+			cfCount++;
+		}
+	}
+
+	std::ostringstream mainImplementStatus;
+	mainImplementStatus << "Name             " << implementDisplayName << '\n'
+	                    << "Sections         " << totalSections << '\n'
+	                    << "Section control  " << sectionControl;
+	send_vt_string_if_changed(VTSectionsFromAOGS, mainImplementStatus.str());
+
+	std::ostringstream distanceText;
+	if (lastDistanceMm < 1000000U)
+	{
+		distanceText << std::fixed << std::setprecision(1) << (static_cast<double>(lastDistanceMm) / 1000.0) << " m";
+	}
+	else
+	{
+		distanceText << std::fixed << std::setprecision(2) << (static_cast<double>(lastDistanceMm) / 1000000.0) << " km";
+	}
+
+	std::ostringstream mainSystemStatus;
+	mainSystemStatus << "Control funcs    " << cfCount << '\n'
+	                 << "Task state       " << (taskRunning ? "RUNNING" : "STOPPED") << '\n'
+	                 << "Direction        " << (!aogConnected ? "--" : (lastSpeedValue < 0 ? "REV" : "FWD")) << '\n'
+	                 << "Distance         " << distanceText.str() << '\n'
+	                 << "AOG packet age   " << packetAge;
+	send_vt_string_if_changed(VTControlFunctionsStr, mainSystemStatus.str());
+	send_vt_string_if_changed(ConfigHydliftLabel, "Hydlift: not impl.");
+	send_vt_string_if_changed(ConfigNmeaReadLabel, "NMEA Read: not impl.");
+	send_vt_string_if_changed(
+	  ConfigNmeaSendLabel,
+	  nmea2000MessageInterface ? (std::string("NMEA Send: ") + (settings->is_nmea_send_enabled() ? "ON" : "OFF")) : "NMEA Send: TECU req");
+	send_vt_string_if_changed(
+	  ConfigTecuLabel,
+	  std::string("TECU: ") + (settings->is_tecu_enabled() ? "ON" : "OFF") + " (restart req)");
+
+	std::ostringstream networkRows;
+	std::uint8_t displayedCFs = 0;
+	for (const auto &cf : controlFunctions)
+	{
+		if (displayedCFs >= 7)
+		{
+			break;
+		}
+		if (!cf || !cf->get_address_valid())
+		{
+			continue;
+		}
+
+		std::uint8_t sectionCount = 0;
+		auto client = clients.find(cf);
+		if (client != clients.end())
+		{
+			sectionCount = client->second.get_number_of_sections();
+		}
+
+		const auto name = cf->get_NAME();
+		if (displayedCFs != 0)
+		{
+			networkRows << '\n';
+		}
+		networkRows << std::dec << std::nouppercase << std::setfill(' ') << std::left
+		            << std::setw(6) << format_hex_address(cf->get_address())
+		            << std::setw(10) << static_cast<int>(name.get_function_code())
+		            << std::setw(6) << name.get_manufacturer_code()
+		            << std::setw(9) << name.get_identity_number()
+		            << static_cast<int>(sectionCount);
+		displayedCFs++;
+	}
+	if (displayedCFs == 0)
+	{
+		networkRows << "No control functions online";
+	}
+	send_vt_string_if_changed(NetworkConnectedValue, std::to_string(cfCount));
+	send_vt_string_if_changed(NetworkRows, networkRows.str());
+
+	// Implement page: show the first active task-controller client and its section state.
+	send_vt_string_if_changed(ImplementActiveDDOP, implementDisplayName);
+	send_vt_string_if_changed(ImplementSectionControl, sectionControl);
+	send_vt_string_if_changed(ImplementWorkingWidth, workingWidth);
+	send_vt_string_if_changed(ImplementBoomOffset, boomOffset);
+	send_vt_string_if_changed(ImplementSectionCount, std::to_string(implementSections));
+
+	// Diagnostics page: compact state block plus one actionable alarm line.
+	const std::string tcAddress = (tcCF && tcCF->get_address_valid()) ? format_hex_address(tcCF->get_address()) : "not claimed";
+	send_vt_string_if_changed(DiagnosticsValues, aogConnected ? "ONLINE" : "OFFLINE");
+	send_vt_string_if_changed(DiagnosticsLastPacket, packetAge);
+	send_vt_string_if_changed(DiagnosticsTcAddress, tcAddress);
+	send_vt_string_if_changed(DiagnosticsTaskState, taskRunning ? "RUNNING" : "STOPPED");
+	send_vt_string_if_changed(DiagnosticsActiveDDOP, activeDDOP);
+	send_vt_string_if_changed(DiagnosticsTcClients, std::to_string(clients.size()));
+
+	std::string alarm = "No active alarms";
+	if (!havePreferredAddress)
+	{
+		alarm = (tcCF && tcCF->get_address_valid()) ? "TC address conflict" : "TC address not claimed";
+	}
+	else if (!aogConnected)
+	{
+		alarm = "AOG heartbeat missing";
+	}
+	else if (clients.empty())
+	{
+		alarm = "Waiting for implement";
+	}
+	send_vt_string_if_changed(DiagnosticsAlarmValue, alarm);
+}
+
 void Application::stop()
 {
+	if (vtClient && vtClientStarted)
+	{
+		vtClient->terminate();
+	}
 	tcServer->terminate();
 	isobus::CANHardwareInterface::stop();
 }

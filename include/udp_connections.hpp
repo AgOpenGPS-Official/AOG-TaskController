@@ -69,6 +69,12 @@ public:
      */
 	bool send(std::uint8_t src, std::uint8_t pgn, std::span<std::uint8_t> data);
 
+	/**
+	 * @brief Get the IPv4 address used by the AOG UDP connection
+	 * @return The bound address, or "not available" if the socket is not open
+	 */
+	std::string get_bound_ip_address() const;
+
 private:
 	static const std::size_t MAX_PACKET_SIZE = 512; // Mostly arbitrary, but should be large enough to hold any packet
 	static const std::uint16_t PACKET_START = 0x8081; // Start of packet
