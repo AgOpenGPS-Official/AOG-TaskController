@@ -174,16 +174,17 @@ if(AOG_TC_VALIDATE_IOP)
   set_tests_properties(malformed_pool_exit_status PROPERTIES WILL_FAIL TRUE)
 
   # Tractor Facilities (PGN 65033) encode/decode unit tests
-  add_executable(test_tractor_facilities
-                 ${CMAKE_CURRENT_LIST_DIR}/tools/test_tractor_facilities.cpp
-                 ${CMAKE_CURRENT_LIST_DIR}/src/tractor_facilities.cpp)
+  add_executable(
+    test_tractor_facilities
+    ${CMAKE_CURRENT_LIST_DIR}/tools/test_tractor_facilities.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/src/tractor_facilities.cpp)
   target_compile_features(test_tractor_facilities PRIVATE cxx_std_20)
   set_target_properties(test_tractor_facilities PROPERTIES CXX_EXTENSIONS OFF)
-  target_include_directories(
-    test_tractor_facilities
-    PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
-  target_link_libraries(test_tractor_facilities
-                        PRIVATE isobus::Isobus isobus::HardwareIntegration isobus::Utility)
+  target_include_directories(test_tractor_facilities
+                             PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
+  target_link_libraries(
+    test_tractor_facilities PRIVATE isobus::Isobus isobus::HardwareIntegration
+                                    isobus::Utility)
   add_test(NAME tractor_facilities_encode_decode
            COMMAND test_tractor_facilities)
 endif()

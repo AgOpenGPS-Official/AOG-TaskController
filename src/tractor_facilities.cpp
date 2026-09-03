@@ -48,65 +48,113 @@ std::array<std::uint8_t, 8> encode_facilities(const Facilities &f)
 	std::uint8_t classBits;
 	switch (f.tecuClass)
 	{
-		case 1:  classBits = 0; break; // 00 = Class 1
-		case 2:  classBits = 1; break; // 01 = Class 2
-		case 3:  classBits = 2; break; // 10 = Class 3
-		default: classBits = 3; break; // 11 = Not available
+		case 1:
+			classBits = 0;
+			break; // 00 = Class 1
+		case 2:
+			classBits = 1;
+			break; // 01 = Class 2
+		case 3:
+			classBits = 2;
+			break; // 10 = Class 3
+		default:
+			classBits = 3;
+			break; // 11 = Not available
 	}
 	p[0] = static_cast<std::uint8_t>(classBits << 6);
-	if (f.powerKeySwitch) set_bit(p[0], 6);
-	if (f.powerMaxTime) set_bit(p[0], 5);
-	if (f.powerMaintain) set_bit(p[0], 4);
-	if (f.wheelBasedSpeed) set_bit(p[0], 3);
-	if (f.groundBasedSpeed) set_bit(p[0], 2);
-	if (f.engineSpeed) set_bit(p[0], 1);
+	if (f.powerKeySwitch)
+		set_bit(p[0], 6);
+	if (f.powerMaxTime)
+		set_bit(p[0], 5);
+	if (f.powerMaintain)
+		set_bit(p[0], 4);
+	if (f.wheelBasedSpeed)
+		set_bit(p[0], 3);
+	if (f.groundBasedSpeed)
+		set_bit(p[0], 2);
+	if (f.engineSpeed)
+		set_bit(p[0], 1);
 
 	// -- Byte 2 ----------------------------------------------------------
-	if (f.rearHitchPosition) set_bit(p[1], 8);
-	if (f.rearHitchInWork) set_bit(p[1], 7);
-	if (f.rearPtoShaftSpeed) set_bit(p[1], 6);
-	if (f.rearPtoShaftEngagement) set_bit(p[1], 5);
-	if (f.minimalLighting) set_bit(p[1], 4);
-	if (f.languageCommandStorage) set_bit(p[1], 3);
+	if (f.rearHitchPosition)
+		set_bit(p[1], 8);
+	if (f.rearHitchInWork)
+		set_bit(p[1], 7);
+	if (f.rearPtoShaftSpeed)
+		set_bit(p[1], 6);
+	if (f.rearPtoShaftEngagement)
+		set_bit(p[1], 5);
+	if (f.minimalLighting)
+		set_bit(p[1], 4);
+	if (f.languageCommandStorage)
+		set_bit(p[1], 3);
 	// bits 2,1 reserved → 0
 
 	// -- Byte 3 ----------------------------------------------------------
-	if (f.timeDate) set_bit(p[2], 8);
-	if (f.groundBasedDistance) set_bit(p[2], 7);
-	if (f.groundBasedDirection) set_bit(p[2], 6);
-	if (f.wheelBasedDistance) set_bit(p[2], 5);
-	if (f.wheelBasedDirection) set_bit(p[2], 4);
-	if (f.rearDraft) set_bit(p[2], 3);
-	if (f.fullImplementLighting) set_bit(p[2], 2);
-	if (f.estimatedValveStatus) set_bit(p[2], 1);
+	if (f.timeDate)
+		set_bit(p[2], 8);
+	if (f.groundBasedDistance)
+		set_bit(p[2], 7);
+	if (f.groundBasedDirection)
+		set_bit(p[2], 6);
+	if (f.wheelBasedDistance)
+		set_bit(p[2], 5);
+	if (f.wheelBasedDirection)
+		set_bit(p[2], 4);
+	if (f.rearDraft)
+		set_bit(p[2], 3);
+	if (f.fullImplementLighting)
+		set_bit(p[2], 2);
+	if (f.estimatedValveStatus)
+		set_bit(p[2], 1);
 
 	// -- Byte 4 ----------------------------------------------------------
-	if (f.rearHitchPositionCommand) set_bit(p[3], 8);
-	if (f.rearPtoSpeedCommand) set_bit(p[3], 7);
-	if (f.rearPtoEngagementCommand) set_bit(p[3], 6);
-	if (f.auxiliaryValveCommands) set_bit(p[3], 5);
-	if (f.limitRequestStatusReporting) set_bit(p[3], 4);
+	if (f.rearHitchPositionCommand)
+		set_bit(p[3], 8);
+	if (f.rearPtoSpeedCommand)
+		set_bit(p[3], 7);
+	if (f.rearPtoEngagementCommand)
+		set_bit(p[3], 6);
+	if (f.auxiliaryValveCommands)
+		set_bit(p[3], 5);
+	if (f.limitRequestStatusReporting)
+		set_bit(p[3], 4);
 	// bits 3-1 reserved → 0
 
 	// -- Byte 5 ----------------------------------------------------------
-	if (f.navigationalHighOutputPosition) set_bit(p[4], 8);
-	if (f.navigationalPositionData) set_bit(p[4], 7);
-	if (f.navigationalPseudoRangeNoise) set_bit(p[4], 6);
+	if (f.navigationalHighOutputPosition)
+		set_bit(p[4], 8);
+	if (f.navigationalPositionData)
+		set_bit(p[4], 7);
+	if (f.navigationalPseudoRangeNoise)
+		set_bit(p[4], 6);
 	// bit 5 reserved → 0
-	if (f.operatorExternalLightControls) set_bit(p[4], 4);
-	if (f.selectedSpeed) set_bit(p[4], 3);
-	if (f.selectedSpeedControl) set_bit(p[4], 2);
-	if (f.directionControl) set_bit(p[4], 1);
+	if (f.operatorExternalLightControls)
+		set_bit(p[4], 4);
+	if (f.selectedSpeed)
+		set_bit(p[4], 3);
+	if (f.selectedSpeedControl)
+		set_bit(p[4], 2);
+	if (f.directionControl)
+		set_bit(p[4], 1);
 
 	// -- Byte 6 ----------------------------------------------------------
-	if (f.frontHitchPosition) set_bit(p[5], 8);
-	if (f.frontHitchInWork) set_bit(p[5], 7);
-	if (f.frontPtoShaftSpeed) set_bit(p[5], 6);
-	if (f.frontPtoShaftEngagement) set_bit(p[5], 5);
-	if (f.frontDraft) set_bit(p[5], 4);
-	if (f.frontHitchPositionCommand) set_bit(p[5], 3);
-	if (f.frontPtoSpeedCommand) set_bit(p[5], 2);
-	if (f.frontPtoEngagementCommand) set_bit(p[5], 1);
+	if (f.frontHitchPosition)
+		set_bit(p[5], 8);
+	if (f.frontHitchInWork)
+		set_bit(p[5], 7);
+	if (f.frontPtoShaftSpeed)
+		set_bit(p[5], 6);
+	if (f.frontPtoShaftEngagement)
+		set_bit(p[5], 5);
+	if (f.frontDraft)
+		set_bit(p[5], 4);
+	if (f.frontHitchPositionCommand)
+		set_bit(p[5], 3);
+	if (f.frontPtoSpeedCommand)
+		set_bit(p[5], 2);
+	if (f.frontPtoEngagementCommand)
+		set_bit(p[5], 1);
 
 	// -- Byte 7 ----------------------------------------------------------
 	// Entirely reserved → 0
@@ -126,10 +174,18 @@ Facilities decode_facilities(const std::array<std::uint8_t, 8> &p)
 	std::uint8_t classBits = static_cast<std::uint8_t>((p[0] >> 6) & 0x03);
 	switch (classBits)
 	{
-		case 0:  f.tecuClass = 1; break; // 00 = Class 1
-		case 1:  f.tecuClass = 2; break; // 01 = Class 2
-		case 2:  f.tecuClass = 3; break; // 10 = Class 3
-		default: f.tecuClass = 0; break; // 11 = Not available
+		case 0:
+			f.tecuClass = 1;
+			break; // 00 = Class 1
+		case 1:
+			f.tecuClass = 2;
+			break; // 01 = Class 2
+		case 2:
+			f.tecuClass = 3;
+			break; // 10 = Class 3
+		default:
+			f.tecuClass = 0;
+			break; // 11 = Not available
 	}
 	f.powerKeySwitch = get_bit(p[0], 6);
 	f.powerMaxTime = get_bit(p[0], 5);
@@ -296,7 +352,8 @@ bool TractorFacilities::send_facilities_response()
 		hex << std::hex;
 		for (std::size_t i = 0; i < payload.size(); ++i)
 		{
-			if (i != 0) hex << ' ';
+			if (i != 0)
+				hex << ' ';
 			hex << "0x" << static_cast<int>(payload[i]);
 		}
 		std::cout << "[" << get_timestamp() << "] [TractorFacilities] Sent PGN 65033 (power-up): [" << hex.str() << "]" << std::endl;
@@ -341,7 +398,8 @@ bool TractorFacilities::on_pgn_request(
 		hex << std::hex;
 		for (std::size_t i = 0; i < payload.size(); ++i)
 		{
-			if (i != 0) hex << ' ';
+			if (i != 0)
+				hex << ' ';
 			hex << "0x" << static_cast<int>(payload[i]);
 		}
 		std::cout << "[" << get_timestamp() << "] [TractorFacilities] PGN 65033 requested by SA "
@@ -352,7 +410,8 @@ bool TractorFacilities::on_pgn_request(
 }
 
 void TractorFacilities::on_required_facilities(
-  const isobus::CANMessage &message, void *parentPointer)
+  const isobus::CANMessage &message,
+  void *parentPointer)
 {
 	if (!parentPointer)
 	{
@@ -383,7 +442,8 @@ void TractorFacilities::on_required_facilities(
 	hex << std::hex;
 	for (std::size_t i = 0; i < raw.size(); ++i)
 	{
-		if (i != 0) hex << ' ';
+		if (i != 0)
+			hex << ' ';
 		hex << "0x" << static_cast<int>(raw[i]);
 	}
 	// AgIsoStack's CANStackLogger respects the configured log level;
