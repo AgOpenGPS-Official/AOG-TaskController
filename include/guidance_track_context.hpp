@@ -60,6 +60,10 @@ struct GuidanceTrackContext
  *   Bytes 6-7: Track Number Left (int16 LE, signed)
  *   Bytes 8-9: Track Number Right (int16 LE, signed)
  *
+ * Track numbers (current/left/right) are each shifted by +1 from the raw wire value
+ * (see AOG_TRACK_NUMBER_OFFSET in parse()) to match the tram-pattern phase implements
+ * expect — confirmed by field testing, not part of AOG's own documented wire format.
+ *
  * Sequence tracking:
  *   - Rejects any packet whose sequence number is not strictly ahead of the last
  *     accepted one (signed delta over the 0-255 wrap), catching both frozen/duplicate
@@ -99,9 +103,17 @@ public:
 		bool curveMode = (flags & 0x04) != 0;
 
 		std::uint16_t refId = decode_le_u16(data, 2);
-		std::int16_t currentTrack = decode_le_i16(data, 4);
-		std::int16_t trackLeft = decode_le_i16(data, 6);
-		std::int16_t trackRight = decode_le_i16(data, 8);
+
+		// AOG's raw track-number wire convention is one pass off from what a tramline
+		// implement's own on-board phase computation (e.g. "which of N passes is this")
+		// expects, for both left and right passes. Confirmed via field testing: with the
+		// raw value relayed as-is, the sprayer's ON/OFF tram state was consistently one
+		// pass out of phase with AOG's own intended tram state; shifting every value by
+		// +1 (independent of sign) brought them into agreement across every pass tested.
+		static constexpr std::int16_t AOG_TRACK_NUMBER_OFFSET = 1;
+		std::int16_t currentTrack = static_cast<std::int16_t>(decode_le_i16(data, 4) + AOG_TRACK_NUMBER_OFFSET);
+		std::int16_t trackLeft = static_cast<std::int16_t>(decode_le_i16(data, 6) + AOG_TRACK_NUMBER_OFFSET);
+		std::int16_t trackRight = static_cast<std::int16_t>(decode_le_i16(data, 8) + AOG_TRACK_NUMBER_OFFSET);
 
 		// Sequence freshness check: signed delta over the 0-255 wrap must be strictly
 		// positive (forward progress). Rejects both frozen/duplicate packets (delta == 0)

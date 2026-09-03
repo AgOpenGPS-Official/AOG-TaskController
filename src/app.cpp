@@ -570,8 +570,8 @@ void Application::setup_tecu_interfaces()
 				  if (lastExternalFee6Ms == 0)
 				  {
 					  log("TECU") << "FEE6 provider detected at SA "
-					            << static_cast<int>(info.controlFunction->get_address())
-					            << " — suppressing our FEE6 broadcast" << std::endl;
+					              << static_cast<int>(info.controlFunction->get_address())
+					              << " — suppressing our FEE6 broadcast" << std::endl;
 					  if (fee6Broadcasting && tractorFacilities)
 					  {
 						  tractorFacilities->set_time_date_active(false);
@@ -582,7 +582,7 @@ void Application::setup_tecu_interfaces()
 			  }
 		  });
 		log("Init") << "Time/Date interface (PGN 65254 / FEE6) created, interval="
-		          << FEE6_TX_INTERVAL_MS << " ms" << std::endl;
+		            << FEE6_TX_INTERVAL_MS << " ms" << std::endl;
 
 		// Register repetition-rate diagnostic on the TECU's PGN request protocol
 		auto tecuPgnReq = tecuCF->get_pgn_request_protocol().lock();
@@ -1017,9 +1017,14 @@ bool Application::update()
 
 		// PGN 0xD6 (GPS fix quality) is a separate, independently-timed stream from 0xF4 —
 		// treat it as unknown if it goes stale on its own, even while AOG overall is connected.
+		// Fall back to 1 (weakest real GNSS fix), not 0 (No GNSS): some implements gate
+		// TRACK/section control on GNSS quality being non-zero, and AOG doesn't always
+		// send 0xD6 at all (e.g. in Simulator mode) — 0 would falsely claim zero position
+		// fix and can get commands rejected, exactly the failure the old hardcoded-4 hack
+		// was working around.
 		const bool gnssQualityFresh = (lastGnssQualityMs != 0) &&
 		  !isobus::SystemTiming::time_expired_ms(lastGnssQualityMs, GNSS_QUALITY_TIMEOUT_MS);
-		const std::uint8_t effectiveGnssQuality = gnssQualityFresh ? gnssFixQuality : 0;
+		const std::uint8_t effectiveGnssQuality = gnssQualityFresh ? gnssFixQuality : 1;
 
 		tcServer->send_tramline_track_data(currentTrackContext, swathMm, lineDevMm, effectiveGnssQuality);
 		lastTramlineSendMs = isobus::SystemTiming::get_timestamp_ms();

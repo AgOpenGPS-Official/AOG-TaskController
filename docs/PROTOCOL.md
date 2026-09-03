@@ -108,7 +108,7 @@ On receipt the TC sets `settings.subnet = [IP0, IP1, IP2]`, closes the main sock
 
 #### `0xD6` — GPS/IMU data
 
-Sent from AOG's GPS submodule, source `0x7C` (not `0x7F`). The TC only reads byte 38: AOG's fix-quality code (`0`=invalid, `1`=GPS, `2`=DGPS, `3`=PPS, `4`=RTK Fixed, `5`=RTK Float, `6+`=Estimated/Manual/Simulated). Values `6+` are mapped to `1` (weakest real fix) rather than `0`, so AOG's Simulator mode doesn't falsely report "no GPS." This value feeds DDI 514 (GNSSQuality) — see §5.7. If no `0xD6` arrives for 2 s, the reported quality reverts to `0` (unknown), independent of whether AOG overall is still connected.
+Sent from AOG's GPS submodule, source `0x7C` (not `0x7F`). The TC only reads byte 38: AOG's fix-quality code (`0`=invalid, `1`=GPS, `2`=DGPS, `3`=PPS, `4`=RTK Fixed, `5`=RTK Float, `6+`=Estimated/Manual/Simulated). This value feeds DDI 514 (GNSSQuality) — see §5.7. Two fallback cases both resolve to `1` (weakest real GNSS fix), not `0` (No GNSS): AOG reporting `6+`, and no fresh `0xD6` (AOG doesn't always send this PGN at all — e.g. Simulator mode — and if none has arrived within 2 s the last value is treated as stale, independent of whether AOG overall is still connected). `0` is deliberately avoided as a fallback because some implements gate TRACK/section control on GNSS quality being non-zero.
 
 #### `0xE5` — Section states
 
@@ -147,7 +147,11 @@ AOG's real-time AB-line/track guidance state, driving ISOBUS TRACK (Tramline Con
  Bytes 8-9 Track Number Right (int16 LE, signed)
 ```
 
-AOG sends this **only when the guidance state actually changes** — there is no heartbeat. The TC rejects any packet whose sequence number isn't strictly ahead of the last accepted one (catches duplicates, freezes, and reordered/stale UDP delivery). See §5.7 for how this maps onto the outbound ISOBUS DDIs.
+AOG sends this **only when the guidance state actually changes** — there is no heartbeat. The TC rejects any packet whose sequence number isn't strictly ahead of the last accepted one (catches duplicates, freezes, and reordered/stale UDP delivery).
+
+**Track-number offset:** the TC adds `+1` to all three track numbers (current/left/right) before they reach `GuidanceTrackContext` — confirmed by field testing, not documented anywhere on AOG's side. As sent raw by AOG, the tramline implement's own on-board tram-pattern phase (which pass of N is "on") was consistently one pass out of sync with AOG's own intended tram on/off state, for both left and right passes; a uniform `+1` (independent of sign) brought them into agreement. See `GuidanceTrackProvider::parse()` (`AOG_TRACK_NUMBER_OFFSET`) in `guidance_track_context.hpp`.
+
+See §5.7 for how this maps onto the outbound ISOBUS DDIs.
 
 ### 2.6 PGNs outbound (TC → client)
 
