@@ -28,12 +28,10 @@ Don't guess this from a class's "manual update mode" comment (that pattern is un
 question and led to a wrong conclusion once already). Check how the *specific* callback is
 registered:
 
-- **Deferred to whichever thread calls `X::update()`** (i.e. effectively the *main* thread, since
-  we call these `update()` methods from `Application::update()`): `TaskControllerServer`
-  (`MyTCServer`). It registers only a `store_rx_message` callback directly with the CAN stack; that
-  callback just queues the raw message. The actual processing — `process_rx_messages()`, and with
-  it every `activate_object_pool`/`on_value_command`/etc. override — only runs inside
-  `TaskControllerServer::update()`.
+- **Runs on the CAN stack background thread by default** (CANHardwareInterface's updateThread): `TaskControllerServer`
+  (`MyTCServer`). Treat every `TaskControllerServer` override (`activate_object_pool`,
+  `on_value_command`, ...) as background-thread code unless you have traced the library
+  implementation and proven it is deferred to `TaskControllerServer::update()`.
 - **Runs directly on the background thread, synchronously, as the frame is processed** — not
   deferred to any `update()` call: `VirtualTerminalClient` (confirmed: `process_rx_message` is
   registered via `add_global_parameter_group_number_callback` and invokes
