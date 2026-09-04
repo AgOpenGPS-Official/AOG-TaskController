@@ -24,6 +24,7 @@
 #include "isobus/isobus/isobus_virtual_terminal_client_update_helper.hpp"
 #include "isobus/isobus/nmea2000_message_interface.hpp"
 
+#include "field_registry.hpp"
 #include "guidance_track_context.hpp"
 #include "logging_utils.hpp"
 #include "settings.hpp"
@@ -132,6 +133,14 @@ private:
 	GuidanceTrackContext currentTrackContext;
 	bool aogWasConnectedForTrack = false; ///< Edge-detection for AOG connect/disconnect transitions
 	bool trackControlEnabled = false; ///< Track control enabled (separate from section control)
+
+	// Field identity — from AOG PGN 0xF3. Folded into the upper 16 bits of DDI 508
+	// (see the PGN 0xF4 handling in update()) so a track's guidance reference line ID
+	// is unique across fields, not just within whichever field AOG currently has open.
+	FieldRegistry fieldRegistry;
+	std::string currentFieldName; ///< Empty when no field is open
+	std::uint16_t currentFieldIndex = 0;
+	bool hasActiveField = false;
 
 	bool tractorFacilitiesSentOnPowerUp = false;
 	std::uint32_t vtDisconnectedSinceMs = 0;
