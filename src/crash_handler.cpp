@@ -3,6 +3,7 @@
 #include "logging_utils.hpp"
 #include "settings.hpp"
 
+#include <cstdio>
 #include <cstdlib>
 #include <ctime>
 #include <exception>
@@ -119,7 +120,6 @@ void install_crash_handlers()
 
 #include <unistd.h>
 #include <csignal>
-#include <cstring>
 
 namespace
 {
@@ -147,9 +147,18 @@ namespace
 				break;
 		}
 
-		// Signal-handler-safe I/O only: no iostreams, no dynamic allocation, no get_timestamp().
+		// Signal-handler-safe I/O only: no iostreams, no dynamic allocation, no
+		// get_timestamp(), and no strlen() — it's not on POSIX's async-signal-safe
+		// function list, so a hand-rolled length count is used instead.
 		const int fd = 2; // stderr
-		auto writeRaw = [fd](const char *text) { (void)write(fd, text, std::strlen(text)); };
+		auto writeRaw = [fd](const char *text) {
+			std::size_t len = 0;
+			while (text[len] != '\0')
+			{
+				++len;
+			}
+			(void)write(fd, text, len);
+		};
 		writeRaw("[Crash] Fatal signal: ");
 		writeRaw(name);
 		writeRaw("\n");
