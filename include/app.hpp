@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -96,6 +97,12 @@ private:
 	std::uint32_t lastFee6TransmitMs = 0; ///< Timestamp of last FEE6 transmission
 	std::uint32_t lastExternalFee6Ms = 0; ///< Timestamp of last FEE6 from another ECU (0 = never)
 	bool fee6Broadcasting = false; ///< Whether we are actively broadcasting FEE6
+	/// Guards lastExternalFee6Ms/fee6Broadcasting: TimeDateInterface's event listener
+	/// (registered in setup_tecu_interfaces()) fires from the isobus stack's background
+	/// thread — not deferred like MyTCServer's callbacks — concurrently with
+	/// Application::update()'s FEE6 broadcast logic on the main thread. See
+	/// docs/CONCURRENCY.md.
+	std::mutex fee6Mutex;
 	static constexpr std::uint32_t FEE6_TX_INTERVAL_MS = 10000; ///< FEE6 broadcast interval (10 s)
 	static constexpr std::uint32_t FEE6_PROVIDER_TIMEOUT_MS = 30000; ///< If no FEE6 from other ECU for 30 s, assume no provider
 	std::unique_ptr<isobus::ControlFunctionFunctionalities> tecuFunctionalities;

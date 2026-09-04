@@ -438,6 +438,7 @@ MyTCServer::MyTCServer(std::shared_ptr<isobus::InternalControlFunction> internal
 
 bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> partnerCF, ObjectPoolActivationError &, ObjectPoolErrorCodes &, std::uint16_t &, std::uint16_t &)
 {
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
 	std::cout << "[" << get_timestamp() << "] [TC Server] Client " << partnerCF->get_NAME().get_full_name() << " requesting object pool activation" << std::endl;
 	// Safety check to make sure partnerCF has uploaded a DDOP
 	if (uploadedPools.find(partnerCF) == uploadedPools.end())
@@ -466,11 +467,23 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 		for (std::uint16_t i = 0; i < state.get_pool().size(); i++)
 		{
 			auto object = state.get_pool().get_object_by_index(i);
-			if (object->get_object_type() == isobus::task_controller_object::ObjectTypes::Device)
+			if (object && object->get_object_type() == isobus::task_controller_object::ObjectTypes::Device)
 			{
 				deviceObject = std::static_pointer_cast<isobus::task_controller_object::DeviceObject>(object);
 				break;
 			}
+		}
+
+		if (!deviceObject)
+		{
+			// A spec-compliant pool always has exactly one Device object at its root.
+			// If it's missing — a malformed pool, or a multi-chunk transfer that didn't
+			// concatenate correctly upstream — reject the activation instead of crashing
+			// on the dereference below.
+			std::cout << "[" << get_timestamp() << "] [TC Server] Client " << partnerCF->get_NAME().get_full_name()
+			          << " activation REJECTED: deserialized pool (" << state.get_pool().size()
+			          << " objects) has no Device object." << std::endl;
+			return false;
 		}
 
 		auto labelBytes = deviceObject->get_localization_label();
@@ -552,7 +565,7 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 		for (std::uint32_t i = 0; i < state.get_pool().size(); i++)
 		{
 			auto object = state.get_pool().get_object_by_index(i);
-			if (object->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceProcessData)
+			if (object && object->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceProcessData)
 			{
 				auto processDataObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceProcessDataObject>(object);
 				auto ddi = processDataObject->get_ddi();
@@ -620,7 +633,7 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 		for (std::uint16_t i = 0; i < state.get_pool().size(); i++)
 		{
 			auto obj = state.get_pool().get_object_by_index(i);
-			if (obj->get_object_type() != isobus::task_controller_object::ObjectTypes::DeviceProcessData)
+			if (!obj || obj->get_object_type() != isobus::task_controller_object::ObjectTypes::DeviceProcessData)
 				continue;
 
 			auto pd = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceProcessDataObject>(obj);
@@ -680,6 +693,7 @@ bool MyTCServer::change_designator(std::shared_ptr<isobus::ControlFunction>, std
 
 bool MyTCServer::deactivate_object_pool(std::shared_ptr<isobus::ControlFunction> partnerCF)
 {
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
 	clients.erase(partnerCF);
 	uploadedPools.erase(partnerCF);
 	return true;
@@ -687,6 +701,7 @@ bool MyTCServer::deactivate_object_pool(std::shared_ptr<isobus::ControlFunction>
 
 bool MyTCServer::delete_device_descriptor_object_pool(std::shared_ptr<isobus::ControlFunction> partnerCF, ObjectPoolDeletionErrors &)
 {
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
 	clients.erase(partnerCF);
 	uploadedPools.erase(partnerCF);
 	return true;
@@ -723,6 +738,7 @@ void MyTCServer::identify_task_controller(std::uint8_t tcNumber)
 
 void MyTCServer::on_client_timeout(std::shared_ptr<isobus::ControlFunction> partner)
 {
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
 	// Cleanup the client state
 	std::cout << "[" << get_timestamp() << "] [TC Server] Client " << partner->get_NAME().get_full_name() << " has timed out!" << std::endl;
 	clients.erase(partner);
@@ -750,6 +766,7 @@ bool MyTCServer::on_value_command(std::shared_ptr<isobus::ControlFunction> partn
                                   std::int32_t processDataValue,
                                   std::uint8_t &errorCodes)
 {
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
 	switch (dataDescriptionIndex)
 	{
 		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState1_16):
@@ -897,6 +914,7 @@ bool MyTCServer::on_value_command(std::shared_ptr<isobus::ControlFunction> partn
 
 bool MyTCServer::store_device_descriptor_object_pool(std::shared_ptr<isobus::ControlFunction> partnerCF, const std::vector<std::uint8_t> &binaryPool, bool appendToPool)
 {
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
 	std::cout << "[" << get_timestamp() << "] [TC Server] Client " << partnerCF->get_NAME().get_full_name() << " requesting object pool transfer of " << binaryPool.size() << " bytes" << std::endl;
 	if (uploadedPools.find(partnerCF) == uploadedPools.end())
 	{
@@ -906,13 +924,15 @@ bool MyTCServer::store_device_descriptor_object_pool(std::shared_ptr<isobus::Con
 	return true;
 }
 
-std::map<std::shared_ptr<isobus::ControlFunction>, ClientState> &MyTCServer::get_clients()
+std::map<std::shared_ptr<isobus::ControlFunction>, ClientState> MyTCServer::get_clients()
 {
-	return clients;
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
+	return clients; // copy, taken while locked — see the declaration's comment
 }
 
 void MyTCServer::request_measurement_commands()
 {
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
 	for (auto &client : clients)
 	{
 		// Skip clients with 0 sections (e.g. tractors) - sending measurement commands to a tractor ECU can cause unexpected behavior
@@ -922,7 +942,7 @@ void MyTCServer::request_measurement_commands()
 			for (std::uint32_t i = 0; i < client.second.get_pool().size(); i++)
 			{
 				auto object = client.second.get_pool().get_object_by_index(i);
-				if (object->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceProcessData)
+				if (object && object->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceProcessData)
 				{
 					auto processDataObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceProcessDataObject>(object);
 					if (processDataObject->get_ddi() == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualWorkState) ||
@@ -935,7 +955,7 @@ void MyTCServer::request_measurement_commands()
 						for (std::uint32_t j = 0; j < client.second.get_pool().size(); j++)
 						{
 							auto parentObject = client.second.get_pool().get_object_by_index(j);
-							if (parentObject->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceElement)
+							if (parentObject && parentObject->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceElement)
 							{
 								auto elementObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceElementObject>(parentObject);
 								for (std::uint16_t elementObjectChild : elementObject->get_child_object_ids())
@@ -970,7 +990,7 @@ void MyTCServer::request_measurement_commands()
 			for (std::uint32_t i = 0; i < client.second.get_pool().size(); i++)
 			{
 				auto object = client.second.get_pool().get_object_by_index(i);
-				if (object->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceProcessData)
+				if (object && object->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceProcessData)
 				{
 					auto processDataObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceProcessDataObject>(object);
 					if (processDataObject->get_ddi() == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SectionControlState) ||
@@ -982,7 +1002,7 @@ void MyTCServer::request_measurement_commands()
 						for (std::uint32_t j = 0; j < client.second.get_pool().size(); j++)
 						{
 							auto parentObject = client.second.get_pool().get_object_by_index(j);
-							if (parentObject->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceElement)
+							if (parentObject && parentObject->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceElement)
 							{
 								auto elementObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceElementObject>(parentObject);
 								for (std::uint16_t elementObjectChild : elementObject->get_child_object_ids())
@@ -1016,7 +1036,7 @@ void MyTCServer::request_measurement_commands()
 			for (std::uint32_t i = 0; i < client.second.get_pool().size(); i++)
 			{
 				auto object = client.second.get_pool().get_object_by_index(i);
-				if (object->get_object_type() != isobus::task_controller_object::ObjectTypes::DeviceProcessData)
+				if (!object || object->get_object_type() != isobus::task_controller_object::ObjectTypes::DeviceProcessData)
 					continue;
 
 				auto processDataObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceProcessDataObject>(object);
@@ -1048,7 +1068,7 @@ void MyTCServer::request_measurement_commands()
 				for (std::uint32_t j = 0; j < client.second.get_pool().size(); j++)
 				{
 					auto parentObject = client.second.get_pool().get_object_by_index(j);
-					if (parentObject->get_object_type() != isobus::task_controller_object::ObjectTypes::DeviceElement)
+					if (!parentObject || parentObject->get_object_type() != isobus::task_controller_object::ObjectTypes::DeviceElement)
 						continue;
 
 					auto elementObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceElementObject>(parentObject);
@@ -1093,6 +1113,7 @@ void MyTCServer::request_measurement_commands()
 
 void MyTCServer::update_section_states(std::vector<bool> &sectionStates)
 {
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
 	for (auto &client : clients)
 	{
 		auto &state = client.second;
@@ -1141,6 +1162,7 @@ void MyTCServer::update_section_control_enabled(bool enabled)
 	// Section control only — DDI 160 (SectionControlState).
 	// Track control (DDI 515) is handled separately by update_track_control_enabled()
 	// even though both are currently triggered by the same AOG Auto command.
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
 	for (auto &client : clients)
 	{
 		// Always update the local flag
@@ -1163,6 +1185,7 @@ void MyTCServer::update_track_control_enabled(bool enabled)
 	// Track control — DDI 515 (TramlineControlState).
 	// Separate from section control (DDI 160) even though both are currently triggered
 	// by the same AOG Auto command. This allows future decoupling without changing the UI.
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
 	for (auto &client : clients)
 	{
 		// Update the local flag
@@ -1189,6 +1212,7 @@ void MyTCServer::update_track_control_enabled(bool enabled)
 
 void MyTCServer::send_section_setpoint_states(std::shared_ptr<isobus::ControlFunction> client, std::uint8_t ddiOffset)
 {
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
 	std::uint8_t sectionOffset = ddiOffset * NUMBER_SECTIONS_PER_CONDENSED_MESSAGE;
 	std::uint32_t value = 0;
 	for (std::uint8_t i = 0; i < NUMBER_SECTIONS_PER_CONDENSED_MESSAGE; i++)
@@ -1272,15 +1296,17 @@ void MyTCServer::send_section_setpoint_states(std::shared_ptr<isobus::ControlFun
 
 void MyTCServer::send_section_control_state(std::shared_ptr<isobus::ControlFunction> client, bool enabled)
 {
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
 	send_set_value(client, static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SectionControlState), clients[client].get_element_number_for_ddi(isobus::DataDescriptionIndex::SectionControlState), enabled ? 1 : 0);
 }
 
 bool MyTCServer::is_ddi_settable(std::shared_ptr<isobus::ControlFunction> client, std::uint16_t ddi)
 {
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
 	for (std::uint32_t i = 0; i < clients[client].get_pool().size(); i++)
 	{
 		auto object = clients[client].get_pool().get_object_by_index(i);
-		if (object->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceProcessData)
+		if (object && object->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceProcessData)
 		{
 			auto processDataObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceProcessDataObject>(object);
 			if (processDataObject->get_ddi() == ddi)
@@ -1296,6 +1322,7 @@ void MyTCServer::send_tramline_track_data(const GuidanceTrackContext &ctx, std::
 {
 	// Send coherent TRACK context to all clients that have completed DDI 505/506 negotiation.
 	// Do NOT send track data before negotiation is complete (Requirement 9).
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
 	for (auto &client : clients)
 	{
 		auto &state = client.second;

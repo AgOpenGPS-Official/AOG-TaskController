@@ -18,6 +18,7 @@
 #include "isobus/isobus/nmea2000_message_interface.hpp"
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <set>
@@ -142,7 +143,11 @@ private:
 	std::shared_ptr<Settings> settings;
 	isobus::SpeedMessagesInterface *speedMessagesInterface = nullptr;
 	isobus::NMEA2000MessageInterface *nmea2000MessageInterface = nullptr;
-	bool timeDateActive = false; ///< Whether we are broadcasting PGN 65254 (FEE6)
+	/// Whether we are broadcasting PGN 65254 (FEE6). Atomic because
+	/// set_time_date_active() and build_payload() are called from different
+	/// isobus callback contexts (see docs/CONCURRENCY.md) that can run
+	/// concurrently on different threads.
+	std::atomic<bool> timeDateActive{ false };
 
 	/// Source addresses for which we have already logged an info-level
 	/// "request received" line, to avoid per-message spam.
