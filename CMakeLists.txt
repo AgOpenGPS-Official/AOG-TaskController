@@ -137,9 +137,9 @@ if(WIN32)
 endif()
 
 if(MSVC)
-  # Keep Release optimizations but still emit a PDB, so a crash dump
-  # (see crash_handler.hpp) can actually be symbolicated afterwards —
-  # without this, .dmp files are close to useless.
+  # Keep Release optimizations but still emit a PDB, so a crash dump (see
+  # crash_handler.hpp) can actually be symbolicated afterwards — without this,
+  # .dmp files are close to useless.
   target_compile_options(${PROJECT_NAME} PRIVATE /Zi)
   target_link_options(${PROJECT_NAME} PRIVATE /DEBUG /OPT:REF /OPT:ICF)
 endif()
