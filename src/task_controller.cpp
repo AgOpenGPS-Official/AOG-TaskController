@@ -324,6 +324,55 @@ bool ClientState::try_get_element_work_state(std::uint16_t elementNumber, bool &
 	return false;
 }
 
+void ClientState::set_reported_working_width(std::uint16_t elementNumber, isobus::DataDescriptionIndex ddi, std::int32_t widthMm)
+{
+	auto &report = elementReportedWidthMm[elementNumber];
+	switch (ddi)
+	{
+		case isobus::DataDescriptionIndex::ActualWorkingWidth:
+			report.hasActual = true;
+			report.actual = widthMm;
+			break;
+		case isobus::DataDescriptionIndex::MaximumWorkingWidth:
+			report.hasMaximum = true;
+			report.maximum = widthMm;
+			break;
+		case isobus::DataDescriptionIndex::DefaultWorkingWidth:
+			report.hasDefault = true;
+			report.defaultValue = widthMm;
+			break;
+		default:
+			break;
+	}
+}
+
+bool ClientState::try_get_reported_working_width(std::uint16_t elementNumber, std::int32_t &widthMm) const
+{
+	auto it = elementReportedWidthMm.find(elementNumber);
+	if (it == elementReportedWidthMm.end())
+	{
+		return false;
+	}
+	// Priority order: Actual > Maximum > Default, same as DeviceDescriptorObjectPoolHelper::get_width_with_priority()
+	const auto &report = it->second;
+	if (report.hasActual && 0 != report.actual)
+	{
+		widthMm = report.actual;
+		return true;
+	}
+	if (report.hasMaximum && 0 != report.maximum)
+	{
+		widthMm = report.maximum;
+		return true;
+	}
+	if (report.hasDefault && 0 != report.defaultValue)
+	{
+		widthMm = report.defaultValue;
+		return true;
+	}
+	return false;
+}
+
 int ClientState::get_supported_tramline_levels_bitmask() const
 {
 	return supportedTramlineLevelsBitmask;
@@ -824,6 +873,19 @@ bool MyTCServer::on_value_command(std::shared_ptr<isobus::ControlFunction> partn
 		}
 		break;
 
+		// Working width DDIs — often implemented as Device Process Data (no static value in
+		// the DDOP; see the comment on ClientState::set_reported_working_width), so the only
+		// way to learn the real width is to capture it here once the client reports it.
+		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualWorkingWidth):
+		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::MaximumWorkingWidth):
+		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::DefaultWorkingWidth):
+		{
+			clients[partner].set_reported_working_width(elementNumber, static_cast<isobus::DataDescriptionIndex>(dataDescriptionIndex), processDataValue);
+			std::cout << "[" << get_timestamp() << "] [TC] Element " << elementNumber << " reported working width DDI "
+			          << dataDescriptionIndex << "=" << processDataValue << " mm" << std::endl;
+		}
+		break;
+
 		// Tramline DDIs — store actual values reported by implement
 		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::TramlineControlLevel):
 		{
@@ -1102,6 +1164,64 @@ void MyTCServer::request_measurement_commands()
 					}
 					if (found)
 						break;
+				}
+			}
+
+			// Subscribe to working width DDIs (OnChange). These are commonly Device Process
+			// Data rather than a static Device Property, so the DDOP itself never carries a
+			// value — the client only reports one once we ask for it. Unlike the tramline DDIs
+			// above, width DDIs can legitimately repeat across several elements (one per
+			// section/sub-boom), so every matching element is subscribed — no single-DDI dedup.
+			for (std::uint32_t i = 0; i < client.second.get_pool().size(); i++)
+			{
+				auto object = client.second.get_pool().get_object_by_index(i);
+				if (!object || object->get_object_type() != isobus::task_controller_object::ObjectTypes::DeviceProcessData)
+					continue;
+
+				auto processDataObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceProcessDataObject>(object);
+				auto ddi = processDataObject->get_ddi();
+
+				bool isWidthDDI =
+				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualWorkingWidth)) ||
+				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::MaximumWorkingWidth)) ||
+				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::DefaultWorkingWidth));
+
+				if (!isWidthDDI)
+					continue;
+
+				for (std::uint32_t j = 0; j < client.second.get_pool().size(); j++)
+				{
+					auto parentObject = client.second.get_pool().get_object_by_index(j);
+					if (!parentObject || parentObject->get_object_type() != isobus::task_controller_object::ObjectTypes::DeviceElement)
+						continue;
+
+					auto elementObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceElementObject>(parentObject);
+					for (std::uint16_t childId : elementObject->get_child_object_ids())
+					{
+						if (childId != processDataObject->get_object_id())
+							continue;
+
+						const auto &entry = isobus::DataDictionary::get_entry(ddi);
+						if (processDataObject->has_trigger_method(
+						      isobus::task_controller_object::DeviceProcessDataObject::AvailableTriggerMethods::OnChange))
+						{
+							send_change_threshold_measurement_command(
+							  client.first, ddi, elementObject->get_element_number(), 1);
+							std::cout << "Subscribed (OnChange) to width DDI " << ddi
+							          << " (" << entry.to_string() << ") for element "
+							          << elementObject->get_element_number() << std::endl;
+						}
+						else
+						{
+							// No OnChange support — fall back to a time interval so we still
+							// eventually learn the width instead of never subscribing at all.
+							send_time_interval_measurement_command(client.first, ddi, elementObject->get_element_number(), 1000);
+							std::cout << "Subscribed (TimeInterval) to width DDI " << ddi
+							          << " (" << entry.to_string() << ") for element "
+							          << elementObject->get_element_number() << std::endl;
+						}
+						break; // First parent match for this object is the only one — object IDs are unique
+					}
 				}
 			}
 

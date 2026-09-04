@@ -1117,27 +1117,54 @@ Application::ImplementDetails Application::derive_implement_details(ClientState 
 		}
 	}
 
+	// section.width_mm/subBoom.width_mm only reflect a static Device Property (DPT) value
+	// baked into the DDOP. Many implements report working width as a Device Process Data
+	// (DPD) instead — which has no value in the DDOP at all, only a definition — so when the
+	// static pool doesn't have it, fall back to whatever the client has actually reported
+	// live over the bus (see ClientState::try_get_reported_working_width and the
+	// ActualWorkingWidth/MaximumWorkingWidth/DefaultWorkingWidth cases in on_value_command).
 	for (const auto &boom : geometry.booms)
 	{
 		for (const auto &section : boom.sections)
 		{
+			std::int32_t widthMm = 0;
 			if (section.width_mm)
 			{
-				totalWidthMillimetres += section.width_mm.get();
+				widthMm = section.width_mm.get();
 			}
+			else
+			{
+				state.try_get_reported_working_width(section.elementNumber, widthMm);
+			}
+			totalWidthMillimetres += widthMm;
 		}
 		for (const auto &subBoom : boom.subBooms)
 		{
-			if (subBoom.sections.empty() && subBoom.width_mm)
+			if (subBoom.sections.empty())
 			{
-				totalWidthMillimetres += subBoom.width_mm.get();
+				std::int32_t widthMm = 0;
+				if (subBoom.width_mm)
+				{
+					widthMm = subBoom.width_mm.get();
+				}
+				else
+				{
+					state.try_get_reported_working_width(subBoom.elementNumber, widthMm);
+				}
+				totalWidthMillimetres += widthMm;
 			}
 			for (const auto &section : subBoom.sections)
 			{
+				std::int32_t widthMm = 0;
 				if (section.width_mm)
 				{
-					totalWidthMillimetres += section.width_mm.get();
+					widthMm = section.width_mm.get();
 				}
+				else
+				{
+					state.try_get_reported_working_width(section.elementNumber, widthMm);
+				}
+				totalWidthMillimetres += widthMm;
 			}
 		}
 	}

@@ -105,6 +105,16 @@ public:
 	bool is_setpoint_level_sent() const;
 	void set_setpoint_level_sent(bool sent);
 
+	// Working width reported live over the bus (DDI 67/68/70). Needed because these DDIs
+	// are commonly implemented as Device Process Data (DPD) rather than Device Property
+	// (DPT) — a DPD has no value embedded in the DDOP itself (see isobus's
+	// DeviceProcessDataObject, which has no value field/getter at all), only a definition.
+	// The real value only ever arrives as a live process data value message, which is why
+	// DeviceDescriptorObjectPoolHelper::get_implement_geometry() (a pure static-pool parser)
+	// can never see it. We store what the client actually reports here instead.
+	void set_reported_working_width(std::uint16_t elementNumber, isobus::DataDescriptionIndex ddi, std::int32_t widthMm);
+	bool try_get_reported_working_width(std::uint16_t elementNumber, std::int32_t &widthMm) const;
+
 private:
 	isobus::DeviceDescriptorObjectPool pool; ///< The device descriptor object pool (DDOP) for the TC
 	bool areMeasurementCommandsSent = false; ///< Whether or not the measurement commands have been sent
@@ -131,6 +141,18 @@ private:
 	bool setpointLevelSent = false; ///< Whether we've already written DDI 506
 	bool usesPerElementControl = false; ///< Legacy mode: use per-element setpoint instead of condensed
 	std::uint16_t perElementSetpointDDI = 0; ///< The DDI to use for per-element setpoints (289 or 141), 0 if not applicable
+
+	/// @brief Live working width reported by the client for one device element (DDI 67/68/70).
+	struct ReportedWidth
+	{
+		bool hasActual = false;
+		std::int32_t actual = 0;
+		bool hasMaximum = false;
+		std::int32_t maximum = 0;
+		bool hasDefault = false;
+		std::int32_t defaultValue = 0;
+	};
+	std::map<std::uint16_t, ReportedWidth> elementReportedWidthMm; ///< element number -> reported width(s), same priority scheme as DeviceDescriptorObjectPoolHelper (Actual > Maximum > Default)
 };
 
 // Create the task controller server object, this will handle all the ISOBUS communication for us
