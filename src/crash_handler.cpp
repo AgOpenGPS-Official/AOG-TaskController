@@ -172,7 +172,9 @@ namespace
 
 void install_crash_handlers()
 {
-	struct sigaction sa{};
+	struct sigaction sa
+	{
+	};
 	sa.sa_handler = fatal_signal_handler;
 	sigemptyset(&sa.sa_mask);
 	sa.sa_flags = SA_RESETHAND;
