@@ -324,6 +324,155 @@ bool ClientState::try_get_element_work_state(std::uint16_t elementNumber, bool &
 	return false;
 }
 
+void ClientState::set_reported_working_width(std::uint16_t elementNumber, isobus::DataDescriptionIndex ddi, std::int32_t widthMm)
+{
+	auto &report = elementReportedWidthMm[elementNumber];
+	switch (ddi)
+	{
+		case isobus::DataDescriptionIndex::ActualWorkingWidth:
+			report.hasActual = true;
+			report.actual = widthMm;
+			break;
+		case isobus::DataDescriptionIndex::MaximumWorkingWidth:
+			report.hasMaximum = true;
+			report.maximum = widthMm;
+			break;
+		case isobus::DataDescriptionIndex::DefaultWorkingWidth:
+			report.hasDefault = true;
+			report.defaultValue = widthMm;
+			break;
+		default:
+			break;
+	}
+}
+
+bool ClientState::try_get_reported_working_width(std::uint16_t elementNumber, std::int32_t &widthMm) const
+{
+	auto it = elementReportedWidthMm.find(elementNumber);
+	if (it == elementReportedWidthMm.end())
+	{
+		return false;
+	}
+	// Priority order: Actual > Maximum > Default, same as DeviceDescriptorObjectPoolHelper::get_width_with_priority()
+	const auto &report = it->second;
+	if (report.hasActual && 0 != report.actual)
+	{
+		widthMm = report.actual;
+		return true;
+	}
+	if (report.hasMaximum && 0 != report.maximum)
+	{
+		widthMm = report.maximum;
+		return true;
+	}
+	if (report.hasDefault && 0 != report.defaultValue)
+	{
+		widthMm = report.defaultValue;
+		return true;
+	}
+	return false;
+}
+
+int ClientState::get_supported_tramline_levels_bitmask() const
+{
+	return supportedTramlineLevelsBitmask;
+}
+
+void ClientState::set_supported_tramline_levels_bitmask(int bitmask)
+{
+	supportedTramlineLevelsBitmask = bitmask;
+}
+
+bool ClientState::is_track_negotiation_complete() const
+{
+	return trackNegotiationComplete;
+}
+
+void ClientState::set_track_negotiation_complete(bool complete)
+{
+	trackNegotiationComplete = complete;
+}
+
+bool ClientState::is_track_control_enabled() const
+{
+	return trackControlEnabled;
+}
+
+void ClientState::set_track_control_enabled(bool enabled)
+{
+	trackControlEnabled = enabled;
+}
+
+void ClientState::set_actual_tramline_control_state(std::int32_t value)
+{
+	actualTramlineControlState = value;
+}
+
+std::int32_t ClientState::get_actual_tramline_control_state() const
+{
+	return actualTramlineControlState;
+}
+
+std::uint32_t ClientState::get_tramline_sequence_number() const
+{
+	return tramlineSequenceNumber;
+}
+
+void ClientState::increment_tramline_sequence_number()
+{
+	tramlineSequenceNumber++;
+}
+
+std::int32_t ClientState::get_last_sent_track_number() const
+{
+	return lastSentTrackNumber;
+}
+
+void ClientState::set_last_sent_track_number(std::int32_t trackNumber)
+{
+	lastSentTrackNumber = trackNumber;
+}
+
+std::uint32_t ClientState::get_last_sent_reference_line_id() const
+{
+	return lastSentReferenceLineId;
+}
+
+void ClientState::set_last_sent_reference_line_id(std::uint32_t referenceLineId)
+{
+	lastSentReferenceLineId = referenceLineId;
+}
+
+bool ClientState::get_has_tramline_control_level() const
+{
+	return hasTramlineControlLevelDDI;
+}
+
+void ClientState::set_has_tramline_control_level(bool has)
+{
+	hasTramlineControlLevelDDI = has;
+}
+
+bool ClientState::get_has_setpoint_tramline_control_level() const
+{
+	return hasSetpointTramlineControlLevelDDI;
+}
+
+void ClientState::set_has_setpoint_tramline_control_level(bool has)
+{
+	hasSetpointTramlineControlLevelDDI = has;
+}
+
+bool ClientState::is_setpoint_level_sent() const
+{
+	return setpointLevelSent;
+}
+
+void ClientState::set_setpoint_level_sent(bool sent)
+{
+	setpointLevelSent = sent;
+}
+
 MyTCServer::MyTCServer(std::shared_ptr<isobus::InternalControlFunction> internalControlFunction,
                        isobus::TaskControllerServer::TaskControllerVersion version) :
   TaskControllerServer(internalControlFunction,
@@ -338,6 +487,7 @@ MyTCServer::MyTCServer(std::shared_ptr<isobus::InternalControlFunction> internal
 
 bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> partnerCF, ObjectPoolActivationError &, ObjectPoolErrorCodes &, std::uint16_t &, std::uint16_t &)
 {
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
 	std::cout << "[" << get_timestamp() << "] [TC Server] Client " << partnerCF->get_NAME().get_full_name() << " requesting object pool activation" << std::endl;
 	// Safety check to make sure partnerCF has uploaded a DDOP
 	if (uploadedPools.find(partnerCF) == uploadedPools.end())
@@ -366,11 +516,23 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 		for (std::uint16_t i = 0; i < state.get_pool().size(); i++)
 		{
 			auto object = state.get_pool().get_object_by_index(i);
-			if (object->get_object_type() == isobus::task_controller_object::ObjectTypes::Device)
+			if (object && object->get_object_type() == isobus::task_controller_object::ObjectTypes::Device)
 			{
 				deviceObject = std::static_pointer_cast<isobus::task_controller_object::DeviceObject>(object);
 				break;
 			}
+		}
+
+		if (!deviceObject)
+		{
+			// A spec-compliant pool always has exactly one Device object at its root.
+			// If it's missing — a malformed pool, or a multi-chunk transfer that didn't
+			// concatenate correctly upstream — reject the activation instead of crashing
+			// on the dereference below.
+			std::cout << "[" << get_timestamp() << "] [TC Server] Client " << partnerCF->get_NAME().get_full_name()
+			          << " activation REJECTED: deserialized pool (" << state.get_pool().size()
+			          << " objects) has no Device object." << std::endl;
+			return false;
 		}
 
 		auto labelBytes = deviceObject->get_localization_label();
@@ -452,7 +614,7 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 		for (std::uint32_t i = 0; i < state.get_pool().size(); i++)
 		{
 			auto object = state.get_pool().get_object_by_index(i);
-			if (object->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceProcessData)
+			if (object && object->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceProcessData)
 			{
 				auto processDataObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceProcessDataObject>(object);
 				auto ddi = processDataObject->get_ddi();
@@ -506,6 +668,60 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 			std::cout << "[" << get_timestamp() << "] [TC Server] WARNING: No supported section control method detected! "
 			          << "Device has no DDI 290, 161 (settable), or 141 (settable)." << std::endl;
 		}
+
+		// === Tramline capability detection ===
+		// Scan DDOP for tramline-related DDIs to build element number mappings.
+		// NOTE: We do NOT infer supported levels from DDI presence here.
+		// The actual supported-level bitmask comes from DDI 505 (TramlineControlLevel)
+		// which the implement reports after activation. See on_value_command() DDI 505 handler.
+		bool hasTramlineControlLevel = false;
+		bool hasSetpointTramlineControlLevel = false;
+		bool hasTramlineControlState = false;
+		bool hasTrackDDIs = false;
+
+		for (std::uint16_t i = 0; i < state.get_pool().size(); i++)
+		{
+			auto obj = state.get_pool().get_object_by_index(i);
+			if (!obj || obj->get_object_type() != isobus::task_controller_object::ObjectTypes::DeviceProcessData)
+				continue;
+
+			auto pd = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceProcessDataObject>(obj);
+			auto ddi = pd->get_ddi();
+
+			if (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::TramlineControlLevel))
+				hasTramlineControlLevel = true;
+			else if (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SetpointTramlineControlLevel))
+				hasSetpointTramlineControlLevel = true;
+			else if (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::TramlineControlState))
+				hasTramlineControlState = true;
+			else if (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualTrackNumber) ||
+			         ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::TrackNumberToTheRight) ||
+			         ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::TrackNumberToTheLeft) ||
+			         ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::UniqueABGuidanceReferenceLineID))
+				hasTrackDDIs = true;
+		}
+
+		state.set_has_tramline_control_level(hasTramlineControlLevel);
+		state.set_has_setpoint_tramline_control_level(hasSetpointTramlineControlLevel);
+
+		// Supported levels bitmask starts at 0 — real value comes from DDI 505 callback.
+		// Track negotiation also starts incomplete; it completes after DDI 505/506 handshake.
+		state.set_supported_tramline_levels_bitmask(0);
+		state.set_track_negotiation_complete(false);
+
+		if (hasTramlineControlLevel || hasTrackDDIs || hasTramlineControlState)
+		{
+			std::cout << "[" << get_timestamp() << "] [TC] Implement has tramline DDIs in DDOP"
+			          << " (505=" << (hasTramlineControlLevel ? "yes" : "no")
+			          << " 506=" << (hasSetpointTramlineControlLevel ? "yes" : "no")
+			          << " 515=" << (hasTramlineControlState ? "yes" : "no")
+			          << " tracks=" << (hasTrackDDIs ? "yes" : "no")
+			          << ") — waiting for DDI 505 to determine supported levels" << std::endl;
+		}
+		else
+		{
+			std::cout << "[" << get_timestamp() << "] [TC] Implement has no tramline DDIs in DDOP" << std::endl;
+		}
 	}
 	else
 	{
@@ -526,6 +742,7 @@ bool MyTCServer::change_designator(std::shared_ptr<isobus::ControlFunction>, std
 
 bool MyTCServer::deactivate_object_pool(std::shared_ptr<isobus::ControlFunction> partnerCF)
 {
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
 	clients.erase(partnerCF);
 	uploadedPools.erase(partnerCF);
 	return true;
@@ -533,6 +750,7 @@ bool MyTCServer::deactivate_object_pool(std::shared_ptr<isobus::ControlFunction>
 
 bool MyTCServer::delete_device_descriptor_object_pool(std::shared_ptr<isobus::ControlFunction> partnerCF, ObjectPoolDeletionErrors &)
 {
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
 	clients.erase(partnerCF);
 	uploadedPools.erase(partnerCF);
 	return true;
@@ -569,6 +787,7 @@ void MyTCServer::identify_task_controller(std::uint8_t tcNumber)
 
 void MyTCServer::on_client_timeout(std::shared_ptr<isobus::ControlFunction> partner)
 {
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
 	// Cleanup the client state
 	std::cout << "[" << get_timestamp() << "] [TC Server] Client " << partner->get_NAME().get_full_name() << " has timed out!" << std::endl;
 	clients.erase(partner);
@@ -596,6 +815,7 @@ bool MyTCServer::on_value_command(std::shared_ptr<isobus::ControlFunction> partn
                                   std::int32_t processDataValue,
                                   std::uint8_t &errorCodes)
 {
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
 	switch (dataDescriptionIndex)
 	{
 		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState1_16):
@@ -651,6 +871,104 @@ bool MyTCServer::on_value_command(std::shared_ptr<isobus::ControlFunction> partn
 				}
 			}
 		}
+		break;
+
+		// Working width DDIs — often implemented as Device Process Data (no static value in
+		// the DDOP; see the comment on ClientState::set_reported_working_width), so the only
+		// way to learn the real width is to capture it here once the client reports it.
+		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualWorkingWidth):
+		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::MaximumWorkingWidth):
+		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::DefaultWorkingWidth):
+		{
+			clients[partner].set_reported_working_width(elementNumber, static_cast<isobus::DataDescriptionIndex>(dataDescriptionIndex), processDataValue);
+			std::cout << "[" << get_timestamp() << "] [TC] Element " << elementNumber << " reported working width DDI "
+			          << dataDescriptionIndex << "=" << processDataValue << " mm" << std::endl;
+		}
+		break;
+
+		// Tramline DDIs — store actual values reported by implement
+		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::TramlineControlLevel):
+		{
+			// DDI 505: Implement reports its supported tramline levels as a BITMASK.
+			// Bit 0 = Level 1 (track info), Bit 1 = Level 2 (extended setup), Bit 2 = Level 3 (TC calculates)
+			// Example: value=3 means Level 1 + Level 2 supported (NOT "Level 3").
+			// Handshake: respond by writing DDI 506 (SetpointTramlineControlLevel) = what we want to use.
+			// IMPORTANT: DDI 505 is a BITMASK, but DDI 506 is an ENUM:
+			//   0 = No common Level, 1 = Level 1, 2 = Level 2, 3 = Level 3
+			std::cout << "[" << get_timestamp() << "] [TC] Implement reports TramlineControlLevel=" << processDataValue
+			          << " (bitmask: L1=" << ((processDataValue & 0x01) ? "yes" : "no")
+			          << " L2=" << ((processDataValue & 0x02) ? "yes" : "no")
+			          << " L3=" << ((processDataValue & 0x04) ? "yes" : "no") << ")" << std::endl;
+			clients[partner].set_element_number_for_ddi(
+			  static_cast<isobus::DataDescriptionIndex>(dataDescriptionIndex), elementNumber);
+			clients[partner].set_supported_tramline_levels_bitmask(processDataValue);
+
+			// If implement has DDI 506 and we haven't sent the setpoint yet, do it now.
+			// We only fully implement Level 1 behavior, so always request Level 1 (enum value 1)
+			// even if the implement also advertises Level 2 or Level 3.
+			if (clients[partner].get_has_setpoint_tramline_control_level() &&
+			    !clients[partner].is_setpoint_level_sent() &&
+			    clients[partner].has_element_number_for_ddi(isobus::DataDescriptionIndex::SetpointTramlineControlLevel))
+			{
+				std::int32_t requestedLevel = 0; // No common level if implement doesn't support L1
+				if (processDataValue & 0x01) // Bit 0 = Level 1 support
+					requestedLevel = 1; // Request Level 1 (enum)
+
+				send_set_value(partner,
+				               static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SetpointTramlineControlLevel),
+				               clients[partner].get_element_number_for_ddi(isobus::DataDescriptionIndex::SetpointTramlineControlLevel),
+				               requestedLevel);
+				clients[partner].set_setpoint_level_sent(true);
+				std::cout << "[" << get_timestamp() << "] [TC] Wrote SetpointTramlineControlLevel=" << requestedLevel
+				          << " (Level " << requestedLevel << ")" << std::endl;
+			}
+		}
+		break;
+
+		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SetpointTramlineControlLevel):
+		{
+			// DDI 506 echo — implement confirms the level we requested.
+			// When we receive this echo, the DDI 505/506 negotiation is complete
+			// and we can begin normal TRACK data transmission.
+			std::cout << "[" << get_timestamp() << "] [TC] SetpointTramlineControlLevel echo=" << processDataValue
+			          << " — negotiation complete" << std::endl;
+			clients[partner].set_element_number_for_ddi(
+			  static_cast<isobus::DataDescriptionIndex>(dataDescriptionIndex), elementNumber);
+			clients[partner].set_track_negotiation_complete(true);
+		}
+		break;
+
+		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualTrackNumber):
+		{
+			// DDI 509 echo from implement — store element mapping only.
+			// Track data flows through GuidanceTrackContext, not per-client storage.
+			clients[partner].set_element_number_for_ddi(
+			  static_cast<isobus::DataDescriptionIndex>(dataDescriptionIndex), elementNumber);
+			std::cout << "[" << get_timestamp() << "] [TC] ActualTrackNumber echo=" << processDataValue << std::endl;
+		}
+		break;
+
+		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::TramlineControlState):
+		{
+			clients[partner].set_actual_tramline_control_state(processDataValue);
+			clients[partner].set_element_number_for_ddi(
+			  static_cast<isobus::DataDescriptionIndex>(dataDescriptionIndex), elementNumber);
+			std::cout << "[" << get_timestamp() << "] [TC] TramlineControlState=" << processDataValue << std::endl;
+		}
+		break;
+
+		default:
+			// Handle ActualTramlineCondensedWorkState DDIs (Level 3 feedback from implement)
+			if ((dataDescriptionIndex >= static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualTramlineCondensedWorkState1_16) &&
+			     dataDescriptionIndex <= static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualTramlineCondensedWorkState209_224)) ||
+			    dataDescriptionIndex == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::TramlineSequenceNumber) ||
+			    dataDescriptionIndex == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::TrackNumberToTheRight) ||
+			    dataDescriptionIndex == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::TrackNumberToTheLeft))
+			{
+				clients[partner].set_element_number_for_ddi(
+				  static_cast<isobus::DataDescriptionIndex>(dataDescriptionIndex), elementNumber);
+			}
+			break;
 	}
 
 	return true;
@@ -658,6 +976,7 @@ bool MyTCServer::on_value_command(std::shared_ptr<isobus::ControlFunction> partn
 
 bool MyTCServer::store_device_descriptor_object_pool(std::shared_ptr<isobus::ControlFunction> partnerCF, const std::vector<std::uint8_t> &binaryPool, bool appendToPool)
 {
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
 	std::cout << "[" << get_timestamp() << "] [TC Server] Client " << partnerCF->get_NAME().get_full_name() << " requesting object pool transfer of " << binaryPool.size() << " bytes" << std::endl;
 	if (uploadedPools.find(partnerCF) == uploadedPools.end())
 	{
@@ -667,13 +986,15 @@ bool MyTCServer::store_device_descriptor_object_pool(std::shared_ptr<isobus::Con
 	return true;
 }
 
-std::map<std::shared_ptr<isobus::ControlFunction>, ClientState> &MyTCServer::get_clients()
+std::map<std::shared_ptr<isobus::ControlFunction>, ClientState> MyTCServer::get_clients()
 {
-	return clients;
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
+	return clients; // copy, taken while locked — see the declaration's comment
 }
 
 void MyTCServer::request_measurement_commands()
 {
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
 	for (auto &client : clients)
 	{
 		// Skip clients with 0 sections (e.g. tractors) - sending measurement commands to a tractor ECU can cause unexpected behavior
@@ -683,7 +1004,7 @@ void MyTCServer::request_measurement_commands()
 			for (std::uint32_t i = 0; i < client.second.get_pool().size(); i++)
 			{
 				auto object = client.second.get_pool().get_object_by_index(i);
-				if (object->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceProcessData)
+				if (object && object->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceProcessData)
 				{
 					auto processDataObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceProcessDataObject>(object);
 					if (processDataObject->get_ddi() == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualWorkState) ||
@@ -696,7 +1017,7 @@ void MyTCServer::request_measurement_commands()
 						for (std::uint32_t j = 0; j < client.second.get_pool().size(); j++)
 						{
 							auto parentObject = client.second.get_pool().get_object_by_index(j);
-							if (parentObject->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceElement)
+							if (parentObject && parentObject->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceElement)
 							{
 								auto elementObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceElementObject>(parentObject);
 								for (std::uint16_t elementObjectChild : elementObject->get_child_object_ids())
@@ -731,7 +1052,7 @@ void MyTCServer::request_measurement_commands()
 			for (std::uint32_t i = 0; i < client.second.get_pool().size(); i++)
 			{
 				auto object = client.second.get_pool().get_object_by_index(i);
-				if (object->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceProcessData)
+				if (object && object->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceProcessData)
 				{
 					auto processDataObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceProcessDataObject>(object);
 					if (processDataObject->get_ddi() == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SectionControlState) ||
@@ -743,7 +1064,7 @@ void MyTCServer::request_measurement_commands()
 						for (std::uint32_t j = 0; j < client.second.get_pool().size(); j++)
 						{
 							auto parentObject = client.second.get_pool().get_object_by_index(j);
-							if (parentObject->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceElement)
+							if (parentObject && parentObject->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceElement)
 							{
 								auto elementObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceElementObject>(parentObject);
 								for (std::uint16_t elementObjectChild : elementObject->get_child_object_ids())
@@ -773,6 +1094,137 @@ void MyTCServer::request_measurement_commands()
 				}
 			}
 
+			// Subscribe to tramline DDIs (OnChange)
+			for (std::uint32_t i = 0; i < client.second.get_pool().size(); i++)
+			{
+				auto object = client.second.get_pool().get_object_by_index(i);
+				if (!object || object->get_object_type() != isobus::task_controller_object::ObjectTypes::DeviceProcessData)
+					continue;
+
+				auto processDataObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceProcessDataObject>(object);
+				auto ddi = processDataObject->get_ddi();
+
+				bool isTramlineDDI =
+				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualTrackNumber)) ||
+				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::TramlineControlLevel)) ||
+				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SetpointTramlineControlLevel)) ||
+				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::TramlineControlState)) ||
+				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::TramlineSequenceNumber)) ||
+				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::TrackNumberToTheRight)) ||
+				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::TrackNumberToTheLeft)) ||
+				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::UniqueABGuidanceReferenceLineID)) ||
+				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::GuidanceLineSwathWidth)) ||
+				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::GuidanceLineDeviation)) ||
+				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::GNSSQuality)) ||
+				  (ddi >= static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualTramlineCondensedWorkState1_16) &&
+				   ddi <= static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualTramlineCondensedWorkState209_224));
+
+				if (!isTramlineDDI)
+					continue;
+
+				// Skip if we already subscribed/mapped this DDI (deduplicate)
+				if (client.second.has_element_number_for_ddi(static_cast<isobus::DataDescriptionIndex>(ddi)))
+					continue;
+
+				// Find the first parent DeviceElement and subscribe
+				for (std::uint32_t j = 0; j < client.second.get_pool().size(); j++)
+				{
+					auto parentObject = client.second.get_pool().get_object_by_index(j);
+					if (!parentObject || parentObject->get_object_type() != isobus::task_controller_object::ObjectTypes::DeviceElement)
+						continue;
+
+					auto elementObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceElementObject>(parentObject);
+					bool found = false;
+					for (std::uint16_t childId : elementObject->get_child_object_ids())
+					{
+						if (childId == processDataObject->get_object_id())
+						{
+							client.second.set_element_number_for_ddi(
+							  static_cast<isobus::DataDescriptionIndex>(ddi), elementObject->get_element_number());
+							const auto &entry = isobus::DataDictionary::get_entry(ddi);
+
+							if (processDataObject->has_trigger_method(
+							      isobus::task_controller_object::DeviceProcessDataObject::AvailableTriggerMethods::OnChange))
+							{
+								send_change_threshold_measurement_command(
+								  client.first, ddi, elementObject->get_element_number(), 1);
+								std::cout << "Subscribed (OnChange) to tramline DDI " << ddi
+								          << " (" << entry.to_string() << ") for element "
+								          << elementObject->get_element_number() << std::endl;
+							}
+							else
+							{
+								std::cout << "Mapped tramline DDI " << ddi
+								          << " (" << entry.to_string() << ") to element "
+								          << elementObject->get_element_number() << std::endl;
+							}
+							found = true;
+							break; // First parent match only
+						}
+					}
+					if (found)
+						break;
+				}
+			}
+
+			// Subscribe to working width DDIs (OnChange). These are commonly Device Process
+			// Data rather than a static Device Property, so the DDOP itself never carries a
+			// value — the client only reports one once we ask for it. Unlike the tramline DDIs
+			// above, width DDIs can legitimately repeat across several elements (one per
+			// section/sub-boom), so every matching element is subscribed — no single-DDI dedup.
+			for (std::uint32_t i = 0; i < client.second.get_pool().size(); i++)
+			{
+				auto object = client.second.get_pool().get_object_by_index(i);
+				if (!object || object->get_object_type() != isobus::task_controller_object::ObjectTypes::DeviceProcessData)
+					continue;
+
+				auto processDataObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceProcessDataObject>(object);
+				auto ddi = processDataObject->get_ddi();
+
+				bool isWidthDDI =
+				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualWorkingWidth)) ||
+				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::MaximumWorkingWidth)) ||
+				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::DefaultWorkingWidth));
+
+				if (!isWidthDDI)
+					continue;
+
+				for (std::uint32_t j = 0; j < client.second.get_pool().size(); j++)
+				{
+					auto parentObject = client.second.get_pool().get_object_by_index(j);
+					if (!parentObject || parentObject->get_object_type() != isobus::task_controller_object::ObjectTypes::DeviceElement)
+						continue;
+
+					auto elementObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceElementObject>(parentObject);
+					for (std::uint16_t childId : elementObject->get_child_object_ids())
+					{
+						if (childId != processDataObject->get_object_id())
+							continue;
+
+						const auto &entry = isobus::DataDictionary::get_entry(ddi);
+						if (processDataObject->has_trigger_method(
+						      isobus::task_controller_object::DeviceProcessDataObject::AvailableTriggerMethods::OnChange))
+						{
+							send_change_threshold_measurement_command(
+							  client.first, ddi, elementObject->get_element_number(), 1);
+							std::cout << "Subscribed (OnChange) to width DDI " << ddi
+							          << " (" << entry.to_string() << ") for element "
+							          << elementObject->get_element_number() << std::endl;
+						}
+						else
+						{
+							// No OnChange support — fall back to a time interval so we still
+							// eventually learn the width instead of never subscribing at all.
+							send_time_interval_measurement_command(client.first, ddi, elementObject->get_element_number(), 1000);
+							std::cout << "Subscribed (TimeInterval) to width DDI " << ddi
+							          << " (" << entry.to_string() << ") for element "
+							          << elementObject->get_element_number() << std::endl;
+						}
+						break; // First parent match for this object is the only one — object IDs are unique
+					}
+				}
+			}
+
 			std::cout << "[" << get_timestamp() << "] Measurement commands sent." << std::endl;
 			client.second.mark_measurement_commands_sent();
 		}
@@ -781,6 +1233,7 @@ void MyTCServer::request_measurement_commands()
 
 void MyTCServer::update_section_states(std::vector<bool> &sectionStates)
 {
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
 	for (auto &client : clients)
 	{
 		auto &state = client.second;
@@ -826,6 +1279,10 @@ void MyTCServer::update_section_states(std::vector<bool> &sectionStates)
 
 void MyTCServer::update_section_control_enabled(bool enabled)
 {
+	// Section control only — DDI 160 (SectionControlState).
+	// Track control (DDI 515) is handled separately by update_track_control_enabled()
+	// even though both are currently triggered by the same AOG Auto command.
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
 	for (auto &client : clients)
 	{
 		// Always update the local flag
@@ -843,8 +1300,39 @@ void MyTCServer::update_section_control_enabled(bool enabled)
 	}
 }
 
+void MyTCServer::update_track_control_enabled(bool enabled)
+{
+	// Track control — DDI 515 (TramlineControlState).
+	// Separate from section control (DDI 160) even though both are currently triggered
+	// by the same AOG Auto command. This allows future decoupling without changing the UI.
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
+	for (auto &client : clients)
+	{
+		// Update the local flag
+		if (client.second.is_track_control_enabled() != enabled)
+		{
+			client.second.set_track_control_enabled(enabled);
+		}
+
+		// Only send DDI 515 to clients that have completed DDI 505/506 negotiation
+		// and have the TramlineControlState DDI in their DDOP.
+		if (client.second.is_track_negotiation_complete() &&
+		    client.second.has_element_number_for_ddi(isobus::DataDescriptionIndex::TramlineControlState))
+		{
+			// DDI 515 values: 0=manual/off, 1=automatic/on
+			send_set_value(client.first,
+			               static_cast<std::uint16_t>(isobus::DataDescriptionIndex::TramlineControlState),
+			               client.second.get_element_number_for_ddi(isobus::DataDescriptionIndex::TramlineControlState),
+			               enabled ? 1 : 0);
+			std::cout << "[" << get_timestamp() << "] [TC] TramlineControlState=" << (enabled ? "On" : "Off")
+			          << " (track control)" << std::endl;
+		}
+	}
+}
+
 void MyTCServer::send_section_setpoint_states(std::shared_ptr<isobus::ControlFunction> client, std::uint8_t ddiOffset)
 {
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
 	std::uint8_t sectionOffset = ddiOffset * NUMBER_SECTIONS_PER_CONDENSED_MESSAGE;
 	std::uint32_t value = 0;
 	for (std::uint8_t i = 0; i < NUMBER_SECTIONS_PER_CONDENSED_MESSAGE; i++)
@@ -928,15 +1416,17 @@ void MyTCServer::send_section_setpoint_states(std::shared_ptr<isobus::ControlFun
 
 void MyTCServer::send_section_control_state(std::shared_ptr<isobus::ControlFunction> client, bool enabled)
 {
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
 	send_set_value(client, static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SectionControlState), clients[client].get_element_number_for_ddi(isobus::DataDescriptionIndex::SectionControlState), enabled ? 1 : 0);
 }
 
 bool MyTCServer::is_ddi_settable(std::shared_ptr<isobus::ControlFunction> client, std::uint16_t ddi)
 {
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
 	for (std::uint32_t i = 0; i < clients[client].get_pool().size(); i++)
 	{
 		auto object = clients[client].get_pool().get_object_by_index(i);
-		if (object->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceProcessData)
+		if (object && object->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceProcessData)
 		{
 			auto processDataObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceProcessDataObject>(object);
 			if (processDataObject->get_ddi() == ddi)
@@ -946,4 +1436,75 @@ bool MyTCServer::is_ddi_settable(std::shared_ptr<isobus::ControlFunction> client
 		}
 	}
 	return false;
+}
+
+void MyTCServer::send_tramline_track_data(const GuidanceTrackContext &ctx, std::int32_t swathWidthMm, std::int32_t lineDeviationMm, std::uint8_t gnssFixQuality)
+{
+	// Send coherent TRACK context to all clients that have completed DDI 505/506 negotiation.
+	// Do NOT send track data before negotiation is complete (Requirement 9).
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
+	for (auto &client : clients)
+	{
+		auto &state = client.second;
+
+		// Gate on negotiation completion
+		if (!state.is_track_negotiation_complete())
+			continue;
+
+		int bitmask = state.get_supported_tramline_levels_bitmask();
+		if (bitmask == 0)
+			continue;
+
+		auto trySend = [&](isobus::DataDescriptionIndex ddi, std::int32_t value) {
+			if (state.has_element_number_for_ddi(ddi))
+			{
+				send_set_value(client.first, static_cast<std::uint16_t>(ddi), state.get_element_number_for_ddi(ddi), value);
+			}
+		};
+
+		// Track-specific DDIs (507-511, swath, deviation) only make sense while a track is
+		// actually active — GNSS quality below is independent and sent regardless of ctx.valid.
+		if (ctx.valid)
+		{
+			// DDI 507 sequence: increment when track context changes (not on section control toggle).
+			// Detect change by comparing the actual track number AND the reference line ID against
+			// the last sent values — a line switch can land on the same track index.
+			bool contextChanged = (ctx.actualTrackNumber != state.get_last_sent_track_number()) ||
+			  (ctx.guidanceReferenceLineId != state.get_last_sent_reference_line_id());
+			if (contextChanged)
+			{
+				state.increment_tramline_sequence_number();
+				state.set_last_sent_track_number(ctx.actualTrackNumber);
+				state.set_last_sent_reference_line_id(ctx.guidanceReferenceLineId);
+			}
+
+			// Send DDIs in coherent ordering per the TRACK guideline:
+			// 507 (sequence) -> 508 (ref line ID) -> 509 (actual track) -> 510 (right) -> 511 (left)
+			if (state.has_element_number_for_ddi(isobus::DataDescriptionIndex::TramlineSequenceNumber))
+			{
+				trySend(isobus::DataDescriptionIndex::TramlineSequenceNumber,
+				        static_cast<std::int32_t>(state.get_tramline_sequence_number()));
+			}
+			trySend(isobus::DataDescriptionIndex::UniqueABGuidanceReferenceLineID,
+			        static_cast<std::int32_t>(ctx.guidanceReferenceLineId));
+			trySend(isobus::DataDescriptionIndex::ActualTrackNumber, ctx.actualTrackNumber);
+			trySend(isobus::DataDescriptionIndex::TrackNumberToTheRight, ctx.trackNumberRight);
+			trySend(isobus::DataDescriptionIndex::TrackNumberToTheLeft, ctx.trackNumberLeft);
+
+			// Supplemental Level 1 DDIs
+			if (swathWidthMm > 0)
+			{
+				trySend(isobus::DataDescriptionIndex::GuidanceLineSwathWidth, swathWidthMm);
+			}
+			trySend(isobus::DataDescriptionIndex::GuidanceLineDeviation, lineDeviationMm);
+		}
+
+		// GNSS Quality (DDI 514): sourced from AOG PGN 0xD6 fix quality byte. Independent of
+		// track validity, so it's sent whenever the client has the element, active track or not.
+		// 0=No GPS, 1=GNSS, 2=DGNSS, 3=Precise, 4=RTK Fixed, 5=RTK Float
+		trySend(isobus::DataDescriptionIndex::GNSSQuality, static_cast<std::int32_t>(gnssFixQuality));
+
+		// TramlineControlState (DDI 515) is owned solely by update_track_control_enabled().
+		// Do NOT write it from here.
+	}
 }
