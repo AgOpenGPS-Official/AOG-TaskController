@@ -12,6 +12,7 @@
 
 #include "isobus/isobus/isobus_device_descriptor_object_pool_helpers.hpp"
 #include "isobus/isobus/isobus_task_controller_server.hpp"
+#include "isobus/utility/system_timing.hpp"
 
 #include <bitset>
 #include <fstream>
@@ -202,6 +203,33 @@ void ClientState::mark_measurement_commands_sent()
 	areMeasurementCommandsSent = true;
 }
 
+void ClientState::set_canonical_pool(std::vector<std::vector<std::uint8_t>> chunks, std::string fileStem)
+{
+	canonicalPoolChunks = std::make_shared<const std::vector<std::vector<std::uint8_t>>>(std::move(chunks));
+	canonicalFileStem = std::move(fileStem);
+}
+
+const std::vector<std::vector<std::uint8_t>> &ClientState::get_canonical_pool_chunks() const
+{
+	static const std::vector<std::vector<std::uint8_t>> noChunks;
+	return canonicalPoolChunks ? *canonicalPoolChunks : noChunks;
+}
+
+const std::string &ClientState::get_canonical_file_stem() const
+{
+	return canonicalFileStem;
+}
+
+ddop_hydration::ProcessDataIndex &ClientState::get_process_data_index()
+{
+	return processDataIndex;
+}
+
+ddop_hydration::ShadowValueStore &ClientState::get_shadow_values()
+{
+	return shadowValues;
+}
+
 std::uint16_t ClientState::get_element_number_for_ddi(isobus::DataDescriptionIndex ddi) const
 {
 	auto it = ddiToElementNumber.find(ddi);
@@ -365,11 +393,13 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 	state.get_pool().set_task_controller_compatibility_level(static_cast<std::uint8_t>(TaskControllerVersion::SecondEditionDraft));
 
 	bool deserialized = false;
+	std::vector<std::vector<std::uint8_t>> canonicalPoolChunks;
 	while (!uploadedPools[partnerCF].empty())
 	{
 		auto binaryPool = uploadedPools[partnerCF].front();
 		uploadedPools[partnerCF].pop();
 		deserialized = state.get_pool().deserialize_binary_object_pool(binaryPool.data(), static_cast<std::uint32_t>(binaryPool.size()), partnerCF->get_NAME());
+		canonicalPoolChunks.push_back(std::move(binaryPool));
 	}
 	if (deserialized)
 	{
@@ -409,7 +439,9 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 		auto it = std::find_if(label.begin(), label.end(), [](unsigned char c) { return c < 0x20 || c >= 0x7F; });
 		label.erase(it, label.end());
 
-		auto fileName = std::to_string(partnerCF->get_NAME().get_full_name()) + "/" + sanitize_filename(label) + ".ddop";
+		const auto fileStem = std::to_string(partnerCF->get_NAME().get_full_name()) + "/" + sanitize_filename(label);
+		auto fileName = fileStem + ".ddop";
+		state.set_canonical_pool(std::move(canonicalPoolChunks), fileStem);
 		std::vector<std::uint8_t> binaryPool;
 		if (state.get_pool().generate_binary_object_pool(binaryPool))
 		{
@@ -545,6 +577,7 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 		return false;
 	}
 
+	state.get_process_data_index().build(state.get_pool());
 	clients[partnerCF] = state;
 	log("TC Server") << "Client " << partnerCF->get_NAME().get_full_name() << " registered successfully with "
 	                 << static_cast<int>(state.get_number_of_sections()) << " sections." << std::endl;
@@ -632,6 +665,15 @@ bool MyTCServer::on_value_command(std::shared_ptr<isobus::ControlFunction> partn
                                   std::uint8_t &errorCodes)
 {
 	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
+
+	// Keep the latest value per object for hydrated DDOP snapshots
+	auto clientIt = clients.find(partner);
+	std::uint16_t objectID;
+	if ((clientIt != clients.end()) && clientIt->second.get_process_data_index().try_get_object_id(dataDescriptionIndex, elementNumber, objectID))
+	{
+		clientIt->second.get_shadow_values().record(objectID, processDataValue);
+	}
+
 	switch (dataDescriptionIndex)
 	{
 		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState1_16):
@@ -708,6 +750,135 @@ std::map<std::shared_ptr<isobus::ControlFunction>, ClientState> MyTCServer::get_
 {
 	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
 	return clients; // copy, taken while locked — see the declaration's comment
+}
+
+MyTCServer::HydrationStartResult MyTCServer::begin_hydration_snapshot(std::shared_ptr<isobus::ControlFunction> client, const ddop_hydration::AllowList &allowList)
+{
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
+	if (pendingHydration)
+	{
+		return HydrationStartResult::AlreadyRunning;
+	}
+
+	auto clientIt = clients.find(client);
+	if ((clientIt == clients.end()) || clientIt->second.get_canonical_pool_chunks().empty())
+	{
+		return HydrationStartResult::UnknownClient;
+	}
+
+	auto &state = clientIt->second;
+	PendingHydration pending;
+	pending.client = client;
+	pending.startedAt_ms = isobus::SystemTiming::get_timestamp_ms();
+	std::size_t requestCount = 0;
+
+	for (std::uint16_t i = 0; i < state.get_pool().size(); i++)
+	{
+		auto object = state.get_pool().get_object_by_index(i);
+		if (!object || !allowList.is_eligible(*object))
+		{
+			continue;
+		}
+
+		ddop_hydration::SnapshotEntry entry;
+		entry.objectID = object->get_object_id();
+		state.get_process_data_index().try_get_element_number(entry.objectID, entry.elementNumber);
+
+		if (object->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceProperty)
+		{
+			auto property = std::static_pointer_cast<isobus::task_controller_object::DevicePropertyObject>(object);
+			entry.ddi = property->get_ddi();
+			entry.value = property->get_value();
+			entry.source = ddop_hydration::ValueSource::Pool;
+		}
+		else
+		{
+			entry.ddi = std::static_pointer_cast<isobus::task_controller_object::DeviceProcessDataObject>(object)->get_ddi();
+
+			ddop_hydration::ShadowValue shadowValue;
+			if (state.get_shadow_values().try_get(entry.objectID, shadowValue))
+			{
+				entry.value = shadowValue.value;
+				entry.source = ddop_hydration::ValueSource::Live;
+			}
+			else if (entry.elementNumber != ddop_hydration::SnapshotEntry::NO_ELEMENT)
+			{
+				// The response arrives through on_value_command, which records it in the shadow store.
+				send_request_value(client, entry.ddi, entry.elementNumber);
+				entry.source = ddop_hydration::ValueSource::Requested;
+				requestCount++;
+			}
+			else
+			{
+				entry.source = ddop_hydration::ValueSource::NotRequestable;
+			}
+		}
+		pending.entries.push_back(entry);
+	}
+
+	pending.wait_ms = (requestCount > 0) ? (allowList.requestWaitSeconds * 1000) : 0;
+	log("TC Server") << "Hydration snapshot for client " << client->get_NAME().get_full_name() << ": " << pending.entries.size()
+	                 << " allow-listed objects, " << requestCount << " value requests sent" << std::endl;
+	pendingHydration = std::move(pending);
+	return HydrationStartResult::Started;
+}
+
+bool MyTCServer::poll_hydration_snapshot(ddop_hydration::SnapshotResult &result)
+{
+	ddop_hydration::SnapshotInput input;
+	{
+		std::lock_guard<std::recursive_mutex> lock(clientsMutex);
+		if (!pendingHydration || !isobus::SystemTiming::time_expired_ms(pendingHydration->startedAt_ms, pendingHydration->wait_ms))
+		{
+			return false;
+		}
+
+		auto clientIt = clients.find(pendingHydration->client);
+		if (clientIt == clients.end())
+		{
+			pendingHydration.reset();
+			result = ddop_hydration::SnapshotResult();
+			result.error = "implement disconnected";
+			return true;
+		}
+
+		auto &state = clientIt->second;
+		for (auto &entry : pendingHydration->entries)
+		{
+			ddop_hydration::ShadowValue shadowValue;
+			if (entry.source != ddop_hydration::ValueSource::Requested)
+			{
+				continue;
+			}
+			if (state.get_shadow_values().try_get(entry.objectID, shadowValue))
+			{
+				entry.value = shadowValue.value;
+			}
+			else
+			{
+				entry.source = ddop_hydration::ValueSource::NoResponse;
+			}
+		}
+
+		input.canonicalPoolChunks = state.get_canonical_pool_chunks();
+		input.taskControllerCompatibilityLevel = state.get_pool().get_task_controller_compatibility_level();
+		input.clientName = pendingHydration->client->get_NAME().get_full_name();
+		input.fileStem = state.get_canonical_file_stem();
+		input.entries = std::move(pendingHydration->entries);
+		pendingHydration.reset();
+	}
+
+	// Deserializing and file I/O happen outside the lock so CAN callbacks are not held up.
+	try
+	{
+		result = ddop_hydration::write_snapshot(input);
+	}
+	catch (const std::exception &e)
+	{
+		result = ddop_hydration::SnapshotResult();
+		result.error = e.what();
+	}
+	return true;
 }
 
 void MyTCServer::request_measurement_commands()

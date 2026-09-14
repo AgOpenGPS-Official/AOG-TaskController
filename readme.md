@@ -62,6 +62,9 @@ AOG-TaskController reads its configuration from a `settings.json` file located i
 | `tcVersion` | `integer` | `3` | Task Controller version code, from `0` through `4`; `3` is Second Edition Draft. |
 | `languageCode` | `string` | `"en"` | Two-character language code advertised on ISOBUS. |
 | `countryCode` | `string` | `"US"` | Two-character country code advertised on ISOBUS. |
+| `ddopHydration.includeDeviceProperties` | `bool` | `true` | Lists DeviceProperty values in hydrated DDOP snapshots. |
+| `ddopHydration.processDataDdis` | `int[]` | `[67, 68, 70, 134, 135, 136, 180]` | On-change DeviceProcessData DDIs whose live values are written into hydrated DDOP snapshots. Totals, work states, section control state and actual rates are always excluded. |
+| `ddopHydration.requestWaitSeconds` | `integer` | `7` | How long a snapshot waits for answers to value requests, `1` through `60`. |
 
 ### Example `settings.json`
 
@@ -74,9 +77,23 @@ AOG-TaskController reads its configuration from a `settings.json` file located i
   "vtEnabled": true,
   "tcVersion": 3,
   "languageCode": "en",
-  "countryCode": "US"
+  "countryCode": "US",
+  "ddopHydration": {
+    "includeDeviceProperties": true,
+    "processDataDdis": [67, 68, 70, 134, 135, 136, 180],
+    "requestWaitSeconds": 7
+  }
 }
 ```
+
+### Hydrated DDOP snapshots
+
+Many implement values, such as element offsets and working width, are not stored in the DDOP; the implement reports them as process data once it is running. The **Snapshot DDOP** button on the VT Implement page writes a copy of the connected implement's DDOP with those values filled in, for viewing in tools such as AgIsoDDOPGenerator.
+
+- Values that were already reported are used directly. For the rest, the TC sends value requests and waits `requestWaitSeconds` for answers.
+- Allow-listed DeviceProcessData objects with a value are replaced by DeviceProperty objects with the same object ID, DDI and designator. The Device designator gets a `SNAP ` prefix and the structure label is changed.
+- The snapshot is stored next to the canonical pool as `<NAME>/<label>.SNAP-<timestamp>.iop`, with a `.json` file that lists every object, its value and where the value came from.
+- Snapshots are for debugging only: never upload one to a TC. The canonical `<label>.ddop` is not changed.
 
 ### Virtual Terminal compatibility
 

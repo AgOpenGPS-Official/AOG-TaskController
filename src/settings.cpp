@@ -9,6 +9,7 @@
 #include "settings.hpp"
 #include "logging_utils.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -131,6 +132,30 @@ bool Settings::load()
 		countryCode = DEFAULT_COUNTRY_CODE;
 	}
 
+	ddopHydrationAllowList = ddop_hydration::AllowList::defaults();
+	if (data.contains("ddopHydration"))
+	{
+		try
+		{
+			const auto &section = data["ddopHydration"];
+			auto &allowList = ddopHydrationAllowList;
+			allowList.includeDeviceProperties = section.value("includeDeviceProperties", allowList.includeDeviceProperties);
+			if (section.contains("processDataDdis"))
+			{
+				const auto ddis = section["processDataDdis"].get<std::vector<std::uint16_t>>();
+				allowList.processDataDDIs = std::set<std::uint16_t>(ddis.begin(), ddis.end());
+			}
+			allowList.requestWaitSeconds = std::clamp(section.value("requestWaitSeconds", allowList.requestWaitSeconds),
+			                                          ddop_hydration::AllowList::MIN_REQUEST_WAIT_SECONDS,
+			                                          ddop_hydration::AllowList::MAX_REQUEST_WAIT_SECONDS);
+		}
+		catch (const nlohmann::json::exception &e)
+		{
+			std::cout << "[" << get_timestamp() << "] Error parsing 'ddopHydration': " << e.what() << std::endl;
+			ddopHydrationAllowList = ddop_hydration::AllowList::defaults();
+		}
+	}
+
 	return true;
 }
 
@@ -146,6 +171,11 @@ bool Settings::save() const
 	data["tcVersion"] = tcVersion;
 	data["languageCode"] = languageCode;
 	data["countryCode"] = countryCode;
+	data["ddopHydration"] = {
+		{ "includeDeviceProperties", ddopHydrationAllowList.includeDeviceProperties },
+		{ "processDataDdis", ddopHydrationAllowList.processDataDDIs },
+		{ "requestWaitSeconds", ddopHydrationAllowList.requestWaitSeconds },
+	};
 
 	const std::filesystem::path settingsPath(get_filename_path("settings.json"));
 	std::filesystem::path temporaryPath = settingsPath;
@@ -329,6 +359,12 @@ bool Settings::set_country_code(std::string code, bool save)
 		return this->save();
 	}
 	return true;
+}
+
+ddop_hydration::AllowList Settings::get_ddop_hydration_allow_list() const
+{
+	std::scoped_lock lock(settingsMutex);
+	return ddopHydrationAllowList;
 }
 
 namespace

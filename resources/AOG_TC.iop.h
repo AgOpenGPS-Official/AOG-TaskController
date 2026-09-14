@@ -20,6 +20,7 @@
 #define NavImplement                       5004
 #define NavDiagnostics                     5005
 #define NavConfig                          5006
+#define ImplementSnapshotButton            6000
 #define VTControlFunctionsStr              8000
 #define InputList_10000                   10000
 #define ConfigHydliftAuxN                 10001
@@ -56,6 +57,7 @@
 #define ImplementHint                     11207
 #define ImplementBoomOffsetLabel          11208
 #define ImplementBoomOffset               11209
+#define ImplementSnapshotLabel            11210
 #define DiagnosticsTitle                  11300
 #define DiagnosticsLabels                 11301
 #define DiagnosticsValues                 11302

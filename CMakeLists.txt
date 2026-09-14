@@ -146,6 +146,27 @@ endif()
 
 install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION bin COMPONENT applications)
 
+option(AOG_TC_BUILD_TESTS "Build and register the unit tests" ON)
+if(AOG_TC_BUILD_TESTS)
+  enable_testing()
+  add_executable(
+    ddop_hydration_test
+    ${CMAKE_CURRENT_LIST_DIR}/tools/ddop_hydration_test.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/src/ddop_hydration.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/src/settings.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/src/logging.cpp)
+  target_compile_features(ddop_hydration_test PRIVATE cxx_std_20)
+  set_target_properties(ddop_hydration_test PROPERTIES CXX_EXTENSIONS OFF)
+  target_include_directories(ddop_hydration_test
+                             PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
+  target_compile_definitions(
+    ddop_hydration_test PRIVATE PROJECT_VERSION="${PROJECT_VERSION}"
+                                PROJECT_NAME="${PROJECT_NAME}")
+  target_link_libraries(ddop_hydration_test PRIVATE isobus::Isobus isobus::Utility
+                                                    nlohmann_json::nlohmann_json)
+  add_test(NAME ddop_hydration_snapshot COMMAND ddop_hydration_test)
+endif()
+
 option(AOG_TC_VALIDATE_IOP "Build and register the object pool validator test"
        ON)
 if(AOG_TC_VALIDATE_IOP)

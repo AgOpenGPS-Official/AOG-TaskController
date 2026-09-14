@@ -57,6 +57,12 @@ registration point itself defers to an `update()` call, or invokes the listener/
   take `clientsMutex` at its top, even though (per the note above) the `TaskControllerServer`
   overrides may turn out to already be main-thread-only — the lock is cheap insurance and keeps
   every entry point consistent regardless of how the library's internals might change.
+- **Hydrated DDOP snapshot state** (`ClientState`'s shadow values, `MyTCServer::pendingHydration`) —
+  also guarded by `clientsMutex`. `on_value_command()` records values; `begin_hydration_snapshot()`
+  and `poll_hydration_snapshot()` run from `Application::update()`. The snapshot wait is polled,
+  never blocked on: `tcServer->update()` runs in the same main loop, and blocking it would stall the
+  responses being waited for. `poll_hydration_snapshot()` copies what it needs and writes files
+  after releasing the lock. The VT button listener only sets an `std::atomic<bool>`.
 
 ## What's *not* protected yet — known gap
 
