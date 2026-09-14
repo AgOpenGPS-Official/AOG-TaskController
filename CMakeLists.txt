@@ -162,8 +162,9 @@ if(AOG_TC_BUILD_TESTS)
   target_compile_definitions(
     ddop_hydration_test PRIVATE PROJECT_VERSION="${PROJECT_VERSION}"
                                 PROJECT_NAME="${PROJECT_NAME}")
-  target_link_libraries(ddop_hydration_test PRIVATE isobus::Isobus isobus::Utility
-                                                    nlohmann_json::nlohmann_json)
+  target_link_libraries(
+    ddop_hydration_test PRIVATE isobus::Isobus isobus::Utility
+                                nlohmann_json::nlohmann_json)
   add_test(NAME ddop_hydration_snapshot COMMAND ddop_hydration_test)
 endif()
 

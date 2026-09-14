@@ -34,7 +34,7 @@ jobs:
           -Wno-dev
 
       - name: Build
-        run: cmake --build build --config Release --target iop_validator
+        run: cmake --build build --config Release --target iop_validator ddop_hydration_test
 
-      - name: Validate object pool
+      - name: Validate object pool and run unit tests
         run: ctest --test-dir build --output-on-failure
