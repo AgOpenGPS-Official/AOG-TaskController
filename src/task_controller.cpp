@@ -752,7 +752,7 @@ std::map<std::shared_ptr<isobus::ControlFunction>, ClientState> MyTCServer::get_
 	return clients; // copy, taken while locked — see the declaration's comment
 }
 
-MyTCServer::HydrationStartResult MyTCServer::begin_hydration_snapshot(std::shared_ptr<isobus::ControlFunction> client, const ddop_hydration::AllowList &allowList)
+MyTCServer::HydrationStartResult MyTCServer::begin_hydration_snapshot(std::shared_ptr<isobus::ControlFunction> client)
 {
 	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
 	if (pendingHydration)
@@ -775,7 +775,7 @@ MyTCServer::HydrationStartResult MyTCServer::begin_hydration_snapshot(std::share
 	for (std::uint16_t i = 0; i < state.get_pool().size(); i++)
 	{
 		auto object = state.get_pool().get_object_by_index(i);
-		if (!object || !allowList.is_eligible(*object))
+		if (!object || !ddop_hydration::is_hydratable(*object))
 		{
 			continue;
 		}
@@ -816,9 +816,9 @@ MyTCServer::HydrationStartResult MyTCServer::begin_hydration_snapshot(std::share
 		pending.entries.push_back(entry);
 	}
 
-	pending.wait_ms = (requestCount > 0) ? (allowList.requestWaitSeconds * 1000) : 0;
+	pending.wait_ms = (requestCount > 0) ? ddop_hydration::REQUEST_WAIT_MS : 0;
 	log("TC Server") << "Hydration snapshot for client " << client->get_NAME().get_full_name() << ": " << pending.entries.size()
-	                 << " allow-listed objects, " << requestCount << " value requests sent" << std::endl;
+	                 << " hydratable objects, " << requestCount << " value requests sent" << std::endl;
 	pendingHydration = std::move(pending);
 	return HydrationStartResult::Started;
 }

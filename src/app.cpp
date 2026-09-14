@@ -895,7 +895,7 @@ void Application::update_hydration_snapshot()
 		else
 		{
 			// Same client the Implement page shows, see update_vt_status_strings()
-			switch (tcServer->begin_hydration_snapshot(clients.begin()->first, settings->get_ddop_hydration_allow_list()))
+			switch (tcServer->begin_hydration_snapshot(clients.begin()->first))
 			{
 				case MyTCServer::HydrationStartResult::Started:
 					send_hardware_message("DDOP snapshot started", 5, HW_MSG_INFO);

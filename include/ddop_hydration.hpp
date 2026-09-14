@@ -3,7 +3,7 @@
  *
  * A client's canonical DDOP describes structure only: DeviceProcessData objects carry no value,
  * those arrive later as process data value commands. A hydrated snapshot is a derived copy of the
- * canonical pool in which allow-listed DeviceProcessData objects are replaced by DeviceProperty
+ * canonical pool in which hydratable DeviceProcessData objects are replaced by DeviceProperty
  * objects (same object ID, DDI, designator and presentation) holding the latest known value, so
  * external tools such as AgIsoDDOPGenerator can show those values.
  *
@@ -18,33 +18,22 @@
 #include <cstdint>
 #include <filesystem>
 #include <map>
-#include <set>
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace ddop_hydration
 {
-	/// @brief Which objects are eligible for hydration. Configurable through settings.json ("ddopHydration").
-	struct AllowList
-	{
-		bool includeDeviceProperties = true; ///< Tier one: DeviceProperty objects (value already in the pool)
-		std::set<std::uint16_t> processDataDDIs; ///< Tier two: on-change DeviceProcessData DDIs (geometry/configuration-like)
-		std::uint32_t requestWaitSeconds = 7; ///< How long to wait for responses to on-demand value requests
+	/// @brief How long a snapshot waits for answers to its value requests
+	constexpr std::uint32_t REQUEST_WAIT_MS = 10000;
 
-		static constexpr std::uint32_t MIN_REQUEST_WAIT_SECONDS = 1;
-		static constexpr std::uint32_t MAX_REQUEST_WAIT_SECONDS = 60;
+	/// @brief DDIs that are never hydrated: totals, setpoints and transient state such as work states,
+	/// section control state and actual rates.
+	bool is_always_excluded(std::uint16_t ddi);
 
-		/// @brief Working widths, device element offsets and the reference point to ground distance
-		static AllowList defaults();
-
-		/// @brief DDIs that are never hydrated regardless of configuration: totals and transient state
-		/// such as work states, section control state and actual rates.
-		static bool is_always_excluded(std::uint16_t ddi);
-
-		/// @brief Whether a pool object is eligible for hydration under this allow list
-		bool is_eligible(const isobus::task_controller_object::Object &object) const;
-	};
+	/// @brief Whether a pool object is part of a snapshot, decided from the pool alone: every DeviceProperty,
+	/// and every DeviceProcessData that reports on change, is not a total and is not always excluded.
+	bool is_hydratable(const isobus::task_controller_object::Object &object);
 
 	/// @brief The latest process data value reported by a client for one object
 	struct ShadowValue
@@ -122,7 +111,7 @@ namespace ddop_hydration
 
 	/// @brief Prefix added to the Device designator of a snapshot
 	constexpr const char *SNAPSHOT_DESIGNATOR_PREFIX = "SNAP ";
-	/// @brief Marker in snapshot file names: "<label>.SNAP-<timestamp>.iop" next to "<label>.ddop"
+	/// @brief Marker in snapshot file names: "<label>.SNAP-<timestamp>.ddop" next to "<label>.ddop"
 	constexpr const char *SNAPSHOT_FILENAME_MARKER = ".SNAP-";
 
 	/// @brief Clones the canonical pool, patches in the entries' values and writes the snapshot plus a JSON sidecar

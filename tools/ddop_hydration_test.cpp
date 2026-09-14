@@ -31,11 +31,12 @@ namespace
 	}
 
 	constexpr std::uint16_t OFFSET_X_ID = 10; // on-change, live value known
-	constexpr std::uint16_t WIDTH_TOTAL_ID = 11; // allow-listed DDI but flagged as a total
+	constexpr std::uint16_t WIDTH_TOTAL_ID = 11; // on-change but flagged as a total
 	constexpr std::uint16_t WORK_STATE_ID = 12; // always excluded
-	constexpr std::uint16_t OFFSET_Y_PROPERTY_ID = 13; // tier one property
+	constexpr std::uint16_t OFFSET_Y_PROPERTY_ID = 13; // device property
 	constexpr std::uint16_t OFFSET_Z_ID = 14; // on-change, requested but never answered
-	constexpr std::uint16_t MAX_WIDTH_INTERVAL_ID = 15; // allow-listed DDI without an on-change trigger
+	constexpr std::uint16_t MAX_WIDTH_INTERVAL_ID = 15; // no on-change trigger
+	constexpr std::uint16_t SETPOINT_ID = 16; // on-change setpoint
 	constexpr std::uint16_t SECTION_ELEMENT_ID = 2;
 	constexpr std::uint16_t SECTION_ELEMENT_NUMBER = 1;
 
@@ -58,9 +59,10 @@ namespace
 		pool.add_device_property("Offset Y", 500, static_cast<std::uint16_t>(DataDescriptionIndex::DeviceElementOffsetY), isobus::NULL_OBJECT_ID, OFFSET_Y_PROPERTY_ID);
 		pool.add_device_process_data("Offset Z", static_cast<std::uint16_t>(DataDescriptionIndex::DeviceElementOffsetZ), isobus::NULL_OBJECT_ID, 0, triggers(Trigger::OnChange), OFFSET_Z_ID);
 		pool.add_device_process_data("Max width", static_cast<std::uint16_t>(DataDescriptionIndex::MaximumWorkingWidth), isobus::NULL_OBJECT_ID, 0, triggers(Trigger::TimeInterval), MAX_WIDTH_INTERVAL_ID);
+		pool.add_device_process_data("Setpoint width", static_cast<std::uint16_t>(DataDescriptionIndex::SetpointWorkingWidth), isobus::NULL_OBJECT_ID, 2, triggers(Trigger::OnChange), SETPOINT_ID);
 
 		auto section = std::static_pointer_cast<DeviceElementObject>(pool.get_object_by_id(SECTION_ELEMENT_ID));
-		for (std::uint16_t child : { OFFSET_X_ID, WIDTH_TOTAL_ID, WORK_STATE_ID, OFFSET_Y_PROPERTY_ID, OFFSET_Z_ID, MAX_WIDTH_INTERVAL_ID })
+		for (std::uint16_t child : { OFFSET_X_ID, WIDTH_TOTAL_ID, WORK_STATE_ID, OFFSET_Y_PROPERTY_ID, OFFSET_Z_ID, MAX_WIDTH_INTERVAL_ID, SETPOINT_ID })
 		{
 			section->add_reference_to_child_object(child);
 		}
@@ -74,14 +76,13 @@ int main()
 	std::vector<std::uint8_t> canonicalBinary;
 	check(canonicalPool.generate_binary_object_pool(canonicalBinary), "canonical test pool generates");
 
-	// Allow list
-	auto allowList = ddop_hydration::AllowList::defaults();
-	allowList.processDataDDIs.insert(static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualWorkState)); // must still be excluded
-	check(allowList.is_eligible(*canonicalPool.get_object_by_id(OFFSET_X_ID)), "on-change offset is eligible");
-	check(!allowList.is_eligible(*canonicalPool.get_object_by_id(WIDTH_TOTAL_ID)), "total is not eligible");
-	check(!allowList.is_eligible(*canonicalPool.get_object_by_id(WORK_STATE_ID)), "work state is not eligible even when configured");
-	check(allowList.is_eligible(*canonicalPool.get_object_by_id(OFFSET_Y_PROPERTY_ID)), "device property is eligible");
-	check(!allowList.is_eligible(*canonicalPool.get_object_by_id(MAX_WIDTH_INTERVAL_ID)), "process data without on-change is not eligible");
+	// Automatic eligibility
+	check(ddop_hydration::is_hydratable(*canonicalPool.get_object_by_id(OFFSET_X_ID)), "on-change offset is hydratable");
+	check(!ddop_hydration::is_hydratable(*canonicalPool.get_object_by_id(WIDTH_TOTAL_ID)), "total is not hydratable");
+	check(!ddop_hydration::is_hydratable(*canonicalPool.get_object_by_id(WORK_STATE_ID)), "work state is not hydratable");
+	check(!ddop_hydration::is_hydratable(*canonicalPool.get_object_by_id(SETPOINT_ID)), "setpoint is not hydratable");
+	check(ddop_hydration::is_hydratable(*canonicalPool.get_object_by_id(OFFSET_Y_PROPERTY_ID)), "device property is hydratable");
+	check(!ddop_hydration::is_hydratable(*canonicalPool.get_object_by_id(MAX_WIDTH_INTERVAL_ID)), "process data without on-change is not hydratable");
 
 	// Index
 	ddop_hydration::ProcessDataIndex index;

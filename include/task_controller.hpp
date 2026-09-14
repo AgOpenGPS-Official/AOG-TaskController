@@ -137,9 +137,9 @@ public:
 		UnknownClient
 	};
 
-	/// @brief Starts a hydrated DDOP snapshot for a client. Sends value requests for allow-listed
+	/// @brief Starts a hydrated DDOP snapshot for a client. Sends value requests for hydratable
 	/// objects without a known value; does not block. Finish it with poll_hydration_snapshot().
-	HydrationStartResult begin_hydration_snapshot(std::shared_ptr<isobus::ControlFunction> client, const ddop_hydration::AllowList &allowList);
+	HydrationStartResult begin_hydration_snapshot(std::shared_ptr<isobus::ControlFunction> client);
 
 	/// @brief Call from the main loop. Once the request wait has elapsed, writes the snapshot and returns true.
 	/// @param[out] result The outcome of the finished snapshot, only set when this returns true

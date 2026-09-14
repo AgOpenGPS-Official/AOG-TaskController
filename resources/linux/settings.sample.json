@@ -6,10 +6,5 @@
     "vtEnabled": true,
     "tcVersion": 3,
     "languageCode": "en",
-    "countryCode": "US",
-    "ddopHydration": {
-        "includeDeviceProperties": true,
-        "processDataDdis": [67, 68, 70, 134, 135, 136, 180],
-        "requestWaitSeconds": 7
-    }
+    "countryCode": "US"
 }

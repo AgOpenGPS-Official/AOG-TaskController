@@ -68,22 +68,7 @@ namespace ddop_hydration
 		}
 	} // namespace
 
-	AllowList AllowList::defaults()
-	{
-		AllowList allowList;
-		allowList.processDataDDIs = {
-			static_cast<std::uint16_t>(DataDescriptionIndex::ActualWorkingWidth),
-			static_cast<std::uint16_t>(DataDescriptionIndex::DefaultWorkingWidth),
-			static_cast<std::uint16_t>(DataDescriptionIndex::MaximumWorkingWidth),
-			static_cast<std::uint16_t>(DataDescriptionIndex::DeviceElementOffsetX),
-			static_cast<std::uint16_t>(DataDescriptionIndex::DeviceElementOffsetY),
-			static_cast<std::uint16_t>(DataDescriptionIndex::DeviceElementOffsetZ),
-			static_cast<std::uint16_t>(DataDescriptionIndex::DeviceReferencePointDRPtoGroundDistance),
-		};
-		return allowList;
-	}
-
-	bool AllowList::is_always_excluded(std::uint16_t ddi)
+	bool is_always_excluded(std::uint16_t ddi)
 	{
 		if ((ddi == static_cast<std::uint16_t>(DataDescriptionIndex::ActualWorkState)) ||
 		    (ddi == static_cast<std::uint16_t>(DataDescriptionIndex::SetpointWorkState)) ||
@@ -96,22 +81,21 @@ namespace ddop_hydration
 			return true;
 		}
 
-		// Totals and actual rates change continuously, so a snapshot of them is meaningless as structure.
+		// Totals and actual rates change continuously, and setpoints are commands from the TC,
+		// so a snapshot of them says nothing about the implement's configuration.
 		const std::string &name = isobus::DataDictionary::get_entry(ddi).name;
 		const bool isTotal = (name.find("Total") != std::string::npos);
 		const bool isActualRate = (name.rfind("Actual", 0) == 0) && (name.find("Rate") != std::string::npos);
-		return isTotal || isActualRate;
+		const bool isSetpoint = (name.rfind("Setpoint", 0) == 0);
+		return isTotal || isActualRate || isSetpoint;
 	}
 
-	bool AllowList::is_eligible(const isobus::task_controller_object::Object &object) const
+	bool is_hydratable(const isobus::task_controller_object::Object &object)
 	{
 		switch (object.get_object_type())
 		{
 			case ObjectTypes::DeviceProperty:
-			{
-				const auto &property = static_cast<const DevicePropertyObject &>(object);
-				return includeDeviceProperties && !is_always_excluded(property.get_ddi());
-			}
+				return true;
 
 			case ObjectTypes::DeviceProcessData:
 			{
@@ -120,8 +104,7 @@ namespace ddop_hydration
 				const std::uint8_t triggers = processData.get_trigger_methods_bitfield();
 				return (0 == (triggers & static_cast<std::uint8_t>(DeviceProcessDataObject::AvailableTriggerMethods::Total))) &&
 				  (0 != (triggers & static_cast<std::uint8_t>(DeviceProcessDataObject::AvailableTriggerMethods::OnChange))) &&
-				  !is_always_excluded(processData.get_ddi()) &&
-				  (processDataDDIs.count(processData.get_ddi()) > 0);
+				  !is_always_excluded(processData.get_ddi());
 			}
 
 			default:
@@ -317,7 +300,7 @@ namespace ddop_hydration
 
 		const std::string createdAt = local_timestamp("%Y-%m-%dT%H:%M:%S");
 		const std::string snapshotStem = input.fileStem + SNAPSHOT_FILENAME_MARKER + local_timestamp("%Y%m%d-%H%M%S");
-		result.ddopPath = Settings::get_filename_path(snapshotStem + ".iop");
+		result.ddopPath = Settings::get_filename_path(snapshotStem + ".ddop");
 		result.metadataPath = Settings::get_filename_path(snapshotStem + ".json");
 
 		std::ostringstream clientName;
@@ -327,7 +310,7 @@ namespace ddop_hydration
 			{ "kind", "AOG-TaskController hydrated DDOP snapshot" },
 			{ "notForReupload", true },
 			{ "note",
-			  "Derived debugging artifact, not an original upload. Allow-listed DeviceProcessData objects with a known value "
+			  "Derived debugging artifact, not an original upload. Hydratable DeviceProcessData objects with a known value "
 			  "were replaced by DeviceProperty objects with the same object ID, DDI, designator and presentation. "
 			  "The Device designator is prefixed with 'SNAP ' and the structure label is altered. Never upload this pool to a TC." },
 			{ "createdAt", createdAt },

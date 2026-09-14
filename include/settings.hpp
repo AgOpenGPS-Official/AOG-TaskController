@@ -9,8 +9,6 @@
 
 #pragma once
 
-#include "ddop_hydration.hpp"
-
 #include <array>
 #include <cstdint>
 #include <mutex>
@@ -143,12 +141,6 @@ public:
 	bool set_country_code(std::string code, bool save = true);
 
 	/**
-	 * @brief Get the allow list used for hydrated DDOP snapshots ("ddopHydration")
-	 * @return The allow list (by value; the copy is made under the lock)
-	 */
-	ddop_hydration::AllowList get_ddop_hydration_allow_list() const;
-
-	/**
 	 * @brief Get the absolute path to the settings file
 	 * @param filename The filename to get the path for
 	 * @return The absolute path to the settings file
@@ -180,5 +172,4 @@ private:
 	std::uint8_t tcVersion = DEFAULT_TC_VERSION;
 	std::string languageCode = DEFAULT_LANGUAGE_CODE;
 	std::string countryCode = DEFAULT_COUNTRY_CODE;
-	ddop_hydration::AllowList ddopHydrationAllowList = ddop_hydration::AllowList::defaults();
 };
