@@ -12,6 +12,7 @@
 
 #include "isobus/isobus/isobus_device_descriptor_object_pool_helpers.hpp"
 #include "isobus/isobus/isobus_task_controller_server.hpp"
+#include "isobus/utility/system_timing.hpp"
 
 #include <bitset>
 #include <fstream>
@@ -54,6 +55,7 @@ void ClientState::set_section_actual_state(std::uint8_t section, std::uint8_t st
 {
 	if (section < numberOfSections)
 	{
+		workStateFeedback.mark_direct_state(section);
 		sectionActualStates[section] = state;
 	}
 }
@@ -115,6 +117,10 @@ std::uint8_t ClientState::get_section_actual_state(std::uint8_t section) const
 		}
 
 		// For modern/old devices using condensed DDIs, check parent hierarchy
+		if (auto feedback = workStateFeedback.get(section, isobus::SystemTiming::get_timestamp_ms()))
+		{
+			return *feedback;
+		}
 		std::uint16_t elementNumber = get_element_number_for_section(section);
 		if (is_element_or_parent_off(elementNumber))
 		{
@@ -311,6 +317,12 @@ bool ClientState::is_element_or_parent_off(std::uint16_t elementNumber) const
 void ClientState::set_element_work_state(std::uint16_t elementNumber, bool isWorking)
 {
 	elementWorkStates[elementNumber] = isWorking;
+	workStateFeedback.update(elementNumber, isWorking, isobus::SystemTiming::get_timestamp_ms());
+}
+
+void ClientState::configure_actual_work_state_feedback()
+{
+	workStateFeedback.configure(pool, sectionToElementNumber);
 }
 
 bool ClientState::try_get_element_work_state(std::uint16_t elementNumber, bool &isWorking) const
@@ -473,6 +485,8 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 		{
 			state.set_element_number_for_section(i, sectionElementNumbers[i]);
 		}
+
+		state.configure_actual_work_state_feedback();
 
 		// Scan the DDOP to determine which section control method the device supports
 		bool hasCondensedSetpoint = false; // Modern: DDI 290+ (paired with DDI 289 for global work state)

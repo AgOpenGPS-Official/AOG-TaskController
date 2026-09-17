@@ -34,6 +34,7 @@ endif()
 
 set(BUILD_EXAMPLES OFF)
 set(BUILD_TESTING OFF)
+option(AOG_TC_BUILD_TESTS "Build hardware-independent TC regression tests" OFF)
 
 if(NOT DEFINED CAN_DRIVER)
   if(WIN32)
@@ -262,6 +263,11 @@ if(WIN32)
     FILES ${CMAKE_CURRENT_LIST_DIR}/lib/Usbcan64.dll
     DESTINATION bin
     COMPONENT applications)
+endif()
+
+if(AOG_TC_BUILD_TESTS)
+  enable_testing()
+  add_subdirectory(tests)
 endif()
 
 set(CPACK_PACKAGE_NAME ${PROJECT_NAME})
