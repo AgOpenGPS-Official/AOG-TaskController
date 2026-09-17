@@ -1,4 +1,5 @@
 #include "app.hpp"
+#include "async_streambuf.hpp"
 #include "crash_handler.hpp"
 #include "logging.cpp"
 #include "settings.hpp"
@@ -15,6 +16,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -29,6 +31,12 @@
 #endif
 
 static std::atomic_bool running = { true };
+
+// Constructed after any --log2file wrapping in prepare_application(), so it becomes the outermost
+// layer around std::cout and defers ALL of its flushing (console and, if enabled, file) to a
+// background thread. See async_streambuf.hpp for why: a blocked log line otherwise stalls the
+// same thread that drives ISOBUS transmit (Application::update()).
+static std::unique_ptr<AsyncStreambuf> asyncStdout;
 
 #if defined(_WIN32)
 // Window procedure to handle messages
@@ -302,6 +310,9 @@ static std::shared_ptr<isobus::CANHardwarePlugin> prepare_application(const std:
 	{
 		setup_file_logging();
 	}
+	// Installed last so it wraps whatever is already on std::cout (the console, or
+	// logging.cpp's TeeStreambuf) and can defer both equally.
+	asyncStdout = std::make_unique<AsyncStreambuf>(std::cout);
 
 	for (const std::string &arg : arguments)
 	{
