@@ -18,6 +18,7 @@
 #include <map>
 #include <mutex>
 #include <queue>
+#include "measurement_subscription_queue.hpp"
 #include "section_work_state_feedback.hpp"
 
 constexpr std::uint8_t NUMBER_SECTIONS_PER_CONDENSED_MESSAGE = 16;
@@ -57,6 +58,10 @@ public:
 	isobus::DeviceDescriptorObjectPool &get_pool();
 	bool are_measurement_commands_sent() const;
 	void mark_measurement_commands_sent();
+	MeasurementSubscriptionQueue &get_measurement_subscriptions()
+	{
+		return measurementSubscriptions;
+	}
 	std::uint16_t get_element_number_for_ddi(isobus::DataDescriptionIndex ddi) const;
 	void set_element_number_for_ddi(isobus::DataDescriptionIndex ddi, std::uint16_t elementNumber);
 	bool has_element_number_for_ddi(isobus::DataDescriptionIndex ddi) const;
@@ -66,6 +71,7 @@ public:
 	bool try_get_element_work_state(std::uint16_t elementNumber, bool &isWorking) const;
 
 private:
+	MeasurementSubscriptionQueue measurementSubscriptions;
 	SectionWorkStateFeedback workStateFeedback;
 	isobus::DeviceDescriptorObjectPool pool; ///< The device descriptor object pool (DDOP) for the TC
 	bool areMeasurementCommandsSent = false; ///< Whether or not the measurement commands have been sent
