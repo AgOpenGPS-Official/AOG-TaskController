@@ -364,13 +364,25 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 	// state.get_pool().set_task_controller_compatibility_level(get_active_client(partnerCF)->reportedVersion);
 	state.get_pool().set_task_controller_compatibility_level(static_cast<std::uint8_t>(TaskControllerVersion::SecondEditionDraft));
 
-	bool deserialized = false;
+	// Concatenate every queued chunk into one contiguous buffer before parsing. Each
+	// chunk here is a wire-level fragment of ONE logical pool (per the appendToPool
+	// contract in store_device_descriptor_object_pool()); the binary DDOP format has no
+	// concept of resuming a partially-parsed object, so feeding chunks to the
+	// deserializer one at a time only works if every chunk boundary happens to fall on
+	// an object boundary. Deserializing once against the fully reassembled bytes avoids
+	// that assumption entirely.
+	std::vector<std::uint8_t> combinedPool;
 	while (!uploadedPools[partnerCF].empty())
 	{
-		auto binaryPool = uploadedPools[partnerCF].front();
+		auto &chunk = uploadedPools[partnerCF].front();
+		combinedPool.insert(combinedPool.end(), chunk.begin(), chunk.end());
 		uploadedPools[partnerCF].pop();
-		deserialized = state.get_pool().deserialize_binary_object_pool(binaryPool.data(), static_cast<std::uint32_t>(binaryPool.size()), partnerCF->get_NAME());
 	}
+	// deserialize_binary_object_pool() reports success on an empty buffer (nothing to
+	// parse, nothing failed) — that's not a valid activation here, so it must be excluded
+	// explicitly rather than falling into the general parse call below.
+	bool deserialized = !combinedPool.empty() &&
+	  state.get_pool().deserialize_binary_object_pool(combinedPool.data(), static_cast<std::uint32_t>(combinedPool.size()), partnerCF->get_NAME());
 	if (deserialized)
 	{
 		log() << "Successfully deserialized device descriptor object pool." << std::endl;
@@ -607,6 +619,10 @@ void MyTCServer::on_client_timeout(std::shared_ptr<isobus::ControlFunction> part
 	// Cleanup the client state
 	std::cout << "[" << get_timestamp() << "] [TC Server] Client " << partner->get_NAME().get_full_name() << " has timed out!" << std::endl;
 	clients.erase(partner);
+	// A pool the client already uploaded before timing out is stale — if it's left in
+	// place, a fresh upload on reconnect lands on top of it in the queue below, and
+	// activate_object_pool() would deserialize both instead of just the new one.
+	uploadedPools.erase(partner);
 }
 
 void MyTCServer::on_client_version_received(std::shared_ptr<isobus::ControlFunction> clientControlFunction, std::uint8_t version)
@@ -695,9 +711,18 @@ bool MyTCServer::on_value_command(std::shared_ptr<isobus::ControlFunction> partn
 bool MyTCServer::store_device_descriptor_object_pool(std::shared_ptr<isobus::ControlFunction> partnerCF, const std::vector<std::uint8_t> &binaryPool, bool appendToPool)
 {
 	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
-	std::cout << "[" << get_timestamp() << "] [TC Server] Client " << partnerCF->get_NAME().get_full_name() << " requesting object pool transfer of " << binaryPool.size() << " bytes" << std::endl;
-	if (uploadedPools.find(partnerCF) == uploadedPools.end())
+	std::cout << "[" << get_timestamp() << "] [TC Server] Client " << partnerCF->get_NAME().get_full_name() << " requesting object pool transfer of " << binaryPool.size() << " bytes (append=" << appendToPool << ")" << std::endl;
+	auto existing = uploadedPools.find(partnerCF);
+	if (!appendToPool || existing == uploadedPools.end())
 	{
+		// A fresh (non-append) upload replaces anything queued for this client — a stale
+		// blob left over from an aborted previous attempt must never be deserialized
+		// alongside this one (see activate_object_pool()).
+		if (existing != uploadedPools.end() && !existing->second.empty())
+		{
+			std::cout << "[" << get_timestamp() << "] [TC Server] Client " << partnerCF->get_NAME().get_full_name()
+			          << " discarding " << existing->second.size() << " previously queued, unactivated chunk(s)" << std::endl;
+		}
 		uploadedPools[partnerCF] = std::queue<std::vector<std::uint8_t>>();
 	}
 	uploadedPools[partnerCF].push(binaryPool);
