@@ -24,6 +24,8 @@ jobs:
           mkdir build
           cmake -S . -B build -DBUILD_EXAMPLES=OFF -DBUILD_TESTING=OFF -DAOG_TC_VALIDATE_IOP=OFF -Wno-dev
           cmake --build build --config Release --target package
+      - name: Regression tests
+        run: ctest --test-dir build -C Release --output-on-failure
       - name: 'Upload Windows Installer'
         uses: actions/upload-artifact@v4
         with:
@@ -55,6 +57,8 @@ jobs:
         run: cmake -S . -B build -G Ninja -DBUILD_EXAMPLES=OFF -DBUILD_TESTING=OFF -DAOG_TC_VALIDATE_IOP=OFF -DCMAKE_BUILD_TYPE=Release -Wno-dev
       - name: Build
         run: cmake --build build --config Release
+      - name: Regression tests
+        run: ctest --test-dir build -C Release --output-on-failure
       - name: Stage tarball
         run: |
           set -euo pipefail
