@@ -43,11 +43,11 @@ namespace
 		ok = ok && pool.add_device_element("Device", 1, 0, Element::Type::Device, 1);
 		ok = ok && pool.add_device_element("Boom", 2, 1, Element::Type::Function, 2);
 		ok = ok && pool.add_device_element("Section", 4, 2, Element::Type::Section, 4);
-		ok = ok && pool.add_device_process_data("Section Control State", 160, isobus::NULL_OBJECT_ID, 0, 0, 160);
-		ok = ok && pool.add_device_process_data("Working width (boom)", 67, isobus::NULL_OBJECT_ID, 0, 0, 267);
-		ok = ok && pool.add_device_process_data("Working width (section)", 67, isobus::NULL_OBJECT_ID, 0, 0, 467);
-		ok = ok && pool.add_device_process_data("Rate", 134, isobus::NULL_OBJECT_ID, 0, 0, 434);
-		ok = ok && pool.add_device_process_data("Area", 135, isobus::NULL_OBJECT_ID, 0, 0, 435);
+		ok = ok && pool.add_device_process_data("Section Control State", 160, 0xFFFF, 0, 0, 160);
+		ok = ok && pool.add_device_process_data("Working width (boom)", 67, 0xFFFF, 0, 0, 267);
+		ok = ok && pool.add_device_process_data("Working width (section)", 67, 0xFFFF, 0, 0, 467);
+		ok = ok && pool.add_device_process_data("Rate", 134, 0xFFFF, 0, 0, 434);
+		ok = ok && pool.add_device_process_data("Area", 135, 0xFFFF, 0, 0, 435);
 		if (!ok)
 		{
 			return false;
@@ -78,7 +78,7 @@ namespace
 		ok = ok && pool.add_device("Stale Planter", "1", "SN2", "OLD1", {}, {}, 0x9999);
 		ok = ok && pool.add_device_element("Device", 1, 0, Element::Type::Device, 900);
 		ok = ok && pool.add_device_element("Row unit", 9, 900, Element::Type::Section, 901);
-		ok = ok && pool.add_device_process_data("Stale DDI", 999, isobus::NULL_OBJECT_ID, 0, 0, 902);
+		ok = ok && pool.add_device_process_data("Stale DDI", 999, 0xFFFF, 0, 0, 902);
 		if (!ok)
 		{
 			return false;
