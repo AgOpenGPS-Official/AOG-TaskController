@@ -743,7 +743,8 @@ bool Application::update()
 	// Send Task Controller Status message every 2 seconds (ISO 11783-10 B.8.1)
 	{
 		static std::uint32_t lastLateWarningMs = 0;
-		if ((0 != lastTCStatusTransmit) && isobus::SystemTiming::time_expired_ms(lastTCStatusTransmit, 2500) &&
+		if ((0 != lastTCStatusTransmit) && tcCF && tcCF->get_address_valid() &&
+		    isobus::SystemTiming::time_expired_ms(lastTCStatusTransmit, 2500) &&
 		    isobus::SystemTiming::time_expired_ms(lastLateWarningMs, 2500))
 		{
 			// The 2000ms trigger below already fired late — Application::update() (or something

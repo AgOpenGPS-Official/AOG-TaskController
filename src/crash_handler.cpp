@@ -67,7 +67,12 @@ namespace
 void log_crash(const std::string &reason)
 {
 	std::ofstream out(crash_file_path(".log"), std::ios::app);
-	std::ostream &sink = out.is_open() ? static_cast<std::ostream &>(out) : std::cout;
+	// std::cerr, not std::cout: main.cpp wraps std::cout in an AsyncStreambuf that defers
+	// writes to a background thread, but the abnormal-termination paths that call this
+	// (SEH filter, std::terminate handler, a POSIX signal's _exit()) skip static
+	// destructors, so anything only queued and not yet drained would be lost right when
+	// it matters most. std::cerr is never wrapped and stays synchronous.
+	std::ostream &sink = out.is_open() ? static_cast<std::ostream &>(out) : std::cerr;
 	sink << "[" << get_timestamp() << "] [Crash] " << reason << std::endl;
 }
 
