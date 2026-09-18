@@ -196,7 +196,7 @@ if(AOG_TC_RUN_UNIT_TESTS)
   target_compile_features(ddop_reupload_test PRIVATE cxx_std_20)
   set_target_properties(ddop_reupload_test PROPERTIES CXX_EXTENSIONS OFF)
   target_link_libraries(ddop_reupload_test PRIVATE isobus::Isobus
-                                                    isobus::Utility)
+                                                   isobus::Utility)
   add_test(NAME ddop_reupload COMMAND ddop_reupload_test)
 endif()
 
