@@ -509,6 +509,82 @@ void Application::setup_udp_connections()
 			log() << "Received request from AOG to change section control state to " << (sectionControlState == 1 ? "enabled" : "disabled") << std::endl;
 			tcServer->update_section_control_enabled(sectionControlState == 1);
 		}
+		else if (pgn == 0xEF) // 239 - Machine Data
+		{
+			// Not parsed; only counts as AOG liveness.
+			lastAogPacketMs = isobus::SystemTiming::get_timestamp_ms();
+		}
+		else if (pgn == 0xF3) // 243 - Field Name
+		{
+			lastAogPacketMs = isobus::SystemTiming::get_timestamp_ms();
+
+			// The whole payload IS the UTF-8 field name — no length prefix, no offset.
+			// Confirmed against a live packet: a documented "length byte at offset 4,
+			// name at offset 5+" layout does not match what AOG actually sends — the
+			// payload was exactly N raw UTF-8 name bytes, nothing else. An empty
+			// payload means the field is closed.
+			if (data.empty())
+			{
+				if (hasActiveField)
+				{
+					log("Field") << "Field closed: " << currentFieldName << std::endl;
+				}
+				currentFieldName.clear();
+				hasActiveField = false;
+				// Invalidate any in-flight track context immediately — broadcasting
+				// DDI 508 without a field to scope it to would defeat the point of the
+				// field index folded into it below.
+				currentTrackContext.valid = false;
+			}
+			else
+			{
+				constexpr std::size_t MAX_FIELD_NAME_BYTES = 248;
+				std::size_t nameLength = data.size();
+				if (nameLength > MAX_FIELD_NAME_BYTES)
+				{
+					log("Field") << "PGN 0xF3 name of " << nameLength << " bytes exceeds the documented "
+					             << MAX_FIELD_NAME_BYTES << "-byte max; truncating." << std::endl;
+					nameLength = MAX_FIELD_NAME_BYTES;
+				}
+
+				std::string fieldName(reinterpret_cast<const char *>(data.data()), nameLength);
+				if (fieldName != currentFieldName || !hasActiveField)
+				{
+					currentFieldName = fieldName;
+					currentFieldIndex = fieldRegistry.get_or_assign_index(fieldName);
+					hasActiveField = true;
+					log("Field") << "Field opened: " << currentFieldName << " (index " << currentFieldIndex << ")" << std::endl;
+				}
+			}
+		}
+		else if (pgn == 0xF4) // 244 - Guidance Track Context
+		{
+			lastAogPacketMs = isobus::SystemTiming::get_timestamp_ms();
+
+			// Always update currentTrackContext: when AOG sends valid=false
+			// (guidance off / no active track), the context must be invalidated
+			// so the TC stops broadcasting stale track data.
+			// Note: parse() handles short-payload validation internally.
+			currentTrackContext = trackProvider.parse(data);
+
+			// AOG's own guidance reference ID (see GuidanceTrackProvider) is only unique
+			// within whichever field AOG currently has open — fold in the field's own
+			// persistent index (upper 16 bits) so DDI 508 is unique across fields too.
+			// Without an active field, there's nothing to scope the ID to — don't send it.
+			if (currentTrackContext.valid)
+			{
+				if (hasActiveField)
+				{
+					currentTrackContext.guidanceReferenceLineId =
+					  (static_cast<std::uint32_t>(currentFieldIndex) << 16) |
+					  (currentTrackContext.guidanceReferenceLineId & 0xFFFFu);
+				}
+				else
+				{
+					currentTrackContext.valid = false;
+				}
+			}
+		}
 		else if (pgn == 0xF2 && data.size() >= 6) // Process Data
 		{
 			lastAogPacketMs = isobus::SystemTiming::get_timestamp_ms();
@@ -767,7 +843,31 @@ bool Application::update()
 		lastGnssSendMs = isobus::SystemTiming::get_timestamp_ms();
 	}
 
+	// Send guidance track data (DDI 507-511, 513) to implements every 250 ms
+	static std::uint32_t lastTrackSendMs = 0;
+	if (tcServer && isobus::SystemTiming::time_expired_ms(lastTrackSendMs, 250))
+	{
+		// AOG only sends PGN 0xF4 when the guidance track actually changes (no heartbeat) —
+		// long gaps between packets are the normal state while driving straight, not staleness.
+		// Only clear the context on a real AOG disconnect (edge-triggered, not every tick).
+		const bool aogConnectedNow = is_aog_connected();
+		if (!aogConnectedNow && aogWasConnectedForTrack)
+		{
+			currentTrackContext.valid = false;
+			trackProvider.reset(); // Treat next packet as fresh start after the gap
+		}
+		aogWasConnectedForTrack = aogConnectedNow;
+
+		tcServer->send_guidance_track_data(currentTrackContext, lastXteValue);
+		lastTrackSendMs = isobus::SystemTiming::get_timestamp_ms();
+	}
+
 	return true;
+}
+
+bool Application::is_aog_connected() const
+{
+	return (lastAogPacketMs != 0) && !isobus::SystemTiming::time_expired_ms(lastAogPacketMs, AOG_CONNECTION_TIMEOUT_MS);
 }
 
 void Application::send_hardware_message(const std::string &text, std::uint8_t duration, std::uint8_t color)
@@ -1209,7 +1309,7 @@ void Application::update_vt_client()
 
 	sync_vt_config_once();
 
-	const bool aogConnected = (lastAogPacketMs != 0) && !isobus::SystemTiming::time_expired_ms(lastAogPacketMs, 3000);
+	const bool aogConnected = is_aog_connected();
 	vtUpdateHelper->set_numeric_value(VTSpeedValue, aogConnected ? static_cast<std::uint32_t>(std::abs(lastSpeedValue)) : 0U);
 
 	vtUpdateHelper->set_numeric_value(VTXteValue, aogConnected ? (static_cast<std::uint32_t>(lastXteValue) ^ 0x80000000U) : 0x80000000U);

@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include "guidance_track_context.hpp"
 #include "isobus/isobus/isobus_data_dictionary.hpp"
 #include "isobus/isobus/isobus_device_descriptor_object_pool.hpp"
 #include "isobus/isobus/isobus_standard_data_description_indices.hpp"
@@ -63,6 +64,11 @@ public:
 	void set_element_work_state(std::uint16_t elementNumber, bool isWorking);
 	bool try_get_element_work_state(std::uint16_t elementNumber, bool &isWorking) const;
 
+	/// @brief Advances the DDI 507 sequence number if the track or reference line differs from the
+	/// last one announced to this client, and remembers the new values.
+	/// @returns The sequence number to announce.
+	std::uint32_t update_guidance_track_sequence(std::int32_t trackNumber, std::uint32_t referenceLineId);
+
 private:
 	isobus::DeviceDescriptorObjectPool pool; ///< The device descriptor object pool (DDOP) for the TC
 	bool areMeasurementCommandsSent = false; ///< Whether or not the measurement commands have been sent
@@ -79,6 +85,9 @@ private:
 	bool isSectionControlEnabled = false; ///< Stores auto vs manual mode setting
 	bool usesPerElementControl = false; ///< Legacy mode: use per-element setpoint instead of condensed
 	std::uint16_t perElementSetpointDDI = 0; ///< The DDI to use for per-element setpoints (289 or 141), 0 if not applicable
+	std::int32_t lastSentTrackNumber = 0; ///< Last track number announced, for DDI 507 change detection
+	std::uint32_t lastSentReferenceLineId = 0; ///< Last reference line ID announced, for DDI 507 change detection
+	std::uint32_t guidanceTrackSequenceNumber = 0; ///< Per-client DDI 507 sequence number
 };
 
 // Create the task controller server object, this will handle all the ISOBUS communication for us
@@ -119,6 +128,12 @@ public:
 	/// @brief Sends GNSS quality (DDI 514) to every client that declares that DDI.
 	/// @param quality NMEA 2000 GNSS Method: 0=No GNSS, 1=GNSS, 2=DGNSS, 3=Precise, 4=RTK Fixed, 5=RTK Float, 6=Estimated, 7=Manual, 8=Simulated
 	void send_gnss_quality(std::uint8_t quality);
+
+	/// @brief Announces the current guidance track (DDI 507-511) and line deviation (DDI 513) to every
+	/// client that declares those DDIs. Does nothing while the context is not valid.
+	/// @param ctx Current guidance track state from AOG
+	/// @param lineDeviationMm Deviation from the guidance line in mm
+	void send_guidance_track_data(const GuidanceTrackContext &ctx, std::int32_t lineDeviationMm);
 
 private:
 	void send_section_setpoint_states(std::shared_ptr<isobus::ControlFunction> client, std::uint8_t ddiOffset);

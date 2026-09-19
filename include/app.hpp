@@ -22,6 +22,8 @@
 #include "isobus/isobus/isobus_virtual_terminal_client_update_helper.hpp"
 #include "isobus/isobus/nmea2000_message_interface.hpp"
 
+#include "field_registry.hpp"
+#include "guidance_track_context.hpp"
 #include "logging_utils.hpp"
 #include "settings.hpp"
 #include "task_controller.hpp"
@@ -76,6 +78,8 @@ private:
 	static constexpr std::uint8_t HW_MSG_ALERT = 0;
 	static constexpr std::uint8_t HW_MSG_INFO = 1;
 
+	bool is_aog_connected() const;
+
 	std::shared_ptr<Settings> settings = std::make_shared<Settings>();
 	boost::asio::io_context ioContext = boost::asio::io_context();
 	std::shared_ptr<UdpConnections> udpConnections = std::make_shared<UdpConnections>(settings, ioContext);
@@ -104,6 +108,21 @@ private:
 	std::uint8_t gnssFixQuality = 0; ///< AOG fix quality (NMEA 2000 GNSS Method): 0=invalid, 1=GPS, 2=DGPS, 3=PPS, 4=RTK Fix, 5=Float, 6=Estimated, 7=Manual, 8=Simulated
 	std::uint32_t lastGnssQualityMs = 0; ///< Timestamp of last PGN 0xD6 fix-quality update (0 = never received)
 	static constexpr std::uint32_t GNSS_QUALITY_TIMEOUT_MS = 2000; ///< No PGN 0xD6 for this long = fix quality unknown
+	static constexpr std::uint32_t AOG_CONNECTION_TIMEOUT_MS = 3000; ///< No AOG packet for this long = disconnected
+
+	// Guidance track context — real data from AOG PGN 0xF4.
+	GuidanceTrackProvider trackProvider;
+	GuidanceTrackContext currentTrackContext;
+	bool aogWasConnectedForTrack = false; ///< Edge-detection for AOG connect/disconnect transitions
+
+	// Field identity — from AOG PGN 0xF3. Folded into the upper 16 bits of DDI 508
+	// (see the PGN 0xF4 handling in setup_udp_connections()) so a track's guidance reference
+	// line ID is unique across fields, not just within whichever field AOG currently has open.
+	FieldRegistry fieldRegistry;
+	std::string currentFieldName; ///< Empty when no field is open
+	std::uint16_t currentFieldIndex = 0;
+	bool hasActiveField = false;
+
 	std::uint32_t lastDistanceMm = 0;
 	std::uint32_t lastAogPacketMs = 0;
 	std::uint32_t vtDisconnectedSinceMs = 0;
