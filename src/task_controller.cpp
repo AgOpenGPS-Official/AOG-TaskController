@@ -41,8 +41,8 @@ static std::string sanitize_filename(const std::string &input)
 static bool is_actual_tramline_condensed_work_state_ddi(std::uint16_t ddi)
 {
 	return (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualTramlineCondensedWorkState1_16)) ||
-	       (ddi >= static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualTramlineCondensedWorkState17_32) &&
-	        ddi <= static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualTramlineCondensedWorkState241_256));
+	  (ddi >= static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualTramlineCondensedWorkState17_32) &&
+	   ddi <= static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualTramlineCondensedWorkState241_256));
 }
 
 void ClientState::set_number_of_sections(std::uint8_t number)
