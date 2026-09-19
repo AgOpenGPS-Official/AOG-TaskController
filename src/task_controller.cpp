@@ -689,7 +689,7 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 		// === Tramline capability detection ===
 		// Scan DDOP for tramline-related DDIs to build element number mappings.
 		// NOTE: We do NOT infer supported levels from DDI presence here.
-		// The actual supported-level bitmask comes from DDI 505 (TramlineControlLevel)
+		// The actual supported-level bitmask comes from DDI 505 (SupportedTrackControlLevels)
 		// which the implement reports after activation. See on_value_command() DDI 505 handler.
 		bool hasTramlineControlLevel = false;
 		bool hasSetpointTramlineControlLevel = false;
@@ -705,16 +705,16 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 			auto pd = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceProcessDataObject>(obj);
 			auto ddi = pd->get_ddi();
 
-			if (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::TramlineControlLevel))
+			if (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SupportedTrackControlLevels))
 				hasTramlineControlLevel = true;
-			else if (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SetpointTramlineControlLevel))
+			else if (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SetpointTrackControlLevel))
 				hasSetpointTramlineControlLevel = true;
-			else if (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::TramlineControlState))
+			else if (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::TrackControlState))
 				hasTramlineControlState = true;
-			else if (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualTrackNumber) ||
-			         ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::TrackNumberToTheRight) ||
-			         ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::TrackNumberToTheLeft) ||
-			         ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::UniqueABGuidanceReferenceLineID))
+			else if (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualGuidanceTrackNumber) ||
+			         ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::GuidanceTrackNumberToTheRight) ||
+			         ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::GuidanceTrackNumberToTheLeft) ||
+			         ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::UniqueGuidanceReferenceLineID))
 				hasTrackDDIs = true;
 		}
 
@@ -906,12 +906,12 @@ bool MyTCServer::on_value_command(std::shared_ptr<isobus::ControlFunction> partn
 		break;
 
 		// Tramline DDIs — store actual values reported by implement
-		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::TramlineControlLevel):
+		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SupportedTrackControlLevels):
 		{
 			// DDI 505: Implement reports its supported tramline levels as a BITMASK.
 			// Bit 0 = Level 1 (track info), Bit 1 = Level 2 (extended setup), Bit 2 = Level 3 (TC calculates)
 			// Example: value=3 means Level 1 + Level 2 supported (NOT "Level 3").
-			// Handshake: respond by writing DDI 506 (SetpointTramlineControlLevel) = what we want to use.
+			// Handshake: respond by writing DDI 506 (SetpointTrackControlLevel) = what we want to use.
 			// IMPORTANT: DDI 505 is a BITMASK, but DDI 506 is an ENUM:
 			//   0 = No common Level, 1 = Level 1, 2 = Level 2, 3 = Level 3
 			std::cout << "[" << get_timestamp() << "] [TC] Implement reports TramlineControlLevel=" << processDataValue
@@ -927,15 +927,15 @@ bool MyTCServer::on_value_command(std::shared_ptr<isobus::ControlFunction> partn
 			// even if the implement also advertises Level 2 or Level 3.
 			if (clients[partner].get_has_setpoint_tramline_control_level() &&
 			    !clients[partner].is_setpoint_level_sent() &&
-			    clients[partner].has_element_number_for_ddi(isobus::DataDescriptionIndex::SetpointTramlineControlLevel))
+			    clients[partner].has_element_number_for_ddi(isobus::DataDescriptionIndex::SetpointTrackControlLevel))
 			{
 				std::int32_t requestedLevel = 0; // No common level if implement doesn't support L1
 				if (processDataValue & 0x01) // Bit 0 = Level 1 support
 					requestedLevel = 1; // Request Level 1 (enum)
 
 				send_set_value(partner,
-				               static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SetpointTramlineControlLevel),
-				               clients[partner].get_element_number_for_ddi(isobus::DataDescriptionIndex::SetpointTramlineControlLevel),
+				               static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SetpointTrackControlLevel),
+				               clients[partner].get_element_number_for_ddi(isobus::DataDescriptionIndex::SetpointTrackControlLevel),
 				               requestedLevel);
 				clients[partner].set_setpoint_level_sent(true);
 				std::cout << "[" << get_timestamp() << "] [TC] Wrote SetpointTramlineControlLevel=" << requestedLevel
@@ -944,7 +944,7 @@ bool MyTCServer::on_value_command(std::shared_ptr<isobus::ControlFunction> partn
 		}
 		break;
 
-		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SetpointTramlineControlLevel):
+		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SetpointTrackControlLevel):
 		{
 			// DDI 506 echo — implement confirms the level we requested.
 			// When we receive this echo, the DDI 505/506 negotiation is complete
@@ -957,7 +957,7 @@ bool MyTCServer::on_value_command(std::shared_ptr<isobus::ControlFunction> partn
 		}
 		break;
 
-		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualTrackNumber):
+		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualGuidanceTrackNumber):
 		{
 			// DDI 509 echo from implement — store element mapping only.
 			// Track data flows through GuidanceTrackContext, not per-client storage.
@@ -967,7 +967,7 @@ bool MyTCServer::on_value_command(std::shared_ptr<isobus::ControlFunction> partn
 		}
 		break;
 
-		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::TramlineControlState):
+		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::TrackControlState):
 		{
 			clients[partner].set_actual_tramline_control_state(processDataValue);
 			clients[partner].set_element_number_for_ddi(
@@ -980,9 +980,9 @@ bool MyTCServer::on_value_command(std::shared_ptr<isobus::ControlFunction> partn
 			// Handle ActualTramlineCondensedWorkState DDIs (Level 3 feedback from implement)
 			if ((dataDescriptionIndex >= static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualTramlineCondensedWorkState1_16) &&
 			     dataDescriptionIndex <= static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualTramlineCondensedWorkState209_224)) ||
-			    dataDescriptionIndex == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::TramlineSequenceNumber) ||
-			    dataDescriptionIndex == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::TrackNumberToTheRight) ||
-			    dataDescriptionIndex == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::TrackNumberToTheLeft))
+			    dataDescriptionIndex == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::GuidanceTrackSequenceNumber) ||
+			    dataDescriptionIndex == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::GuidanceTrackNumberToTheRight) ||
+			    dataDescriptionIndex == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::GuidanceTrackNumberToTheLeft))
 			{
 				clients[partner].set_element_number_for_ddi(
 				  static_cast<isobus::DataDescriptionIndex>(dataDescriptionIndex), elementNumber);
@@ -1124,14 +1124,14 @@ void MyTCServer::request_measurement_commands()
 				auto ddi = processDataObject->get_ddi();
 
 				bool isTramlineDDI =
-				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualTrackNumber)) ||
-				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::TramlineControlLevel)) ||
-				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SetpointTramlineControlLevel)) ||
-				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::TramlineControlState)) ||
-				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::TramlineSequenceNumber)) ||
-				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::TrackNumberToTheRight)) ||
-				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::TrackNumberToTheLeft)) ||
-				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::UniqueABGuidanceReferenceLineID)) ||
+				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualGuidanceTrackNumber)) ||
+				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SupportedTrackControlLevels)) ||
+				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SetpointTrackControlLevel)) ||
+				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::TrackControlState)) ||
+				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::GuidanceTrackSequenceNumber)) ||
+				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::GuidanceTrackNumberToTheRight)) ||
+				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::GuidanceTrackNumberToTheLeft)) ||
+				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::UniqueGuidanceReferenceLineID)) ||
 				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::GuidanceLineSwathWidth)) ||
 				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::GuidanceLineDeviation)) ||
 				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::GNSSQuality)) ||
@@ -1336,12 +1336,12 @@ void MyTCServer::update_track_control_enabled(bool enabled)
 		// Only send DDI 515 to clients that have completed DDI 505/506 negotiation
 		// and have the TramlineControlState DDI in their DDOP.
 		if (client.second.is_track_negotiation_complete() &&
-		    client.second.has_element_number_for_ddi(isobus::DataDescriptionIndex::TramlineControlState))
+		    client.second.has_element_number_for_ddi(isobus::DataDescriptionIndex::TrackControlState))
 		{
 			// DDI 515 values: 0=manual/off, 1=automatic/on
 			send_set_value(client.first,
-			               static_cast<std::uint16_t>(isobus::DataDescriptionIndex::TramlineControlState),
-			               client.second.get_element_number_for_ddi(isobus::DataDescriptionIndex::TramlineControlState),
+			               static_cast<std::uint16_t>(isobus::DataDescriptionIndex::TrackControlState),
+			               client.second.get_element_number_for_ddi(isobus::DataDescriptionIndex::TrackControlState),
 			               enabled ? 1 : 0);
 			std::cout << "[" << get_timestamp() << "] [TC] TramlineControlState=" << (enabled ? "On" : "Off")
 			          << " (track control)" << std::endl;
@@ -1499,16 +1499,16 @@ void MyTCServer::send_tramline_track_data(const GuidanceTrackContext &ctx, std::
 
 			// Send DDIs in coherent ordering per the TRACK guideline:
 			// 507 (sequence) -> 508 (ref line ID) -> 509 (actual track) -> 510 (right) -> 511 (left)
-			if (state.has_element_number_for_ddi(isobus::DataDescriptionIndex::TramlineSequenceNumber))
+			if (state.has_element_number_for_ddi(isobus::DataDescriptionIndex::GuidanceTrackSequenceNumber))
 			{
-				trySend(isobus::DataDescriptionIndex::TramlineSequenceNumber,
+				trySend(isobus::DataDescriptionIndex::GuidanceTrackSequenceNumber,
 				        static_cast<std::int32_t>(state.get_tramline_sequence_number()));
 			}
-			trySend(isobus::DataDescriptionIndex::UniqueABGuidanceReferenceLineID,
+			trySend(isobus::DataDescriptionIndex::UniqueGuidanceReferenceLineID,
 			        static_cast<std::int32_t>(ctx.guidanceReferenceLineId));
-			trySend(isobus::DataDescriptionIndex::ActualTrackNumber, ctx.actualTrackNumber);
-			trySend(isobus::DataDescriptionIndex::TrackNumberToTheRight, ctx.trackNumberRight);
-			trySend(isobus::DataDescriptionIndex::TrackNumberToTheLeft, ctx.trackNumberLeft);
+			trySend(isobus::DataDescriptionIndex::ActualGuidanceTrackNumber, ctx.actualTrackNumber);
+			trySend(isobus::DataDescriptionIndex::GuidanceTrackNumberToTheRight, ctx.trackNumberRight);
+			trySend(isobus::DataDescriptionIndex::GuidanceTrackNumberToTheLeft, ctx.trackNumberLeft);
 
 			// Supplemental Level 1 DDIs
 			if (swathWidthMm > 0)

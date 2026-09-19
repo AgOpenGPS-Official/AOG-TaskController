@@ -136,8 +136,8 @@ private:
 	std::int32_t lastSentTrackNumber = 0; ///< Last track number sent, for DDI 507 change detection
 	std::uint32_t lastSentReferenceLineId = 0; ///< Last reference line ID sent, for DDI 507 change detection
 	std::uint32_t tramlineSequenceNumber = 0; ///< Per-client tramline sequence number (DDI 507)
-	bool hasTramlineControlLevelDDI = false; ///< Implement has DDI 505 (TramlineControlLevel)
-	bool hasSetpointTramlineControlLevelDDI = false; ///< Implement has DDI 506 (SetpointTramlineControlLevel)
+	bool hasTramlineControlLevelDDI = false; ///< Implement has DDI 505 (SupportedTrackControlLevels)
+	bool hasSetpointTramlineControlLevelDDI = false; ///< Implement has DDI 506 (SetpointTrackControlLevel)
 	bool setpointLevelSent = false; ///< Whether we've already written DDI 506
 	bool usesPerElementControl = false; ///< Legacy mode: use per-element setpoint instead of condensed
 	std::uint16_t perElementSetpointDDI = 0; ///< The DDI to use for per-element setpoints (289 or 141), 0 if not applicable
