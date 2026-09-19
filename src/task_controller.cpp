@@ -34,6 +34,37 @@ static std::string sanitize_filename(const std::string &input)
 	return result;
 }
 
+// Finds the number of the first device element that lists the process data object as a child.
+static bool find_owning_element_number(isobus::DeviceDescriptorObjectPool &pool,
+                                       const isobus::task_controller_object::DeviceProcessDataObject &processData,
+                                       std::uint16_t &elementNumber)
+{
+	for (std::uint32_t i = 0; i < pool.size(); i++)
+	{
+		auto object = pool.get_object_by_index(i);
+		if (!object || object->get_object_type() != isobus::task_controller_object::ObjectTypes::DeviceElement)
+		{
+			continue;
+		}
+
+		auto elementObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceElementObject>(object);
+		if (!elementObject)
+		{
+			continue;
+		}
+
+		for (std::uint16_t childId : elementObject->get_child_object_ids())
+		{
+			if (childId == processData.get_object_id())
+			{
+				elementNumber = elementObject->get_element_number();
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
 void ClientState::set_number_of_sections(std::uint8_t number)
 {
 	numberOfSections = number;
@@ -812,6 +843,37 @@ void MyTCServer::request_measurement_commands()
 				}
 			}
 
+			// Map GNSS quality (DDI 514) so send_gnss_quality() knows which element to address.
+			// Mapping only: this is a value the TC pushes to the implement, not one to subscribe to.
+			for (std::uint32_t i = 0; i < client.second.get_pool().size(); i++)
+			{
+				auto object = client.second.get_pool().get_object_by_index(i);
+				if (!object || object->get_object_type() != isobus::task_controller_object::ObjectTypes::DeviceProcessData)
+				{
+					continue;
+				}
+
+				auto processDataObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceProcessDataObject>(object);
+				if (!processDataObject || processDataObject->get_ddi() != static_cast<std::uint16_t>(isobus::DataDescriptionIndex::GNSSQuality))
+				{
+					continue;
+				}
+
+				if (!processDataObject->has_property(isobus::task_controller_object::DeviceProcessDataObject::PropertiesBit::Settable))
+				{
+					std::cout << "DDI " << processDataObject->get_ddi() << " (GNSS Quality) is declared but not settable, so it is not sent" << std::endl;
+					continue;
+				}
+
+				std::uint16_t elementNumber = 0;
+				if (find_owning_element_number(client.second.get_pool(), *processDataObject, elementNumber))
+				{
+					client.second.set_element_number_for_ddi(isobus::DataDescriptionIndex::GNSSQuality, elementNumber);
+					std::cout << "Mapped DDI " << processDataObject->get_ddi() << " (GNSS Quality) to element "
+					          << elementNumber << std::endl;
+				}
+			}
+
 			std::cout << "[" << get_timestamp() << "] Measurement commands sent." << std::endl;
 			client.second.mark_measurement_commands_sent();
 		}
@@ -880,6 +942,19 @@ void MyTCServer::update_section_control_enabled(bool enabled)
 		    client.second.get_number_of_sections() > 0)
 		{
 			send_section_control_state(client.first, enabled);
+		}
+	}
+}
+
+void MyTCServer::send_gnss_quality(std::uint8_t quality)
+{
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
+	constexpr auto DDI = isobus::DataDescriptionIndex::GNSSQuality;
+	for (auto &client : clients)
+	{
+		if (client.second.has_element_number_for_ddi(DDI))
+		{
+			send_set_value(client.first, static_cast<std::uint16_t>(DDI), client.second.get_element_number_for_ddi(DDI), static_cast<std::int32_t>(quality));
 		}
 	}
 }
