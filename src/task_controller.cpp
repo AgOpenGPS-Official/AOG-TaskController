@@ -84,6 +84,20 @@ static bool is_guidance_data_ddi(std::uint16_t ddi)
 	}
 }
 
+// The DDIs used to negotiate a track control level and report the control state.
+static bool is_track_control_ddi(std::uint16_t ddi)
+{
+	switch (static_cast<isobus::DataDescriptionIndex>(ddi))
+	{
+		case isobus::DataDescriptionIndex::SupportedTrackControlLevels:
+		case isobus::DataDescriptionIndex::SetpointTrackControlLevel:
+		case isobus::DataDescriptionIndex::TrackControlState:
+			return true;
+		default:
+			return false;
+	}
+}
+
 void ClientState::set_number_of_sections(std::uint8_t number)
 {
 	numberOfSections = number;
@@ -384,6 +398,36 @@ std::uint32_t ClientState::update_guidance_track_sequence(std::int32_t trackNumb
 		lastSentReferenceLineId = referenceLineId;
 	}
 	return guidanceTrackSequenceNumber;
+}
+
+int ClientState::get_supported_track_control_levels() const
+{
+	return supportedTrackControlLevels;
+}
+
+void ClientState::set_supported_track_control_levels(int levels)
+{
+	supportedTrackControlLevels = levels;
+}
+
+bool ClientState::is_track_control_level_sent() const
+{
+	return trackControlLevelSent;
+}
+
+void ClientState::set_track_control_level_sent(bool sent)
+{
+	trackControlLevelSent = sent;
+}
+
+bool ClientState::is_track_negotiation_complete() const
+{
+	return trackNegotiationComplete;
+}
+
+void ClientState::set_track_negotiation_complete(bool complete)
+{
+	trackNegotiationComplete = complete;
 }
 
 MyTCServer::MyTCServer(std::shared_ptr<isobus::InternalControlFunction> internalControlFunction,
@@ -749,6 +793,51 @@ bool MyTCServer::on_value_command(std::shared_ptr<isobus::ControlFunction> partn
 				}
 			}
 		}
+		break;
+
+		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SupportedTrackControlLevels):
+		{
+			// DDI 505 is a BITMASK: bit 0 = Level 1, bit 1 = Level 2, bit 2 = Level 3, so a value
+			// of 3 means Level 1 and 2 are supported (not "Level 3"). DDI 506, which the TC writes
+			// in answer, is an ENUM instead: 0 = no common level, 1 = Level 1, 2 = Level 2, 3 = Level 3.
+			log("TC") << "Implement reports supported track control levels=" << processDataValue
+			          << " (L1=" << ((processDataValue & static_cast<int>(TrackControlLevel::Level1)) ? "yes" : "no")
+			          << " L2=" << ((processDataValue & static_cast<int>(TrackControlLevel::Level2)) ? "yes" : "no")
+			          << " L3=" << ((processDataValue & static_cast<int>(TrackControlLevel::Level3)) ? "yes" : "no") << ")" << std::endl;
+			auto &state = clients[partner];
+			state.set_supported_track_control_levels(processDataValue);
+
+			// Only Level 1 is implemented, so ask for it whenever the implement supports it, even if it
+			// also advertises Level 2 or 3.
+			if (!state.is_track_control_level_sent() &&
+			    state.has_element_number_for_ddi(isobus::DataDescriptionIndex::SetpointTrackControlLevel))
+			{
+				const std::int32_t requestedLevel = (processDataValue & static_cast<int>(TrackControlLevel::Level1)) ? 1 : 0;
+				send_set_value(partner,
+				               static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SetpointTrackControlLevel),
+				               state.get_element_number_for_ddi(isobus::DataDescriptionIndex::SetpointTrackControlLevel),
+				               requestedLevel);
+				state.set_track_control_level_sent(true);
+				log("TC") << "Wrote track control level " << requestedLevel << std::endl;
+			}
+		}
+		break;
+
+		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SetpointTrackControlLevel):
+		{
+			// The implement's echo of the level we wrote completes the negotiation.
+			const bool agreed = (processDataValue == 1);
+			log("TC") << "Implement confirmed track control level " << processDataValue
+			          << (agreed ? " — negotiation complete" : " — no common level") << std::endl;
+			clients[partner].set_track_negotiation_complete(agreed);
+		}
+		break;
+
+		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::TrackControlState):
+		{
+			log("TC") << "Implement reports track control state=" << processDataValue << std::endl;
+		}
+		break;
 	}
 
 	return true;
@@ -905,6 +994,42 @@ void MyTCServer::request_measurement_commands()
 				}
 			}
 
+			// Map the track control DDIs. Unlike the guidance data above, the implement reports these
+			// (supported levels, the echo of the level we write, its control state), so subscribe to them.
+			for (std::uint32_t i = 0; i < client.second.get_pool().size(); i++)
+			{
+				auto object = client.second.get_pool().get_object_by_index(i);
+				if (!object || object->get_object_type() != isobus::task_controller_object::ObjectTypes::DeviceProcessData)
+				{
+					continue;
+				}
+
+				auto processDataObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceProcessDataObject>(object);
+				if (!processDataObject || !is_track_control_ddi(processDataObject->get_ddi()))
+				{
+					continue;
+				}
+
+				std::uint16_t elementNumber = 0;
+				if (!find_owning_element_number(client.second.get_pool(), *processDataObject, elementNumber))
+				{
+					continue;
+				}
+
+				const auto ddi = processDataObject->get_ddi();
+				const auto &entry = isobus::DataDictionary::get_entry(ddi);
+				client.second.set_element_number_for_ddi(static_cast<isobus::DataDescriptionIndex>(ddi), elementNumber);
+				if (processDataObject->has_trigger_method(isobus::task_controller_object::DeviceProcessDataObject::AvailableTriggerMethods::OnChange))
+				{
+					send_change_threshold_measurement_command(client.first, ddi, elementNumber, 1);
+					std::cout << "Subscribed (OnChange) to DDI " << ddi << " (" << entry.to_string() << ") for element " << elementNumber << std::endl;
+				}
+				else
+				{
+					std::cout << "Mapped (no OnChange) DDI " << ddi << " (" << entry.to_string() << ") to element " << elementNumber << std::endl;
+				}
+			}
+
 			std::cout << "[" << get_timestamp() << "] Measurement commands sent." << std::endl;
 			client.second.mark_measurement_commands_sent();
 		}
@@ -1023,6 +1148,22 @@ void MyTCServer::send_guidance_track_data(const GuidanceTrackContext &ctx, std::
 			trySend(isobus::DataDescriptionIndex::GuidanceLineSwathWidth, static_cast<std::int32_t>(ctx.swathWidthMm));
 		}
 		trySend(isobus::DataDescriptionIndex::GuidanceLineDeviation, lineDeviationMm);
+	}
+}
+
+void MyTCServer::update_track_control_enabled(bool enabled)
+{
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
+	constexpr auto DDI = isobus::DataDescriptionIndex::TrackControlState;
+	for (auto &client : clients)
+	{
+		// Only clients that agreed on a track control level get commanded.
+		if (client.second.is_track_negotiation_complete() && client.second.has_element_number_for_ddi(DDI))
+		{
+			// DDI 515 values: 0 = manual/off, 1 = automatic/on
+			send_set_value(client.first, static_cast<std::uint16_t>(DDI), client.second.get_element_number_for_ddi(DDI), enabled ? 1 : 0);
+			log("TC") << "Track control state=" << (enabled ? "On" : "Off") << std::endl;
+		}
 	}
 }
 

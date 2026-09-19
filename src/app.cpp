@@ -398,7 +398,13 @@ void Application::setup_task_controller_server()
 	  1,
 	  true);
 	tcFunctionalities->set_task_controller_section_control_server_option_state(1, 64);
-	log("Init") << "TC announced TC-BAS and TC-SC (1 boom / 64 sections) via PGN 64654" << std::endl;
+
+	// Announce the Task Controller TRACK Server (functionality 27), telling implements this TC
+	// negotiates a track control level. AgIsoStack has no enumerator for it yet, so cast the value.
+	constexpr auto TASK_CONTROLLER_TRACK_SERVER = static_cast<isobus::ControlFunctionFunctionalities::Functionalities>(27);
+	tcFunctionalities->set_functionality_is_supported(TASK_CONTROLLER_TRACK_SERVER, 1, true);
+
+	log("Init") << "TC announced TC-BAS, TC-SC (1 boom / 64 sections) and TC-TRACK via PGN 64654" << std::endl;
 }
 
 void Application::setup_tecu_interfaces()
@@ -508,6 +514,8 @@ void Application::setup_udp_connections()
 			std::uint8_t sectionControlState = data[0];
 			log() << "Received request from AOG to change section control state to " << (sectionControlState == 1 ? "enabled" : "disabled") << std::endl;
 			tcServer->update_section_control_enabled(sectionControlState == 1);
+			// Track control is separate from section control, even though the same AOG Auto command drives both.
+			tcServer->update_track_control_enabled(sectionControlState == 1);
 		}
 		else if (pgn == 0xEF) // 239 - Machine Data
 		{
@@ -1382,6 +1390,42 @@ void Application::update_vt_status_strings(bool aogConnected)
 	mainImplementStatus << "Name             " << implementDisplayName << '\n'
 	                    << "Sections         " << totalSections << '\n'
 	                    << "Section control  " << sectionControl;
+
+	// Live guidance track from AOG, plus the track control levels the implement reports (DDI 505)
+	{
+		std::string trackState = "OFF";
+		if (!aogConnected)
+		{
+			trackState = "n/a";
+		}
+		else if (currentTrackContext.valid)
+		{
+			trackState = "ref:" + std::to_string(currentTrackContext.guidanceReferenceLineId) +
+			  " track:" + std::to_string(currentTrackContext.actualTrackNumber);
+		}
+
+		int implementTrackLevels = 0;
+		for (const auto &client : clients)
+		{
+			if (client.second.get_supported_track_control_levels() != 0)
+			{
+				implementTrackLevels = client.second.get_supported_track_control_levels();
+				break;
+			}
+		}
+		std::string trackLevels;
+		if (implementTrackLevels & static_cast<int>(TrackControlLevel::Level1))
+			trackLevels += "L1 ";
+		if (implementTrackLevels & static_cast<int>(TrackControlLevel::Level2))
+			trackLevels += "L2 ";
+		if (implementTrackLevels & static_cast<int>(TrackControlLevel::Level3))
+			trackLevels += "L3 ";
+		if (trackLevels.empty())
+			trackLevels = "NONE";
+
+		mainImplementStatus << "\nTrack state      " << trackState
+		                    << "\nTrack levels     " << trackLevels;
+	}
 	send_vt_string_if_changed(VTSectionsFromAOGS, mainImplementStatus.str());
 
 	std::ostringstream distanceText;
