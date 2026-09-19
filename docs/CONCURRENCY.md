@@ -36,11 +36,12 @@ registered:
   deferred to any `update()` call: `VirtualTerminalClient` (confirmed: `process_rx_message` is
   registered via `add_global_parameter_group_number_callback` and invokes
   `softKeyEventDispatcher`/`buttonEventDispatcher`/`changeNumericValueEventDispatcher`/etc.
-  synchronously). Any raw
+  synchronously) and `TimeDateInterface` (same pattern — `process_rx_message` invokes
+  `timeAndDateEventDispatcher.invoke(...)` directly). Any raw
   `add_global_parameter_group_number_callback`/`add_any_control_function_parameter_group_number_callback`
-  registered directly in `app.cpp`/`tractor_facilities.cpp` (PGN-request handlers, diagnostic
-  loggers) is in this category too, unless proven otherwise the same way: read the registration
-  call, not the surrounding comments.
+  registered directly in `app.cpp`/`tractor_facilities.cpp` (PGN-request handlers, the FEE6
+  duplicate-provider listener, diagnostic loggers) is in this category too, unless proven
+  otherwise the same way: read the registration call, not the surrounding comments.
 
 If you're not sure which category a new callback falls into, trace it the way this file's history
 did: find where it's registered with `CANNetworkManager`/`ControlFunction` and check whether that
@@ -58,6 +59,14 @@ registration point itself defers to an `update()` call, or invokes the listener/
   take `clientsMutex` at its top, even though (per the note above) the `TaskControllerServer`
   overrides may turn out to already be main-thread-only — the lock is cheap insurance and keeps
   every entry point consistent regardless of how the library's internals might change.
+- **`Application::lastExternalFee6Ms` / `fee6Broadcasting`** (`app.hpp`/`.cpp`) — guarded by
+  `Application::fee6Mutex`. Written from both the `TimeDateInterface` listener (background thread)
+  and `Application::update()`'s FEE6 broadcast block (main thread) — confirmed via the
+  registration-tracing method above.
+- **`TractorFacilities::timeDateActive`** (`tractor_facilities.hpp`/`.cpp`) — `std::atomic<bool>`
+  rather than a mutex, since it's a single flag: written by `set_time_date_active()` (called from
+  both threads, same as above) and read by `build_payload()` (called both on power-up from the main
+  thread, and from the PGN 65033 request handler on the background thread).
 
 ## What's *not* protected yet — known gap
 
