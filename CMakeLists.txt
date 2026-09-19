@@ -159,6 +159,20 @@ if(AOG_TC_VALIDATE_IOP)
   add_test(NAME object_pool_attributes_in_range COMMAND iop_validator
                                                         "${AOG_TC_IOP_SOURCE}")
 
+  # GuidanceTrackProvider (AOG PGN 0xF4 parsing) unit tests. Made a dependency
+  # of iop_validator so the validation workflow, which builds only that target,
+  # also builds this test.
+  add_executable(
+    test_guidance_track
+    ${CMAKE_CURRENT_LIST_DIR}/tools/test_guidance_track.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/src/guidance_track_context.cpp)
+  target_compile_features(test_guidance_track PRIVATE cxx_std_20)
+  set_target_properties(test_guidance_track PROPERTIES CXX_EXTENSIONS OFF)
+  target_include_directories(test_guidance_track
+                             PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
+  add_dependencies(iop_validator test_guidance_track)
+  add_test(NAME guidance_track_parsing COMMAND test_guidance_track)
+
   # A deliberately broken pool, so the suite asserts more than "today's pool
   # passes". One case per message, since a shared exit code stays green as long
   # as any one check still fires.

@@ -65,6 +65,25 @@ static bool find_owning_element_number(isobus::DeviceDescriptorObjectPool &pool,
 	return false;
 }
 
+// The DDIs the TC pushes to implements as guidance data.
+static bool is_guidance_data_ddi(std::uint16_t ddi)
+{
+	switch (static_cast<isobus::DataDescriptionIndex>(ddi))
+	{
+		case isobus::DataDescriptionIndex::GNSSQuality:
+		case isobus::DataDescriptionIndex::GuidanceTrackSequenceNumber:
+		case isobus::DataDescriptionIndex::UniqueGuidanceReferenceLineID:
+		case isobus::DataDescriptionIndex::ActualGuidanceTrackNumber:
+		case isobus::DataDescriptionIndex::GuidanceTrackNumberToTheRight:
+		case isobus::DataDescriptionIndex::GuidanceTrackNumberToTheLeft:
+		case isobus::DataDescriptionIndex::GuidanceLineSwathWidth:
+		case isobus::DataDescriptionIndex::GuidanceLineDeviation:
+			return true;
+		default:
+			return false;
+	}
+}
+
 void ClientState::set_number_of_sections(std::uint8_t number)
 {
 	numberOfSections = number;
@@ -353,6 +372,18 @@ bool ClientState::try_get_element_work_state(std::uint16_t elementNumber, bool &
 		return true;
 	}
 	return false;
+}
+
+std::uint32_t ClientState::update_guidance_track_sequence(std::int32_t trackNumber, std::uint32_t referenceLineId)
+{
+	// A line switch can land on the same track index, so compare the reference line too.
+	if ((trackNumber != lastSentTrackNumber) || (referenceLineId != lastSentReferenceLineId))
+	{
+		guidanceTrackSequenceNumber++;
+		lastSentTrackNumber = trackNumber;
+		lastSentReferenceLineId = referenceLineId;
+	}
+	return guidanceTrackSequenceNumber;
 }
 
 MyTCServer::MyTCServer(std::shared_ptr<isobus::InternalControlFunction> internalControlFunction,
@@ -843,8 +874,8 @@ void MyTCServer::request_measurement_commands()
 				}
 			}
 
-			// Map GNSS quality (DDI 514) so send_gnss_quality() knows which element to address.
-			// Mapping only: this is a value the TC pushes to the implement, not one to subscribe to.
+			// Map the guidance DDIs so the send_* methods know which element to address.
+			// Mapping only: these are values the TC pushes to the implement, not ones to subscribe to.
 			for (std::uint32_t i = 0; i < client.second.get_pool().size(); i++)
 			{
 				auto object = client.second.get_pool().get_object_by_index(i);
@@ -854,22 +885,22 @@ void MyTCServer::request_measurement_commands()
 				}
 
 				auto processDataObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceProcessDataObject>(object);
-				if (!processDataObject || processDataObject->get_ddi() != static_cast<std::uint16_t>(isobus::DataDescriptionIndex::GNSSQuality))
+				if (!processDataObject || !is_guidance_data_ddi(processDataObject->get_ddi()))
 				{
 					continue;
 				}
 
 				if (!processDataObject->has_property(isobus::task_controller_object::DeviceProcessDataObject::PropertiesBit::Settable))
 				{
-					std::cout << "DDI " << processDataObject->get_ddi() << " (GNSS Quality) is declared but not settable, so it is not sent" << std::endl;
+					std::cout << "DDI " << processDataObject->get_ddi() << " (" << isobus::DataDictionary::get_entry(processDataObject->get_ddi()).to_string() << ") is declared but not settable, so it is not sent" << std::endl;
 					continue;
 				}
 
 				std::uint16_t elementNumber = 0;
 				if (find_owning_element_number(client.second.get_pool(), *processDataObject, elementNumber))
 				{
-					client.second.set_element_number_for_ddi(isobus::DataDescriptionIndex::GNSSQuality, elementNumber);
-					std::cout << "Mapped DDI " << processDataObject->get_ddi() << " (GNSS Quality) to element "
+					client.second.set_element_number_for_ddi(static_cast<isobus::DataDescriptionIndex>(processDataObject->get_ddi()), elementNumber);
+					std::cout << "Mapped DDI " << processDataObject->get_ddi() << " (" << isobus::DataDictionary::get_entry(processDataObject->get_ddi()).to_string() << ") to element "
 					          << elementNumber << std::endl;
 				}
 			}
@@ -956,6 +987,42 @@ void MyTCServer::send_gnss_quality(std::uint8_t quality)
 		{
 			send_set_value(client.first, static_cast<std::uint16_t>(DDI), client.second.get_element_number_for_ddi(DDI), static_cast<std::int32_t>(quality));
 		}
+	}
+}
+
+void MyTCServer::send_guidance_track_data(const GuidanceTrackContext &ctx, std::int32_t lineDeviationMm)
+{
+	if (!ctx.valid)
+	{
+		return;
+	}
+
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
+	for (auto &client : clients)
+	{
+		auto &state = client.second;
+
+		auto trySend = [&](isobus::DataDescriptionIndex ddi, std::int32_t value) {
+			if (state.has_element_number_for_ddi(ddi))
+			{
+				send_set_value(client.first, static_cast<std::uint16_t>(ddi), state.get_element_number_for_ddi(ddi), value);
+			}
+		};
+
+		const std::uint32_t sequenceNumber = state.update_guidance_track_sequence(ctx.actualTrackNumber, ctx.guidanceReferenceLineId);
+
+		// Coherent ordering per the TRACK guideline:
+		// 507 (sequence) -> 508 (ref line ID) -> 509 (actual track) -> 510 (right) -> 511 (left)
+		trySend(isobus::DataDescriptionIndex::GuidanceTrackSequenceNumber, static_cast<std::int32_t>(sequenceNumber));
+		trySend(isobus::DataDescriptionIndex::UniqueGuidanceReferenceLineID, static_cast<std::int32_t>(ctx.guidanceReferenceLineId));
+		trySend(isobus::DataDescriptionIndex::ActualGuidanceTrackNumber, ctx.actualTrackNumber);
+		trySend(isobus::DataDescriptionIndex::GuidanceTrackNumberToTheRight, ctx.trackNumberRight);
+		trySend(isobus::DataDescriptionIndex::GuidanceTrackNumberToTheLeft, ctx.trackNumberLeft);
+		if (ctx.swathWidthMm != 0)
+		{
+			trySend(isobus::DataDescriptionIndex::GuidanceLineSwathWidth, static_cast<std::int32_t>(ctx.swathWidthMm));
+		}
+		trySend(isobus::DataDescriptionIndex::GuidanceLineDeviation, lineDeviationMm);
 	}
 }
 
