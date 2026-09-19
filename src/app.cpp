@@ -195,7 +195,8 @@ bool Application::setup_can_hardware()
 	isobus::CANHardwareInterface::set_number_of_can_channels(1);
 	isobus::CANHardwareInterface::assign_can_channel_frame_handler(0, canDriver);
 
-	if ((!isobus::CANHardwareInterface::start()) || (!canDriver->get_is_valid()))
+	canHardwareStarted = isobus::CANHardwareInterface::start();
+	if ((!canHardwareStarted) || (!canDriver->get_is_valid()))
 	{
 		log() << "Failed to start CAN hardware interface." << std::endl;
 		return false;
@@ -1387,6 +1388,12 @@ void Application::stop()
 	{
 		vtClient->terminate();
 	}
-	tcServer->terminate();
-	isobus::CANHardwareInterface::stop();
+	if (tcServer)
+	{
+		tcServer->terminate();
+	}
+	if (canHardwareStarted)
+	{
+		isobus::CANHardwareInterface::stop();
+	}
 }

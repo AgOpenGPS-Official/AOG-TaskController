@@ -180,6 +180,19 @@ if(AOG_TC_VALIDATE_IOP)
     malformed_pool_value_out_of_range PROPERTIES PASS_REGULAR_EXPRESSION
                                                  "InputBoolean value 24")
 
+  # AsyncStreambuf (log sink decoupling) unit tests. Made a dependency of
+  # iop_validator so the validation workflow, which builds only that target,
+  # also builds this test.
+  add_executable(test_async_streambuf
+                 ${CMAKE_CURRENT_LIST_DIR}/tools/test_async_streambuf.cpp)
+  target_compile_features(test_async_streambuf PRIVATE cxx_std_20)
+  set_target_properties(test_async_streambuf PROPERTIES CXX_EXTENSIONS OFF)
+  target_include_directories(test_async_streambuf
+                             PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
+  target_link_libraries(test_async_streambuf PRIVATE Threads::Threads)
+  add_dependencies(iop_validator test_async_streambuf)
+  add_test(NAME async_streambuf COMMAND test_async_streambuf)
+
   # PASS_REGULAR_EXPRESSION makes CTest ignore the exit code, which is the part
   # a CI gate actually reads.
   add_test(NAME malformed_pool_exit_status COMMAND iop_validator

@@ -4,6 +4,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <ostream>
 #include <sstream>
@@ -29,8 +30,11 @@
 /// since abnormal termination skips static destructors and would otherwise lose whatever was
 /// still queued. And if the underlying sink never recovers at all (not just slow — genuinely
 /// stuck forever), queued output is capped and the oldest of it is dropped rather than growing
-/// without bound, and shutdown gives the drain thread a bounded window before detaching it rather
-/// than hanging indefinitely.
+/// without bound, and stop() gives the drain thread a bounded window before abandoning it
+/// rather than hanging indefinitely.
+///
+/// An abandoned drain thread keeps using the wrapped streambuf, so the caller must keep that
+/// alive (or end the process) when stop() returns false — see finish_logging() in main.cpp.
 class AsyncStreambuf : public std::streambuf
 {
 public:
@@ -39,15 +43,34 @@ public:
 	// if --log2file already wrapped it. Construct this AFTER any such wrapping so it ends up
 	// as the outermost layer and can defer both console and file I/O equally.
 	explicit AsyncStreambuf(std::ostream &stream) :
-	  stream_(stream), target_(stream.rdbuf()), worker_(&AsyncStreambuf::run, this)
+	  stream_(stream), target_(stream.rdbuf()), state_(std::make_shared<State>())
 	{
+		state_->target = target_;
+		worker_ = std::thread(&AsyncStreambuf::run, state_);
 		stream_.rdbuf(this);
 	}
 
 	~AsyncStreambuf() override
 	{
+		stop(std::chrono::seconds(2));
+		stream_.rdbuf(target_); // Restore, mirroring TeeStreambuf's destructor.
+	}
+
+	/// @brief Hands everything still buffered to the drain thread and waits up to timeout for it
+	/// to write it out. Safe to call more than once.
+	/// @return true once the drain thread has finished; false if the sink was still stuck when
+	/// the timeout ran out, in which case the thread is abandoned and keeps using the wrapped
+	/// streambuf.
+	bool stop(std::chrono::milliseconds timeout)
+	{
+		if (stopped_)
 		{
-			std::lock_guard<std::mutex> lock(mutex_);
+			return !abandoned_;
+		}
+		stopped_ = true;
+
+		{
+			std::lock_guard<std::mutex> lock(state_->mutex);
 			// Whatever's still buffered but never got an explicit flush (e.g. a trailing
 			// '\n' with no std::endl/std::flush after it) must still reach the worker —
 			// otherwise the last, possibly most important, line written before shutdown
@@ -57,30 +80,28 @@ public:
 				enqueue_locked(std::move(pending_));
 				pending_.clear();
 			}
-			stopping_ = true;
+			state_->stopping = true;
 		}
-		cv_.notify_one();
+		state_->cv.notify_one();
 
-		// target_ may be permanently stuck (a closed pipe nobody reads, a hung disk), in
-		// which case the worker never returns from target_->sputn()/pubsync() and a plain
+		// The target may be permanently stuck (a closed pipe nobody reads, a hung disk), in
+		// which case the worker never returns from target->sputn()/pubsync() and a plain
 		// join() would hang program shutdown forever on a dead sink. Give it a bounded
-		// window to finish draining; if it's still not done, detach instead of hanging —
-		// the process is exiting either way, and the OS reclaims the thread.
-		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-		while (!finished_.load() && std::chrono::steady_clock::now() < deadline)
+		// window to finish draining; if it's still not done, detach instead of hanging.
+		// The worker only touches the shared State, which it keeps alive itself.
+		const auto deadline = std::chrono::steady_clock::now() + timeout;
+		while (!state_->finished.load() && std::chrono::steady_clock::now() < deadline)
 		{
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
 		}
-		if (finished_.load())
+		if (state_->finished.load())
 		{
 			worker_.join();
+			return true;
 		}
-		else
-		{
-			worker_.detach();
-		}
-
-		stream_.rdbuf(target_); // Restore, mirroring TeeStreambuf's destructor.
+		worker_.detach();
+		abandoned_ = true;
+		return false;
 	}
 
 	AsyncStreambuf(const AsyncStreambuf &) = delete;
@@ -91,7 +112,7 @@ protected:
 	{
 		if (traits_type::eof() != ch)
 		{
-			std::lock_guard<std::mutex> lock(mutex_);
+			std::lock_guard<std::mutex> lock(state_->mutex);
 			pending_.push_back(static_cast<char>(ch));
 		}
 		return ch;
@@ -99,24 +120,38 @@ protected:
 
 	std::streamsize xsputn(const char *text, std::streamsize count) override
 	{
-		std::lock_guard<std::mutex> lock(mutex_);
+		std::lock_guard<std::mutex> lock(state_->mutex);
 		pending_.append(text, static_cast<std::size_t>(count));
 		return count;
 	}
 
 	int sync() override
 	{
-		std::lock_guard<std::mutex> lock(mutex_);
+		std::lock_guard<std::mutex> lock(state_->mutex);
 		if (!pending_.empty())
 		{
 			enqueue_locked(std::move(pending_));
 			pending_.clear();
-			cv_.notify_one();
+			state_->cv.notify_one();
 		}
 		return 0;
 	}
 
 private:
+	// Everything the drain thread touches lives here, owned jointly by the thread and this
+	// object, so an abandoned thread never reads freed memory after this object is gone.
+	struct State
+	{
+		std::mutex mutex;
+		std::condition_variable cv;
+		std::deque<std::string> queue;
+		std::size_t queuedBytes = 0;
+		std::size_t droppedBytes = 0;
+		bool stopping = false;
+		std::atomic<bool> finished{ false };
+		std::streambuf *target = nullptr;
+	};
+
 	// Bounds how much can pile up if the sink stalls forever rather than just briefly — the
 	// exact failure mode this wrapper exists to tolerate. Past this, the oldest queued output
 	// is dropped (and the drop noted once it's safe to write again) instead of growing memory
@@ -125,29 +160,29 @@ private:
 
 	void enqueue_locked(std::string chunk)
 	{
-		queuedBytes_ += chunk.size();
-		queue_.push_back(std::move(chunk));
-		while ((queuedBytes_ > kMaxQueuedBytes) && (queue_.size() > 1))
+		state_->queuedBytes += chunk.size();
+		state_->queue.push_back(std::move(chunk));
+		while ((state_->queuedBytes > kMaxQueuedBytes) && (state_->queue.size() > 1))
 		{
-			droppedBytes_ += queue_.front().size();
-			queuedBytes_ -= queue_.front().size();
-			queue_.pop_front();
+			state_->droppedBytes += state_->queue.front().size();
+			state_->queuedBytes -= state_->queue.front().size();
+			state_->queue.pop_front();
 		}
 	}
 
-	void run()
+	static void run(std::shared_ptr<State> state)
 	{
-		std::unique_lock<std::mutex> lock(mutex_);
+		std::unique_lock<std::mutex> lock(state->mutex);
 		while (true)
 		{
-			cv_.wait(lock, [this] { return stopping_ || !queue_.empty(); });
-			while (!queue_.empty())
+			state->cv.wait(lock, [&state] { return state->stopping || !state->queue.empty(); });
+			while (!state->queue.empty())
 			{
-				std::string chunk = std::move(queue_.front());
-				queue_.pop_front();
-				queuedBytes_ -= chunk.size();
-				std::size_t dropped = droppedBytes_;
-				droppedBytes_ = 0;
+				std::string chunk = std::move(state->queue.front());
+				state->queue.pop_front();
+				state->queuedBytes -= chunk.size();
+				std::size_t dropped = state->droppedBytes;
+				state->droppedBytes = 0;
 				lock.unlock();
 				// The actually-slow work (writing to a console/pipe, flushing a log file)
 				// happens here, off the caller's thread.
@@ -156,32 +191,25 @@ private:
 					std::ostringstream notice;
 					notice << "[AsyncStreambuf] dropped " << dropped << " bytes of backlogged log output (sink couldn't keep up)\n";
 					std::string noticeText = notice.str();
-					target_->sputn(noticeText.data(), static_cast<std::streamsize>(noticeText.size()));
+					state->target->sputn(noticeText.data(), static_cast<std::streamsize>(noticeText.size()));
 				}
-				target_->sputn(chunk.data(), static_cast<std::streamsize>(chunk.size()));
-				target_->pubsync();
+				state->target->sputn(chunk.data(), static_cast<std::streamsize>(chunk.size()));
+				state->target->pubsync();
 				lock.lock();
 			}
-			if (stopping_)
+			if (state->stopping)
 			{
 				break;
 			}
 		}
-		finished_.store(true);
+		state->finished.store(true);
 	}
 
 	std::ostream &stream_;
 	std::streambuf *target_;
-	std::mutex mutex_;
-	std::condition_variable cv_;
-	std::string pending_;
-	std::deque<std::string> queue_;
-	std::size_t queuedBytes_ = 0;
-	std::size_t droppedBytes_ = 0;
-	// stopping_ and finished_ must be declared (and therefore constructed) before worker_:
-	// members initialize in declaration order, and worker_'s constructor starts the
-	// background thread immediately, which reads stopping_ from run() right away.
-	bool stopping_ = false;
-	std::atomic<bool> finished_{ false };
+	std::shared_ptr<State> state_;
+	std::string pending_; // Guarded by state_->mutex
 	std::thread worker_;
+	bool stopped_ = false;
+	bool abandoned_ = false;
 };

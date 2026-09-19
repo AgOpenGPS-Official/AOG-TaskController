@@ -38,6 +38,22 @@ static std::atomic_bool running = { true };
 // same thread that drives ISOBUS transmit (Application::update()).
 static std::unique_ptr<AsyncStreambuf> asyncStdout;
 
+// Drains asyncStdout before the process exits. If the sink is so stuck that the drain thread can't
+// finish, static destructors would free the sink (the console buffer or logging.cpp's
+// TeeStreambuf) underneath that thread, so end the process here instead.
+static int finish_logging(int exitCode)
+{
+	if (asyncStdout)
+	{
+		if (!asyncStdout->stop(std::chrono::seconds(2)))
+		{
+			std::_Exit(exitCode);
+		}
+		asyncStdout.reset();
+	}
+	return exitCode;
+}
+
 #if defined(_WIN32)
 // Window procedure to handle messages
 LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
@@ -338,7 +354,8 @@ static int run_application_loop(std::shared_ptr<isobus::CANHardwarePlugin> canDr
 		if (!app.initialize())
 		{
 			std::cout << "Failed to initialize application..." << std::endl;
-			return -1;
+			app.stop();
+			return finish_logging(-1);
 		}
 
 		std::cout << "[" << get_timestamp() << "] Press Ctrl+C to stop the application..." << std::endl;
@@ -383,7 +400,7 @@ static int run_application_loop(std::shared_ptr<isobus::CANHardwarePlugin> canDr
 
 	std::cout << "[" << get_timestamp() << "] Shutting down..." << std::endl;
 	app.stop();
-	return 0;
+	return finish_logging(0);
 }
 
 #if defined(_WIN32)
@@ -408,7 +425,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	auto canDriver = prepare_application(arguments);
 	if (!canDriver)
 	{
-		return -1;
+		return finish_logging(-1);
 	}
 
 	// Create a hidden top-level window so AOG/AgIO can still send us WM_CLOSE.
@@ -422,7 +439,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	HWND hwnd = CreateWindowEx(WS_EX_TOOLWINDOW, wc.lpszClassName, TEXT("AOG-TaskController"), WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 300, 200, NULL, NULL, hInstance, NULL);
 	if (!hwnd)
 	{
-		return -1;
+		return finish_logging(-1);
 	}
 	ShowWindow(hwnd, SW_SHOWMINNOACTIVE); // Little hack: Keep the window hidden, but still allows AOG (or other applications) to gracefully close it
 
@@ -441,7 +458,7 @@ int main(int argc, char **argv)
 	auto canDriver = prepare_application(arguments);
 	if (!canDriver)
 	{
-		return -1;
+		return finish_logging(-1);
 	}
 	return run_application_loop(canDriver);
 }
