@@ -34,6 +34,17 @@ static std::string sanitize_filename(const std::string &input)
 	return result;
 }
 
+// Whether a DDI is one of the 16 ActualTramlineCondensedWorkStateX_Y DDIs (518, then 0x025B-0x0269).
+// These are NOT contiguous with each other: 1_16 is DDI 518 (0x0206), but 17_32 through 241_256 sit far
+// away at 0x025B-0x0269. A single ddi >= 1_16 && ddi <= 241_256 range check would also match dozens of
+// unrelated DDIs in between (bale/weather/machine-mode DDIs etc.), so 1_16 must be checked separately.
+static bool is_actual_tramline_condensed_work_state_ddi(std::uint16_t ddi)
+{
+	return (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualTramlineCondensedWorkState1_16)) ||
+	       (ddi >= static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualTramlineCondensedWorkState17_32) &&
+	        ddi <= static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualTramlineCondensedWorkState241_256));
+}
+
 void ClientState::set_number_of_sections(std::uint8_t number)
 {
 	numberOfSections = number;
@@ -978,8 +989,7 @@ bool MyTCServer::on_value_command(std::shared_ptr<isobus::ControlFunction> partn
 
 		default:
 			// Handle ActualTramlineCondensedWorkState DDIs (Level 3 feedback from implement)
-			if ((dataDescriptionIndex >= static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualTramlineCondensedWorkState1_16) &&
-			     dataDescriptionIndex <= static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualTramlineCondensedWorkState209_224)) ||
+			if (is_actual_tramline_condensed_work_state_ddi(dataDescriptionIndex) ||
 			    dataDescriptionIndex == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::GuidanceTrackSequenceNumber) ||
 			    dataDescriptionIndex == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::GuidanceTrackNumberToTheRight) ||
 			    dataDescriptionIndex == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::GuidanceTrackNumberToTheLeft))
@@ -1135,8 +1145,7 @@ void MyTCServer::request_measurement_commands()
 				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::GuidanceLineSwathWidth)) ||
 				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::GuidanceLineDeviation)) ||
 				  (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::GNSSQuality)) ||
-				  (ddi >= static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualTramlineCondensedWorkState1_16) &&
-				   ddi <= static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualTramlineCondensedWorkState209_224));
+				  is_actual_tramline_condensed_work_state_ddi(ddi);
 
 				if (!isTramlineDDI)
 					continue;
