@@ -132,7 +132,6 @@ private:
 	GuidanceTrackProvider trackProvider;
 	GuidanceTrackContext currentTrackContext;
 	bool aogWasConnectedForTrack = false; ///< Edge-detection for AOG connect/disconnect transitions
-	bool trackControlEnabled = false; ///< Track control enabled (separate from section control)
 
 	// Field identity — from AOG PGN 0xF3. Folded into the upper 16 bits of DDI 508
 	// (see the PGN 0xF4 handling in update()) so a track's guidance reference line ID
