@@ -38,8 +38,9 @@ registered:
   `softKeyEventDispatcher`/`buttonEventDispatcher`/`changeNumericValueEventDispatcher`/etc.
   synchronously). Any raw
   `add_global_parameter_group_number_callback`/`add_any_control_function_parameter_group_number_callback`
-  registered directly in `app.cpp` is in this category too, unless proven otherwise the same way:
-  read the registration call, not the surrounding comments.
+  registered directly in `app.cpp`/`tractor_facilities.cpp` (PGN-request handlers, diagnostic
+  loggers) is in this category too, unless proven otherwise the same way: read the registration
+  call, not the surrounding comments.
 
 If you're not sure which category a new callback falls into, trace it the way this file's history
 did: find where it's registered with `CANNetworkManager`/`ControlFunction` and check whether that
