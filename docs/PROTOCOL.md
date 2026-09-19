@@ -285,10 +285,12 @@ Common NAME fields: Industry Group `2` (Agricultural), Device Class `0`, Manufac
 | `0xCB00` (Process Data) | 2 s | TC | ISO 11783-10 B.8.1 Task Controller Status. Status byte bit 1 = task totals active. |
 | `0x1F903` (NMEA2000 XTE) | 1 Hz | TC | Cross-track error, derived from AOG's guidance-line deviation PGN. |
 | `0xFEE8` (PGN 65256 Speed/Direction) | 100 ms | TECU | Ground/Wheel/Machine-selected speed + machine direction, J1939 format. Only when TECU enabled. |
+| `0xFC8E` (Control Function Functionalities) | At claim + periodic | TC | Announces TaskControllerBasicServer (v1), TaskControllerSectionControlServer (v1, 1 boom / 64 sections) and functionality 27, the Task Controller TRACK server (v1). See §5.4.2. |
 | `0xFC8E` (Control Function Functionalities) | At claim + periodic | TECU | Announces Class 1 BasicTractorECUServer (no options). |
 | NMEA2000 COG/SOG | Periodic | TECU | Optional course/speed over ground. |
 | GNSS Quality (DDI 514, via `0xCB00` Process Data) | 250 ms | TC | AOG's GPS fix quality (PGN `0xD6`, see §2.5), sent to each client whose DDOP declares DDI 514 as settable. Falls back to `1` when no fresh fix quality is available. |
 | Guidance track data (DDI 507-513, via `0xCB00` Process Data) | 250 ms, while AOG has a valid track | TC | Track number, adjacent tracks, reference line, swath width and line deviation from AOG's PGN `0xF4`/`0xF2`, sent to each client whose DDOP declares them as settable. See §5.4.1. |
+| Track control level and state (DDI 506, 515, via `0xCB00` Process Data) | Level once, state on each AOG section-control mode packet | TC | The track control level the TC picked, then the on/off state — only to clients that completed the negotiation. See §5.4.2. |
 
 The TC also receives all ISOBUS Process Data (PGN 0xCB00) and Section Control commands from connected implements.
 
@@ -297,6 +299,7 @@ The TC also receives all ISOBUS Process Data (PGN 0xCB00) and Section Control co
 - **Device Descriptor Object Pool (DDOP)** uploads from clients (stored per client).
 - **Condensed actual work-state DDIs** (160, 161, 290, plus the extended range 16001–16016 per the standard): mapped into the per-client section model and forwarded to AgIO/AgValonia as PGN `0xF0`.
 - **Section control state DDI**: tracked per client.
+- **Track control DDIs (505, 506, 515)**: negotiated and tracked per client — see §5.4.2.
 - **Process data acknowledges (PDACK)**: logged.
 
 ### 5.4 ISOBUS feature scope
@@ -304,10 +307,10 @@ The TC also receives all ISOBUS Process Data (PGN 0xCB00) and Section Control co
 | Capability | Value |
 |---|---|
 | ISO 11783-10 version | 2 (Second Edition) |
-| Generation | 1 (TC-SC) |
+| Generation | 1 (TC-SC), plus TRACK (Track Control) Level 1 |
 | Max booms | 1 |
 | Max sections | 64 |
-| Supported DDIs | 160 / 161 / 290 (condensed section setpoint and actual states), plus speed/distance/guidance DDIs from the tractor side |
+| Supported DDIs | 160 / 161 / 290 (condensed section setpoint and actual states); 505 / 506 / 515 (track control, see §5.4.2); 507-511 / 513 / 514 (guidance data, see §5.4.1); plus speed/distance/guidance DDIs from the tractor side |
 
 #### 5.4.1 Guidance data sent to implements
 
@@ -324,6 +327,18 @@ The TC pushes guidance data to each client whose DDOP declares the DDI as settab
 | 514 | GNSSQuality | Always — see `0xD6`. |
 
 "Valid track" means the TC holds an accepted PGN `0xF4` payload with the valid flag set, a non-zero reference line ID, and an open field (PGN `0xF3`) to scope the ID to. Since AOG only sends `0xF4` on change, validity is *not* cleared just because no new `0xF4` has arrived; it is cleared only by an explicit "guidance off" packet, by the field closing, or by AOG disconnecting entirely (no packets of any kind for 3 s).
+
+#### 5.4.2 Track control level negotiation
+
+At TC control-function claim, PGN 64654 (Control Function Functionalities, source = the TC's own address — see §5.2) announces functionality 27, the Task Controller TRACK server, to tell implements this TC supports track control.
+
+For each client whose DDOP declares DDI 505 and 506 the TC negotiates a level:
+
+1. The implement reports DDI 505 (`SupportedTrackControlLevels`) as a **bitmask** (bit 0 = Level 1, bit 1 = Level 2, bit 2 = Level 3).
+2. The TC writes DDI 506 (`SetpointTrackControlLevel`) back as an **enum** (`0` = no common level, `1` = Level 1, `2` = Level 2, `3` = Level 3). Only Level 1 is implemented, so this is `1` whenever the implement supports Level 1, even if it also advertises Level 2 or 3.
+3. The implement's DDI 506 echo completes the negotiation, if it echoes `1`.
+
+Only DDI 515 (`TrackControlState`: `0` = manual/off, `1` = automatic/on) depends on the negotiation: it is written to clients that completed it, each time AOG's section control mode (PGN `0xF1`, see §2.5) arrives. The guidance data in §5.4.1 is sent whether or not a client negotiated a level.
 
 ### 5.5 Virtual Terminal UI
 
