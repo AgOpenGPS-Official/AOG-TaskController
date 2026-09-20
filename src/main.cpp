@@ -1,5 +1,5 @@
 #include "app.hpp"
-#include "async_streambuf.hpp"
+#include "async_log.hpp"
 #include "crash_handler.hpp"
 #include "logging.cpp"
 #include "settings.hpp"
@@ -31,28 +31,6 @@
 #endif
 
 static std::atomic_bool running = { true };
-
-// Constructed after any --log2file wrapping in prepare_application(), so it becomes the outermost
-// layer around std::cout and defers ALL of its flushing (console and, if enabled, file) to a
-// background thread. See async_streambuf.hpp for why: a blocked log line otherwise stalls the
-// same thread that drives ISOBUS transmit (Application::update()).
-static std::unique_ptr<AsyncStreambuf> asyncStdout;
-
-// Drains asyncStdout before the process exits. If the sink is so stuck that the drain thread can't
-// finish, static destructors would free the sink (the console buffer or logging.cpp's
-// TeeStreambuf) underneath that thread, so end the process here instead.
-static int finish_logging(int exitCode)
-{
-	if (asyncStdout)
-	{
-		if (!asyncStdout->stop(std::chrono::seconds(2)))
-		{
-			std::_Exit(exitCode);
-		}
-		asyncStdout.reset();
-	}
-	return exitCode;
-}
 
 #if defined(_WIN32)
 // Window procedure to handle messages
@@ -326,9 +304,6 @@ static std::shared_ptr<isobus::CANHardwarePlugin> prepare_application(const std:
 	{
 		setup_file_logging();
 	}
-	// Installed last so it wraps whatever is already on std::cout (the console, or
-	// logging.cpp's TeeStreambuf) and can defer both equally.
-	asyncStdout = std::make_unique<AsyncStreambuf>(std::cout);
 
 	for (const std::string &arg : arguments)
 	{
@@ -353,12 +328,13 @@ static int run_application_loop(std::shared_ptr<isobus::CANHardwarePlugin> canDr
 	{
 		if (!app.initialize())
 		{
-			std::cout << "Failed to initialize application..." << std::endl;
+			log() << "Failed to initialize application..." << std::endl;
 			app.stop();
-			return finish_logging(-1);
+			async_log::flush(std::chrono::seconds(2));
+			return -1;
 		}
 
-		std::cout << "[" << get_timestamp() << "] Press Ctrl+C to stop the application..." << std::endl;
+		log() << "Press Ctrl+C to stop the application..." << std::endl;
 
 		while (running)
 		{
@@ -398,9 +374,10 @@ static int run_application_loop(std::shared_ptr<isobus::CANHardwarePlugin> canDr
 		log_crash("Unhandled exception of unknown type escaped the main loop.");
 	}
 
-	std::cout << "[" << get_timestamp() << "] Shutting down..." << std::endl;
+	log() << "Shutting down..." << std::endl;
 	app.stop();
-	return finish_logging(0);
+	async_log::flush(std::chrono::seconds(2));
+	return 0;
 }
 
 #if defined(_WIN32)
@@ -425,7 +402,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	auto canDriver = prepare_application(arguments);
 	if (!canDriver)
 	{
-		return finish_logging(-1);
+		return -1;
 	}
 
 	// Create a hidden top-level window so AOG/AgIO can still send us WM_CLOSE.
@@ -439,7 +416,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	HWND hwnd = CreateWindowEx(WS_EX_TOOLWINDOW, wc.lpszClassName, TEXT("AOG-TaskController"), WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 300, 200, NULL, NULL, hInstance, NULL);
 	if (!hwnd)
 	{
-		return finish_logging(-1);
+		return -1;
 	}
 	ShowWindow(hwnd, SW_SHOWMINNOACTIVE); // Little hack: Keep the window hidden, but still allows AOG (or other applications) to gracefully close it
 
@@ -458,7 +435,7 @@ int main(int argc, char **argv)
 	auto canDriver = prepare_application(arguments);
 	if (!canDriver)
 	{
-		return finish_logging(-1);
+		return -1;
 	}
 	return run_application_loop(canDriver);
 }
