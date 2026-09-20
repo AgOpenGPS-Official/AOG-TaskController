@@ -18,6 +18,8 @@
 #include <map>
 #include <mutex>
 #include <queue>
+#include "measurement_subscription_queue.hpp"
+#include "section_work_state_feedback.hpp"
 
 constexpr std::uint8_t NUMBER_SECTIONS_PER_CONDENSED_MESSAGE = 16;
 
@@ -32,6 +34,7 @@ enum SectionState : std::uint8_t
 class ClientState
 {
 public:
+	void configure_actual_work_state_feedback();
 	void set_number_of_sections(std::uint8_t number);
 	void set_section_setpoint_state(std::uint8_t section, std::uint8_t state);
 	void set_section_actual_state(std::uint8_t section, std::uint8_t state);
@@ -55,6 +58,10 @@ public:
 	isobus::DeviceDescriptorObjectPool &get_pool();
 	bool are_measurement_commands_sent() const;
 	void mark_measurement_commands_sent();
+	MeasurementSubscriptionQueue &get_measurement_subscriptions()
+	{
+		return measurementSubscriptions;
+	}
 	std::uint16_t get_element_number_for_ddi(isobus::DataDescriptionIndex ddi) const;
 	void set_element_number_for_ddi(isobus::DataDescriptionIndex ddi, std::uint16_t elementNumber);
 	bool has_element_number_for_ddi(isobus::DataDescriptionIndex ddi) const;
@@ -64,6 +71,8 @@ public:
 	bool try_get_element_work_state(std::uint16_t elementNumber, bool &isWorking) const;
 
 private:
+	MeasurementSubscriptionQueue measurementSubscriptions;
+	SectionWorkStateFeedback workStateFeedback;
 	isobus::DeviceDescriptorObjectPool pool; ///< The device descriptor object pool (DDOP) for the TC
 	bool areMeasurementCommandsSent = false; ///< Whether or not the measurement commands have been sent
 	std::map<isobus::DataDescriptionIndex, std::uint16_t> ddiToElementNumber; ///< Mapping of DDI to element number // TODO: better way to do this?
