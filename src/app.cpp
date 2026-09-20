@@ -1181,7 +1181,10 @@ void Application::update_vt_status_strings(bool aogConnected)
 {
 	lastVtStatusUpdateMs = isobus::SystemTiming::get_timestamp_ms();
 
-	send_vt_string_if_changed(VTWorkingSetStatusLabel, "AOG TC IP");
+	// Change String Value must not exceed the length declared for the object in the pool
+	// (AOG_TC.iop); the VT rejects longer strings with "Invalid string length". Keep every
+	// literal below within its object's declared length.
+	send_vt_string_if_changed(VTWorkingSetStatusLabel, "AOG IP"); // pool length 6
 	send_vt_string_if_changed(VTAogIPStr, udpConnections->get_bound_ip_address());
 	const std::string packetAge = (lastAogPacketMs == 0) ? "never" : (std::to_string(isobus::SystemTiming::get_time_elapsed_ms(lastAogPacketMs) / 1000) + " s");
 	const bool taskRunning = tcServer->get_task_totals_active();
@@ -1254,10 +1257,10 @@ void Application::update_vt_status_strings(bool aogConnected)
 	                 << "AOG packet age   " << packetAge;
 	send_vt_string_if_changed(VTControlFunctionsStr, mainSystemStatus.str());
 	send_vt_string_if_changed(ConfigHydliftLabel, "Hydlift: not impl.");
-	send_vt_string_if_changed(ConfigNmeaReadLabel, "NMEA Read: not impl.");
+	send_vt_string_if_changed(ConfigNmeaReadLabel, "NMEA Read: N/A"); // pool length 14
 	send_vt_string_if_changed(
-	  ConfigNmeaSendLabel,
-	  nmea2000MessageInterface ? (std::string("NMEA Send: ") + (settings->is_nmea_send_enabled() ? "ON" : "OFF")) : "NMEA Send: TECU req");
+	  ConfigNmeaSendLabel, // pool length 14
+	  nmea2000MessageInterface ? (std::string("NMEA Send: ") + (settings->is_nmea_send_enabled() ? "ON" : "OFF")) : "NMEA Send: N/A");
 	send_vt_string_if_changed(
 	  ConfigTecuLabel,
 	  std::string("TECU: ") + (settings->is_tecu_enabled() ? "ON" : "OFF") + " (restart req)");
