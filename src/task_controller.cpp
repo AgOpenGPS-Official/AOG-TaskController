@@ -15,6 +15,7 @@
 
 #include <bitset>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <set>
 
@@ -436,30 +437,52 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 		// Build a flat list of section element numbers in the same order as the geometry enumeration
 		std::vector<std::uint16_t> sectionElementNumbers;
 
-		log() << "Implement geometry: " << std::endl;
-		log() << "Number of booms=" << implement.booms.size() << std::endl;
+		// One row per section, in the same order as sectionElementNumbers (the row index is AOG's section index)
+		struct GeometryRow
+		{
+			std::uint16_t elementNumber;
+			std::uint16_t boomElement;
+			std::string subBoomElement; // "-" for sections attached directly to a boom
+			isobus::DeviceDescriptorObjectPoolHelper::Section section;
+		};
+		std::vector<GeometryRow> geometryRows;
+
 		for (const auto &boom : implement.booms)
 		{
-			log() << "Boom: id=" << static_cast<int>(boom.elementNumber) << std::endl;
 			for (const auto &subBoom : boom.subBooms)
 			{
-				log() << "SubBoom: id=" << static_cast<int>(subBoom.elementNumber) << std::endl;
 				for (const auto &section : subBoom.sections)
 				{
 					numberOfSections++;
 					sectionElementNumbers.push_back(section.elementNumber);
-					log() << "Section: id=" << static_cast<int>(section.elementNumber)
-					      << " x=" << section.xOffset_mm.get() << " y=" << section.yOffset_mm.get()
-					      << " z=" << section.zOffset_mm.get() << " width=" << section.width_mm.get() << std::endl;
+					geometryRows.push_back({ section.elementNumber, boom.elementNumber, std::to_string(subBoom.elementNumber), section });
 				}
 			}
 			for (const auto &section : boom.sections)
 			{
 				numberOfSections++;
 				sectionElementNumbers.push_back(section.elementNumber);
-				log() << "Section: id=" << static_cast<int>(section.elementNumber)
-				      << " x=" << section.xOffset_mm.get() << " y=" << section.yOffset_mm.get()
-				      << " z=" << section.zOffset_mm.get() << " width=" << section.width_mm.get() << std::endl;
+				geometryRows.push_back({ section.elementNumber, boom.elementNumber, "-", section });
+			}
+		}
+
+		// Values missing from the DDOP are shown as "-" rather than a misleading 0
+		auto mm = [](const isobus::DeviceDescriptorObjectPoolHelper::ObjectPoolValue &value) {
+			return value.exists() ? std::to_string(value.get()) : std::string("-");
+		};
+		log() << "Implement geometry: " << implement.booms.size() << " boom(s), " << static_cast<int>(numberOfSections) << " section(s)" << std::endl;
+		if (!geometryRows.empty())
+		{
+			auto printRow = [](const std::string &idx, const std::string &element, const std::string &boom, const std::string &subBoom, const std::string &x, const std::string &y, const std::string &z, const std::string &width) {
+				log() << std::right << std::setw(4) << idx << "  " << std::setw(7) << element << "  " << std::setw(4) << boom << "  " << std::setw(7) << subBoom
+				      << "  " << std::setw(7) << x << "  " << std::setw(7) << y << "  " << std::setw(7) << z << "  " << std::setw(10) << width << std::endl;
+			};
+			printRow("Idx", "Element", "Boom", "SubBoom", "X (mm)", "Y (mm)", "Z (mm)", "Width (mm)");
+			printRow("----", "-------", "----", "-------", "-------", "-------", "-------", "----------");
+			for (std::size_t i = 0; i < geometryRows.size(); i++)
+			{
+				const auto &row = geometryRows[i];
+				printRow(std::to_string(i), std::to_string(row.elementNumber), std::to_string(row.boomElement), row.subBoomElement, mm(row.section.xOffset_mm), mm(row.section.yOffset_mm), mm(row.section.zOffset_mm), mm(row.section.width_mm));
 			}
 		}
 		state.set_number_of_sections(numberOfSections);
