@@ -365,8 +365,8 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 	state.get_pool().set_task_controller_compatibility_level(static_cast<std::uint8_t>(TaskControllerVersion::SecondEditionDraft));
 
 	// Concatenate every queued chunk into one contiguous buffer before parsing. Each
-	// chunk here is a wire-level fragment of ONE logical pool (per the appendToPool
-	// contract in store_device_descriptor_object_pool()); the binary DDOP format has no
+	// chunk here is a wire-level fragment of ONE logical pool (every chunk received since
+	// the session started, see store_device_descriptor_object_pool()); the binary DDOP format has no
 	// concept of resuming a partially-parsed object, so feeding chunks to the
 	// deserializer one at a time only works if every chunk boundary happens to fall on
 	// an object boundary. Deserializing once against the fully reassembled bytes avoids
@@ -584,13 +584,18 @@ bool MyTCServer::delete_device_descriptor_object_pool(std::shared_ptr<isobus::Co
 	return true;
 }
 
-bool MyTCServer::get_is_stored_device_descriptor_object_pool_by_structure_label(std::shared_ptr<isobus::ControlFunction>, const std::vector<std::uint8_t> &, const std::vector<std::uint8_t> &)
+bool MyTCServer::get_is_stored_device_descriptor_object_pool_by_structure_label(std::shared_ptr<isobus::ControlFunction> partnerCF, const std::vector<std::uint8_t> &, const std::vector<std::uint8_t> &)
 {
+	// The label queries precede every pool upload, so anything still queued is from an aborted attempt
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
+	discard_queued_pool_chunks(partnerCF, "new upload session: structure label query");
 	return false;
 }
 
-bool MyTCServer::get_is_stored_device_descriptor_object_pool_by_localization_label(std::shared_ptr<isobus::ControlFunction>, const std::array<std::uint8_t, 7> &)
+bool MyTCServer::get_is_stored_device_descriptor_object_pool_by_localization_label(std::shared_ptr<isobus::ControlFunction> partnerCF, const std::array<std::uint8_t, 7> &)
 {
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
+	discard_queued_pool_chunks(partnerCF, "new upload session: localization label query");
 	return false;
 }
 
@@ -629,6 +634,9 @@ void MyTCServer::on_client_version_received(std::shared_ptr<isobus::ControlFunct
 {
 	std::cout << "[" << get_timestamp() << "] [TC Server] Client " << clientControlFunction->get_NAME().get_full_name()
 	          << " reported TC version " << static_cast<int>(version) << std::endl;
+	// The version exchange opens every client session, before any pool upload
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
+	discard_queued_pool_chunks(clientControlFunction, "new upload session: version exchange");
 }
 
 void MyTCServer::on_process_data_acknowledge(std::shared_ptr<isobus::ControlFunction> partner,
@@ -712,21 +720,29 @@ bool MyTCServer::store_device_descriptor_object_pool(std::shared_ptr<isobus::Con
 {
 	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
 	std::cout << "[" << get_timestamp() << "] [TC Server] Client " << partnerCF->get_NAME().get_full_name() << " requesting object pool transfer of " << binaryPool.size() << " bytes (append=" << appendToPool << ")" << std::endl;
-	auto existing = uploadedPools.find(partnerCF);
-	if (!appendToPool || existing == uploadedPools.end())
-	{
-		// A fresh (non-append) upload replaces anything queued for this client — a stale
-		// blob left over from an aborted previous attempt must never be deserialized
-		// alongside this one (see activate_object_pool()).
-		if (existing != uploadedPools.end() && !existing->second.empty())
-		{
-			std::cout << "[" << get_timestamp() << "] [TC Server] Client " << partnerCF->get_NAME().get_full_name()
-			          << " discarding " << existing->second.size() << " previously queued, unactivated chunk(s)" << std::endl;
-		}
-		uploadedPools[partnerCF] = std::queue<std::vector<std::uint8_t>>();
-	}
+	// Always append, and ignore appendToPool: the isobus library derives it from
+	// numberOfObjectPoolSegments, which it never increments, so it is false for every
+	// segment — including the 2nd..Nth chunk of one pool. A client may send its DDOP as
+	// several Request/Transfer pairs, and dropping the queue on !appendToPool loses all
+	// but the last one. Stale chunks from an aborted upload are dropped at the start of a
+	// client session instead, see discard_queued_pool_chunks().
 	uploadedPools[partnerCF].push(binaryPool);
 	return true;
+}
+
+void MyTCServer::discard_queued_pool_chunks(std::shared_ptr<isobus::ControlFunction> partnerCF, const char *reason)
+{
+	// Caller holds clientsMutex
+	auto existing = uploadedPools.find(partnerCF);
+	if (existing != uploadedPools.end())
+	{
+		if (!existing->second.empty())
+		{
+			std::cout << "[" << get_timestamp() << "] [TC Server] Client " << partnerCF->get_NAME().get_full_name()
+			          << " discarding " << existing->second.size() << " queued, unactivated DDOP chunk(s) (" << reason << ")" << std::endl;
+		}
+		uploadedPools.erase(existing);
+	}
 }
 
 std::map<std::shared_ptr<isobus::ControlFunction>, ClientState> MyTCServer::get_clients()

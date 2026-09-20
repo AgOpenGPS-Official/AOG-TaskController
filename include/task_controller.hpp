@@ -121,6 +121,9 @@ private:
 	void send_section_control_state(std::shared_ptr<isobus::ControlFunction> client, bool enabled);
 	bool is_ddi_settable(std::shared_ptr<isobus::ControlFunction> client, std::uint16_t ddi);
 
+	/// @brief Drops DDOP chunks queued for a client but never activated. Caller must hold clientsMutex.
+	void discard_queued_pool_chunks(std::shared_ptr<isobus::ControlFunction> partnerCF, const char *reason);
+
 	std::map<std::shared_ptr<isobus::ControlFunction>, ClientState> clients;
 	std::map<std::shared_ptr<isobus::ControlFunction>, std::queue<std::vector<std::uint8_t>>> uploadedPools;
 

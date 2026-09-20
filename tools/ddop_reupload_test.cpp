@@ -4,7 +4,7 @@
 // isobus::DeviceDescriptorObjectPool::deserialize_binary_object_pool() never clears its own object
 // list before parsing — every object it adds calls remove_object_with_id() first, so re-parsing the
 // SAME pool on top of itself is harmless (each object is cleanly replaced). But a client's pool
-// upload queue used to accumulate across a timeout-then-reconnect or an appendToPool=false restart
+// upload queue used to accumulate across a timeout-then-reconnect or an aborted upload followed by a restart
 // without ever being cleared, and activate_object_pool() looped over every queued chunk and called
 // deserialize_binary_object_pool() once per chunk, into the SAME pool object. If the queue ever held
 // an earlier, unrelated (or truncated) upload alongside the real one, whatever that earlier upload
@@ -16,6 +16,7 @@
 // scaffolding MyTCServer needs to actually run.
 #include "isobus/isobus/isobus_device_descriptor_object_pool.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -68,7 +69,7 @@ namespace
 	}
 
 	// A stale, unrelated pool standing in for "an earlier connection attempt that uploaded a pool
-	// and then timed out (or was abandoned for a fresh appendToPool=false upload) before
+	// and then timed out (or was abandoned and restarted) before
 	// activation." Different device, different object IDs, on purpose — the point is that its IDs
 	// don't collide with the real pool's, so nothing about a normal remove-then-readd would ever
 	// touch it.
@@ -164,8 +165,8 @@ int main()
 		}
 	}
 
-	// --- The fix: store_device_descriptor_object_pool() replaces (rather than appends to) the
-	// queue on a non-append upload, and activate_object_pool() concatenates whatever chunks remain
+	// --- The fix: the server drops unactivated chunks at the start of each client session (version
+	// exchange / label queries) and on timeout, and activate_object_pool() concatenates whatever chunks remain
 	// into one buffer and deserializes exactly once. With no stale pool queued alongside it, only
 	// the real pool's bytes are ever handed to the deserializer. ---
 	if (violations.empty())
@@ -196,6 +197,44 @@ int main()
 		if ((1 != sectionWidthOwners.size()) || (4 != sectionWidthOwners[0]))
 		{
 			flag("DDI 67 on the section should map only to element 4, got: " + join(sectionWidthOwners));
+		}
+	}
+
+	// --- Chunked upload: a client may send its DDOP as several Request/Transfer pairs, and the
+	// chunk boundaries need not fall on object boundaries (a real implement sent 72/241/2045/2888
+	// byte chunks). The server queues every chunk and activate_object_pool() concatenates them
+	// before parsing once, so the result must match a single-shot parse of the same bytes, for
+	// any split point. ---
+	if (violations.empty())
+	{
+		Pool whole;
+		whole.deserialize_binary_object_pool(seederBytes.data(), static_cast<std::uint32_t>(seederBytes.size()), isobus::NAME(0));
+
+		for (std::size_t chunkSize : { std::size_t(1), std::size_t(7), std::size_t(72), std::size_t(241) })
+		{
+			std::vector<std::vector<std::uint8_t>> chunks;
+			for (std::size_t offset = 0; offset < seederBytes.size(); offset += chunkSize)
+			{
+				const auto end = std::min(seederBytes.size(), offset + chunkSize);
+				chunks.emplace_back(seederBytes.begin() + offset, seederBytes.begin() + end);
+			}
+
+			std::vector<std::uint8_t> combinedBytes;
+			for (const auto &chunk : chunks)
+			{
+				combinedBytes.insert(combinedBytes.end(), chunk.begin(), chunk.end());
+			}
+
+			Pool chunked;
+			if (!chunked.deserialize_binary_object_pool(combinedBytes.data(), static_cast<std::uint32_t>(combinedBytes.size()), isobus::NAME(0)))
+			{
+				flag("chunked upload (chunk size " + std::to_string(chunkSize) + "): concatenated pool failed to deserialize");
+			}
+			else if (chunked.size() != whole.size())
+			{
+				flag("chunked upload (chunk size " + std::to_string(chunkSize) + "): got " + std::to_string(chunked.size()) +
+				     " objects, a single-shot parse gives " + std::to_string(whole.size()));
+			}
 		}
 	}
 
