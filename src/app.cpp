@@ -47,7 +47,7 @@ static std::string format_hex_address(std::uint8_t address)
 // Enumerate and log all Control Functions on the bus
 static void enumerate_bus_control_functions(const std::string &context)
 {
-	std::cout << "\n";
+	async_log::stream() << "\n";
 	log("Bus CFs") << context << std::endl;
 	log("Bus CFs") << "==================================================" << std::endl;
 	log("Bus CFs") << "Control Functions on ISOBUS:" << std::endl;
@@ -89,7 +89,7 @@ static void enumerate_bus_control_functions(const std::string &context)
 
 	log("Bus CFs") << "==================================================" << std::endl;
 	log("Bus CFs") << "Total CFs found: " << cfCount << std::endl;
-	std::cout << "\n";
+	async_log::stream() << "\n";
 }
 
 // Check for TC address conflicts and log warning if we couldn't claim preferred address
@@ -117,7 +117,7 @@ static bool check_tc_address_conflict(const std::shared_ptr<isobus::InternalCont
 					// Periodic warning every 30 seconds. Conflict detection itself is not throttled.
 					if (isobus::SystemTiming::time_expired_ms(lastWarnTime, 30000))
 					{
-						std::cout << "\n";
+						async_log::stream() << "\n";
 						log("WARN") << "==================================================" << std::endl;
 						log("WARN") << "TC ADDRESS CONFLICT - Another TC at preferred address " << static_cast<int>(PREFERRED_TC_ADDRESS) << std::endl;
 						log("WARN") << "Conflicting TC: Mfg=" << otherName.get_manufacturer_code()
@@ -127,7 +127,7 @@ static bool check_tc_address_conflict(const std::shared_ptr<isobus::InternalCont
 						            << ", Func Inst=" << static_cast<int>(otherName.get_function_instance()) << std::endl;
 						log("WARN") << "Our TC using address: " << static_cast<int>(ourTC->get_address()) << std::endl;
 						log("WARN") << "==================================================" << std::endl;
-						std::cout << "\n";
+						async_log::stream() << "\n";
 						lastWarnTime = isobus::SystemTiming::get_timestamp_ms();
 					}
 					break;
