@@ -92,6 +92,7 @@ private:
 	std::unique_ptr<isobus::VirtualTerminalClientUpdateHelper> vtUpdateHelper;
 	std::vector<std::uint8_t> vtObjectPool;
 	bool vtClientStarted = false;
+	bool canHardwareStarted = false; ///< CANHardwareInterface::start() succeeded, so stop() has a thread to stop
 	bool vtConfigSynced = false;
 	bool vtWasConnected = false;
 	bool vtConnectionWarningLogged = false;

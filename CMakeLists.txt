@@ -61,8 +61,8 @@ FetchContent_MakeAvailable(Boost)
 
 FetchContent_Declare(
   isobus
-  GIT_REPOSITORY https://github.com/gunicsba/AgIsoStack-plus-plus.git
-  GIT_TAG d4d36dd6f15af6c6f6218317572025a1ffec6883
+  GIT_REPOSITORY https://github.com/Open-Agriculture/AgIsoStack-plus-plus.git
+  GIT_TAG c0e1ebb06a2ad9d5bf86c98b3d028ab8fa350130
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(isobus)
 
@@ -179,6 +179,20 @@ if(AOG_TC_VALIDATE_IOP)
   set_tests_properties(
     malformed_pool_value_out_of_range PROPERTIES PASS_REGULAR_EXPRESSION
                                                  "InputBoolean value 24")
+
+  # async_log (log output off the calling thread) unit tests. Made a dependency
+  # of iop_validator so the validation workflow, which builds only that target,
+  # also builds this test.
+  add_executable(
+    test_async_log ${CMAKE_CURRENT_LIST_DIR}/tools/test_async_log.cpp
+                   ${CMAKE_CURRENT_LIST_DIR}/src/async_log.cpp)
+  target_compile_features(test_async_log PRIVATE cxx_std_20)
+  set_target_properties(test_async_log PROPERTIES CXX_EXTENSIONS OFF)
+  target_include_directories(test_async_log
+                             PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
+  target_link_libraries(test_async_log PRIVATE Threads::Threads)
+  add_dependencies(iop_validator test_async_log)
+  add_test(NAME async_log COMMAND test_async_log)
 
   # PASS_REGULAR_EXPRESSION makes CTest ignore the exit code, which is the part
   # a CI gate actually reads.

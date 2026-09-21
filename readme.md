@@ -93,6 +93,11 @@ The application logs the detected VT version, screen size, softkey dimensions, a
 
 ## Contributing
 
+Please keep pull requests small and focused on one change. A PR that fixes one bug or adds one
+capability is much faster to review (and to revert, if needed) than one that bundles several
+unrelated changes together — if you find yourself fixing more than one thing, consider splitting
+the work into separate PRs instead.
+
 Before committing it's better to run these commands: (requires the LLVM project to be installed)
  ```powershell
 git ls-files | Select-String '\.(c|cc|cpp|cxx|h|hh|hpp|hxx|proto)$' | ForEach-Object {

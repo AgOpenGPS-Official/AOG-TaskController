@@ -47,7 +47,7 @@ static std::string format_hex_address(std::uint8_t address)
 // Enumerate and log all Control Functions on the bus
 static void enumerate_bus_control_functions(const std::string &context)
 {
-	std::cout << "\n";
+	async_log::stream() << "\n";
 	log("Bus CFs") << context << std::endl;
 	log("Bus CFs") << "==================================================" << std::endl;
 	log("Bus CFs") << "Control Functions on ISOBUS:" << std::endl;
@@ -89,7 +89,7 @@ static void enumerate_bus_control_functions(const std::string &context)
 
 	log("Bus CFs") << "==================================================" << std::endl;
 	log("Bus CFs") << "Total CFs found: " << cfCount << std::endl;
-	std::cout << "\n";
+	async_log::stream() << "\n";
 }
 
 // Check for TC address conflicts and log warning if we couldn't claim preferred address
@@ -117,7 +117,7 @@ static bool check_tc_address_conflict(const std::shared_ptr<isobus::InternalCont
 					// Periodic warning every 30 seconds. Conflict detection itself is not throttled.
 					if (isobus::SystemTiming::time_expired_ms(lastWarnTime, 30000))
 					{
-						std::cout << "\n";
+						async_log::stream() << "\n";
 						log("WARN") << "==================================================" << std::endl;
 						log("WARN") << "TC ADDRESS CONFLICT - Another TC at preferred address " << static_cast<int>(PREFERRED_TC_ADDRESS) << std::endl;
 						log("WARN") << "Conflicting TC: Mfg=" << otherName.get_manufacturer_code()
@@ -127,7 +127,7 @@ static bool check_tc_address_conflict(const std::shared_ptr<isobus::InternalCont
 						            << ", Func Inst=" << static_cast<int>(otherName.get_function_instance()) << std::endl;
 						log("WARN") << "Our TC using address: " << static_cast<int>(ourTC->get_address()) << std::endl;
 						log("WARN") << "==================================================" << std::endl;
-						std::cout << "\n";
+						async_log::stream() << "\n";
 						lastWarnTime = isobus::SystemTiming::get_timestamp_ms();
 					}
 					break;
@@ -195,7 +195,8 @@ bool Application::setup_can_hardware()
 	isobus::CANHardwareInterface::set_number_of_can_channels(1);
 	isobus::CANHardwareInterface::assign_can_channel_frame_handler(0, canDriver);
 
-	if ((!isobus::CANHardwareInterface::start()) || (!canDriver->get_is_valid()))
+	canHardwareStarted = isobus::CANHardwareInterface::start();
+	if ((!canHardwareStarted) || (!canDriver->get_is_valid()))
 	{
 		log() << "Failed to start CAN hardware interface." << std::endl;
 		return false;
@@ -421,10 +422,10 @@ void Application::setup_tecu_interfaces()
 		log("Init") << "Creating Speed Messages Interface on TECU..." << std::endl;
 		speedMessagesInterface = std::make_unique<isobus::SpeedMessagesInterface>(tecuCF, true, true, true, false); //TODO: make configurable whether to send these messages
 		speedMessagesInterface->initialize();
-		speedMessagesInterface->wheelBasedSpeedTransmitData.set_implement_start_stop_operations_state(isobus::SpeedMessagesInterface::WheelBasedMachineSpeedData::ImplementStartStopOperations::NotAvailable);
-		speedMessagesInterface->wheelBasedSpeedTransmitData.set_key_switch_state(isobus::SpeedMessagesInterface::WheelBasedMachineSpeedData::KeySwitchState::NotAvailable);
-		speedMessagesInterface->wheelBasedSpeedTransmitData.set_operator_direction_reversed_state(isobus::SpeedMessagesInterface::WheelBasedMachineSpeedData::OperatorDirectionReversed::NotAvailable);
-		speedMessagesInterface->machineSelectedSpeedTransmitData.set_speed_source(isobus::SpeedMessagesInterface::MachineSelectedSpeedData::SpeedSource::NavigationBasedSpeed);
+		speedMessagesInterface->wheelBasedSpeedTransmitData.set_implement_start_stop_operations_state(isobus::WheelBasedMachineSpeedData::ImplementStartStopOperations::NotAvailable);
+		speedMessagesInterface->wheelBasedSpeedTransmitData.set_key_switch_state(isobus::WheelBasedMachineSpeedData::KeySwitchState::NotAvailable);
+		speedMessagesInterface->wheelBasedSpeedTransmitData.set_operator_direction_reversed_state(isobus::WheelBasedMachineSpeedData::OperatorDirectionReversed::NotAvailable);
+		speedMessagesInterface->machineSelectedSpeedTransmitData.set_speed_source(isobus::MachineSelectedSpeedData::SpeedSource::NavigationBasedSpeed);
 		log("Init") << "Speed Messages Interface created and initialized." << std::endl;
 
 		log("Init") << "Creating NMEA2000 Message Interface on TECU..." << std::endl;
@@ -491,7 +492,7 @@ void Application::setup_udp_connections()
 			{
 				lastSpeedValue = value; // Store the full precision value
 				std::uint16_t speed = std::abs(value);
-				auto direction = value < 0 ? isobus::SpeedMessagesInterface::MachineDirection::Reverse : isobus::SpeedMessagesInterface::MachineDirection::Forward;
+				auto direction = value < 0 ? isobus::MachineDirection::Reverse : isobus::MachineDirection::Forward;
 				if (speedMessagesInterface)
 				{
 					speedMessagesInterface->groundBasedSpeedTransmitData.set_machine_direction_of_travel(direction);
@@ -556,21 +557,54 @@ void Application::setup_udp_connections()
 	log() << "UDP connections opened." << std::endl;
 }
 
+namespace
+{
+	// The main loop calls Application::update() as fast as it can (see main.cpp), and every
+	// periodic transmit in this function — TECU speed, TC status, FEE6, ... — depends on that
+	// happening often enough. There's no dedicated timer for any of them; they're all paced by
+	// however quickly this one function keeps getting called. If something upstream in this same
+	// call chain (or the logging it does) ever blocks, everything downstream of it here falls
+	// behind together, silently, with nothing in the CAN traces to explain why. This just makes
+	// that visible: warn once an iteration gap exceeds a threshold, rather than only ever finding
+	// out from a field report months later.
+	void warn_if_late(const char *label, std::uint32_t &lastCallMs, std::uint32_t thresholdMs)
+	{
+		std::uint32_t now = isobus::SystemTiming::get_timestamp_ms();
+		if ((0 != lastCallMs) && isobus::SystemTiming::time_expired_ms(lastCallMs, thresholdMs))
+		{
+			log("Timing") << label << " was late by " << (now - lastCallMs - thresholdMs)
+			              << " ms (gap " << (now - lastCallMs) << " ms, threshold " << thresholdMs << " ms)" << std::endl;
+		}
+		lastCallMs = now;
+	}
+}
+
 bool Application::update()
 {
 	static std::uint32_t lastHeartbeatTransmit = 0;
+	static std::uint32_t lastUpdateCallMs = 0;
+	static std::uint32_t lastSpeedUpdateCallMs = 0;
+	static std::uint32_t lastTcServerUpdateCallMs = 0;
+
+	// A gap here means Application::update() itself wasn't called often enough — the
+	// whole chain below (TC server, TECU, speed messages, NMEA2000) shares this one call.
+	warn_if_late("Application::update()", lastUpdateCallMs, 200);
 
 	udpConnections->handle_address_detection();
 	udpConnections->handle_incoming_packets();
 
 	tcServer->request_measurement_commands();
+	warn_if_late("tcServer->update()", lastTcServerUpdateCallMs, 200);
 	tcServer->update();
 	if (tcFunctionalities)
 		tcFunctionalities->update();
 	if (tecuFunctionalities)
 		tecuFunctionalities->update();
 	if (speedMessagesInterface)
+	{
+		warn_if_late("speedMessagesInterface->update()", lastSpeedUpdateCallMs, 200);
 		speedMessagesInterface->update();
+	}
 	if (nmea2000MessageInterface)
 		nmea2000MessageInterface->update();
 	if (vtClient)
@@ -708,6 +742,20 @@ bool Application::update()
 	}
 
 	// Send Task Controller Status message every 2 seconds (ISO 11783-10 B.8.1)
+	{
+		static std::uint32_t lastLateWarningMs = 0;
+		if ((0 != lastTCStatusTransmit) && tcCF && tcCF->get_address_valid() &&
+		    isobus::SystemTiming::time_expired_ms(lastTCStatusTransmit, 2500) &&
+		    isobus::SystemTiming::time_expired_ms(lastLateWarningMs, 2500))
+		{
+			// The 2000ms trigger below already fired late — Application::update() (or something
+			// ahead of it in that call chain) wasn't reached often enough to catch it on time.
+			// Re-warn at most every 2.5s while this persists, rather than once per ~1ms tick.
+			log("Timing") << "TC Status transmit is late by "
+			              << (isobus::SystemTiming::get_timestamp_ms() - lastTCStatusTransmit - 2000) << " ms" << std::endl;
+			lastLateWarningMs = isobus::SystemTiming::get_timestamp_ms();
+		}
+	}
 	if (isobus::SystemTiming::time_expired_ms(lastTCStatusTransmit, 2000) && tcCF && tcCF->get_address_valid())
 	{
 		static bool firstStatusSent = false;
@@ -1181,7 +1229,10 @@ void Application::update_vt_status_strings(bool aogConnected)
 {
 	lastVtStatusUpdateMs = isobus::SystemTiming::get_timestamp_ms();
 
-	send_vt_string_if_changed(VTWorkingSetStatusLabel, "AOG TC IP");
+	// Change String Value must not exceed the length declared for the object in the pool
+	// (AOG_TC.iop); the VT rejects longer strings with "Invalid string length". Keep every
+	// literal below within its object's declared length.
+	send_vt_string_if_changed(VTWorkingSetStatusLabel, "AOG IP"); // pool length 6
 	send_vt_string_if_changed(VTAogIPStr, udpConnections->get_bound_ip_address());
 	const std::string packetAge = (lastAogPacketMs == 0) ? "never" : (std::to_string(isobus::SystemTiming::get_time_elapsed_ms(lastAogPacketMs) / 1000) + " s");
 	const bool taskRunning = tcServer->get_task_totals_active();
@@ -1254,10 +1305,10 @@ void Application::update_vt_status_strings(bool aogConnected)
 	                 << "AOG packet age   " << packetAge;
 	send_vt_string_if_changed(VTControlFunctionsStr, mainSystemStatus.str());
 	send_vt_string_if_changed(ConfigHydliftLabel, "Hydlift: not impl.");
-	send_vt_string_if_changed(ConfigNmeaReadLabel, "NMEA Read: not impl.");
+	send_vt_string_if_changed(ConfigNmeaReadLabel, "NMEA Read: N/A"); // pool length 14
 	send_vt_string_if_changed(
-	  ConfigNmeaSendLabel,
-	  nmea2000MessageInterface ? (std::string("NMEA Send: ") + (settings->is_nmea_send_enabled() ? "ON" : "OFF")) : "NMEA Send: TECU req");
+	  ConfigNmeaSendLabel, // pool length 14
+	  nmea2000MessageInterface ? (std::string("NMEA Send: ") + (settings->is_nmea_send_enabled() ? "ON" : "OFF")) : "NMEA Send: N/A");
 	send_vt_string_if_changed(
 	  ConfigTecuLabel,
 	  std::string("TECU: ") + (settings->is_tecu_enabled() ? "ON" : "OFF") + " (restart req)");
@@ -1340,6 +1391,12 @@ void Application::stop()
 	{
 		vtClient->terminate();
 	}
-	tcServer->terminate();
-	isobus::CANHardwareInterface::stop();
+	if (tcServer)
+	{
+		tcServer->terminate();
+	}
+	if (canHardwareStarted)
+	{
+		isobus::CANHardwareInterface::stop();
+	}
 }
