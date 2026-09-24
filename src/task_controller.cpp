@@ -365,13 +365,17 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 	// state.get_pool().set_task_controller_compatibility_level(get_active_client(partnerCF)->reportedVersion);
 	state.get_pool().set_task_controller_compatibility_level(static_cast<std::uint8_t>(TaskControllerVersion::SecondEditionDraft));
 
-	bool deserialized = false;
+	// Queued chunks are fragments of one pool whose boundaries need not align with objects, so parse them as one buffer
+	std::vector<std::uint8_t> combinedPool;
 	while (!uploadedPools[partnerCF].empty())
 	{
-		auto binaryPool = uploadedPools[partnerCF].front();
+		auto &chunk = uploadedPools[partnerCF].front();
+		combinedPool.insert(combinedPool.end(), chunk.begin(), chunk.end());
 		uploadedPools[partnerCF].pop();
-		deserialized = state.get_pool().deserialize_binary_object_pool(binaryPool.data(), static_cast<std::uint32_t>(binaryPool.size()), partnerCF->get_NAME());
 	}
+	// The deserializer reports success on an empty buffer, which is not a valid activation
+	bool deserialized = !combinedPool.empty() &&
+	  state.get_pool().deserialize_binary_object_pool(combinedPool.data(), static_cast<std::uint32_t>(combinedPool.size()), partnerCF->get_NAME());
 	if (deserialized)
 	{
 		log() << "Successfully deserialized device descriptor object pool." << std::endl;
@@ -591,13 +595,18 @@ bool MyTCServer::delete_device_descriptor_object_pool(std::shared_ptr<isobus::Co
 	return true;
 }
 
-bool MyTCServer::get_is_stored_device_descriptor_object_pool_by_structure_label(std::shared_ptr<isobus::ControlFunction>, const std::vector<std::uint8_t> &, const std::vector<std::uint8_t> &)
+bool MyTCServer::get_is_stored_device_descriptor_object_pool_by_structure_label(std::shared_ptr<isobus::ControlFunction> partnerCF, const std::vector<std::uint8_t> &, const std::vector<std::uint8_t> &)
 {
+	// The label queries precede every pool upload, so anything still queued is from an aborted attempt
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
+	discard_queued_pool_chunks(partnerCF, "new upload session: structure label query");
 	return false;
 }
 
-bool MyTCServer::get_is_stored_device_descriptor_object_pool_by_localization_label(std::shared_ptr<isobus::ControlFunction>, const std::array<std::uint8_t, 7> &)
+bool MyTCServer::get_is_stored_device_descriptor_object_pool_by_localization_label(std::shared_ptr<isobus::ControlFunction> partnerCF, const std::array<std::uint8_t, 7> &)
 {
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
+	discard_queued_pool_chunks(partnerCF, "new upload session: localization label query");
 	return false;
 }
 
@@ -625,12 +634,17 @@ void MyTCServer::on_client_timeout(std::shared_ptr<isobus::ControlFunction> part
 	// Cleanup the client state
 	log("TC Server") << "Client " << partner->get_NAME().get_full_name() << " has timed out!" << std::endl;
 	clients.erase(partner);
+	// Drop any unactivated upload so a reconnect doesn't queue the new pool on top of it
+	uploadedPools.erase(partner);
 }
 
 void MyTCServer::on_client_version_received(std::shared_ptr<isobus::ControlFunction> clientControlFunction, std::uint8_t version)
 {
 	log("TC Server") << "Client " << clientControlFunction->get_NAME().get_full_name()
 	                 << " reported TC version " << static_cast<int>(version) << std::endl;
+	// The version exchange opens every client session, before any pool upload
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
+	discard_queued_pool_chunks(clientControlFunction, "new upload session: version exchange");
 }
 
 void MyTCServer::on_process_data_acknowledge(std::shared_ptr<isobus::ControlFunction> partner,
@@ -713,13 +727,25 @@ bool MyTCServer::on_value_command(std::shared_ptr<isobus::ControlFunction> partn
 bool MyTCServer::store_device_descriptor_object_pool(std::shared_ptr<isobus::ControlFunction> partnerCF, const std::vector<std::uint8_t> &binaryPool, bool appendToPool)
 {
 	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
-	log("TC Server") << "Client " << partnerCF->get_NAME().get_full_name() << " requesting object pool transfer of " << binaryPool.size() << " bytes" << std::endl;
-	if (uploadedPools.find(partnerCF) == uploadedPools.end())
-	{
-		uploadedPools[partnerCF] = std::queue<std::vector<std::uint8_t>>();
-	}
+	log("TC Server") << "Client " << partnerCF->get_NAME().get_full_name() << " requesting object pool transfer of " << binaryPool.size() << " bytes (append=" << appendToPool << ")" << std::endl;
+	// Always append: the isobus library reports appendToPool=false for every segment, even the 2nd..Nth
+	// chunk of one pool. Stale chunks are dropped at session start instead, see discard_queued_pool_chunks()
 	uploadedPools[partnerCF].push(binaryPool);
 	return true;
+}
+
+void MyTCServer::discard_queued_pool_chunks(std::shared_ptr<isobus::ControlFunction> partnerCF, const char *reason)
+{
+	auto existing = uploadedPools.find(partnerCF);
+	if (existing != uploadedPools.end())
+	{
+		if (!existing->second.empty())
+		{
+			log("TC Server") << "Client " << partnerCF->get_NAME().get_full_name()
+			                 << " discarding " << existing->second.size() << " queued, unactivated DDOP chunk(s) (" << reason << ")" << std::endl;
+		}
+		uploadedPools.erase(existing);
+	}
 }
 
 std::map<std::shared_ptr<isobus::ControlFunction>, ClientState> MyTCServer::get_clients()

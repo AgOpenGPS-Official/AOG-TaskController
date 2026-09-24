@@ -201,6 +201,19 @@ if(AOG_TC_VALIDATE_IOP)
   set_tests_properties(malformed_pool_exit_status PROPERTIES WILL_FAIL TRUE)
 endif()
 
+option(AOG_TC_RUN_UNIT_TESTS
+       "Build and register hardware-independent TC regression tests" ON)
+if(AOG_TC_RUN_UNIT_TESTS)
+  enable_testing()
+  add_executable(ddop_reupload_test
+                 ${CMAKE_CURRENT_LIST_DIR}/tools/ddop_reupload_test.cpp)
+  target_compile_features(ddop_reupload_test PRIVATE cxx_std_20)
+  set_target_properties(ddop_reupload_test PROPERTIES CXX_EXTENSIONS OFF)
+  target_link_libraries(ddop_reupload_test PRIVATE isobus::Isobus
+                                                   isobus::Utility)
+  add_test(NAME ddop_reupload COMMAND ddop_reupload_test)
+endif()
+
 if(WIN32)
   add_custom_command(
     TARGET ${PROJECT_NAME}
