@@ -365,13 +365,7 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 	// state.get_pool().set_task_controller_compatibility_level(get_active_client(partnerCF)->reportedVersion);
 	state.get_pool().set_task_controller_compatibility_level(static_cast<std::uint8_t>(TaskControllerVersion::SecondEditionDraft));
 
-	// Concatenate every queued chunk into one contiguous buffer before parsing. Each
-	// chunk here is a wire-level fragment of ONE logical pool (every chunk received since
-	// the session started, see store_device_descriptor_object_pool()); the binary DDOP format has no
-	// concept of resuming a partially-parsed object, so feeding chunks to the
-	// deserializer one at a time only works if every chunk boundary happens to fall on
-	// an object boundary. Deserializing once against the fully reassembled bytes avoids
-	// that assumption entirely.
+	// Queued chunks are fragments of one pool whose boundaries need not align with objects, so parse them as one buffer
 	std::vector<std::uint8_t> combinedPool;
 	while (!uploadedPools[partnerCF].empty())
 	{
@@ -379,9 +373,7 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 		combinedPool.insert(combinedPool.end(), chunk.begin(), chunk.end());
 		uploadedPools[partnerCF].pop();
 	}
-	// deserialize_binary_object_pool() reports success on an empty buffer (nothing to
-	// parse, nothing failed) — that's not a valid activation here, so it must be excluded
-	// explicitly rather than falling into the general parse call below.
+	// The deserializer reports success on an empty buffer, which is not a valid activation
 	bool deserialized = !combinedPool.empty() &&
 	  state.get_pool().deserialize_binary_object_pool(combinedPool.data(), static_cast<std::uint32_t>(combinedPool.size()), partnerCF->get_NAME());
 	if (deserialized)
@@ -642,9 +634,7 @@ void MyTCServer::on_client_timeout(std::shared_ptr<isobus::ControlFunction> part
 	// Cleanup the client state
 	log("TC Server") << "Client " << partner->get_NAME().get_full_name() << " has timed out!" << std::endl;
 	clients.erase(partner);
-	// A pool the client already uploaded before timing out is stale — if it's left in
-	// place, a fresh upload on reconnect lands on top of it in the queue below, and
-	// activate_object_pool() would deserialize both instead of just the new one.
+	// Drop any unactivated upload so a reconnect doesn't queue the new pool on top of it
 	uploadedPools.erase(partner);
 }
 
@@ -738,19 +728,14 @@ bool MyTCServer::store_device_descriptor_object_pool(std::shared_ptr<isobus::Con
 {
 	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
 	log("TC Server") << "Client " << partnerCF->get_NAME().get_full_name() << " requesting object pool transfer of " << binaryPool.size() << " bytes (append=" << appendToPool << ")" << std::endl;
-	// Always append, and ignore appendToPool: the isobus library derives it from
-	// numberOfObjectPoolSegments, which it never increments, so it is false for every
-	// segment — including the 2nd..Nth chunk of one pool. A client may send its DDOP as
-	// several Request/Transfer pairs, and dropping the queue on !appendToPool loses all
-	// but the last one. Stale chunks from an aborted upload are dropped at the start of a
-	// client session instead, see discard_queued_pool_chunks().
+	// Always append: the isobus library reports appendToPool=false for every segment, even the 2nd..Nth
+	// chunk of one pool. Stale chunks are dropped at session start instead, see discard_queued_pool_chunks()
 	uploadedPools[partnerCF].push(binaryPool);
 	return true;
 }
 
 void MyTCServer::discard_queued_pool_chunks(std::shared_ptr<isobus::ControlFunction> partnerCF, const char *reason)
 {
-	// Caller holds clientsMutex
 	auto existing = uploadedPools.find(partnerCF);
 	if (existing != uploadedPools.end())
 	{

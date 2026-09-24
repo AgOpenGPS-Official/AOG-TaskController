@@ -1,19 +1,7 @@
-// Regression test for the stale-upload bug fixed in MyTCServer::store_device_descriptor_object_pool()
-// and MyTCServer::activate_object_pool() (see src/task_controller.cpp).
-//
-// isobus::DeviceDescriptorObjectPool::deserialize_binary_object_pool() never clears its own object
-// list before parsing — every object it adds calls remove_object_with_id() first, so re-parsing the
-// SAME pool on top of itself is harmless (each object is cleanly replaced). But a client's pool
-// upload queue used to accumulate across a timeout-then-reconnect or an aborted upload followed by a restart
-// without ever being cleared, and activate_object_pool() looped over every queued chunk and called
-// deserialize_binary_object_pool() once per chunk, into the SAME pool object. If the queue ever held
-// an earlier, unrelated (or truncated) upload alongside the real one, whatever that earlier upload
-// declared under object IDs the real pool never reuses survives the second deserialize call
-// uncleaned, because nothing removes an object that the newer pool simply doesn't mention.
-//
-// This exercises that exact mechanism directly against isobus::DeviceDescriptorObjectPool — the same
-// class task_controller.cpp deserializes into — independent of the CAN/TaskControllerServer
-// scaffolding MyTCServer needs to actually run.
+// Regression test for stale DDOP re-upload (see MyTCServer::activate_object_pool()).
+// deserialize_binary_object_pool() never clears the pool first, so parsing a stale queued upload and
+// then the real one into the same object leaves the stale pool's non-overlapping objects behind.
+// Runs directly against isobus::DeviceDescriptorObjectPool, without the CAN/server scaffolding.
 #include "isobus/isobus/isobus_device_descriptor_object_pool.hpp"
 
 #include <algorithm>
@@ -34,9 +22,8 @@ namespace
 		violations.push_back(reason);
 	}
 
-	// A minimal version of the field report's "E2 Seeder" DDOP: a boom (element 2) carrying Section
-	// Control State (DDI 160) and a working-width DDI (67), and a section (element 4) carrying its
-	// own copy of DDI 67 plus DDI 134 and 135. DDI 160 exists only on the boom.
+	// Minimal "E2 Seeder" DDOP from the field report: boom (element 2) with DDI 160 and 67,
+	// section (element 4) with DDI 67, 134 and 135
 	bool build_seeder_pool(Pool &pool)
 	{
 		bool ok = true;
@@ -68,11 +55,8 @@ namespace
 		return true;
 	}
 
-	// A stale, unrelated pool standing in for "an earlier connection attempt that uploaded a pool
-	// and then timed out (or was abandoned and restarted) before
-	// activation." Different device, different object IDs, on purpose — the point is that its IDs
-	// don't collide with the real pool's, so nothing about a normal remove-then-readd would ever
-	// touch it.
+	// An unactivated upload from an earlier, aborted session. Its object IDs deliberately don't
+	// collide with the real pool's, so re-parsing the real pool never replaces them.
 	bool build_stale_pool(Pool &pool)
 	{
 		bool ok = true;
@@ -94,9 +78,7 @@ namespace
 		return true;
 	}
 
-	// The element numbers whose child list references the object with the given ID — the same
-	// "which DeviceElement owns this object" search MyTCServer::request_measurement_commands() does
-	// when it maps a DDI's DeviceProcessData object to an element number.
+	// Element numbers referencing the given child object, like MyTCServer::request_measurement_commands()
 	std::vector<std::uint16_t> find_owning_elements(Pool &pool, std::uint16_t childObjectID)
 	{
 		std::vector<std::uint16_t> owners;
@@ -147,9 +129,7 @@ int main()
 		}
 	}
 
-	// --- Reproduces the pre-fix bug: deserializing a stale pool and then the real pool into the
-	// same pool object, exactly like activate_object_pool()'s old per-chunk loop did whenever more
-	// than one blob had been queued for a client. ---
+	// Pre-fix bug: stale pool then real pool deserialized into the same object
 	if (violations.empty())
 	{
 		Pool combined;
@@ -158,17 +138,12 @@ int main()
 
 		if (nullptr == combined.get_object_by_id(901))
 		{
-			flag("pre-fix repro: expected the stale pool's row unit (object 901) to survive "
-			     "alongside the real pool — it's gone, so either deserialize_binary_object_pool() "
-			     "now resets its object list per call (this repro no longer applies) or something "
-			     "else changed. Re-check this test against the current isobus fork.");
+			flag("pre-fix repro: stale object 901 no longer survives a second deserialize; "
+			     "re-check this test against the current isobus library");
 		}
 	}
 
-	// --- The fix: the server drops unactivated chunks at the start of each client session (version
-	// exchange / label queries) and on timeout, and activate_object_pool() concatenates whatever chunks remain
-	// into one buffer and deserializes exactly once. With no stale pool queued alongside it, only
-	// the real pool's bytes are ever handed to the deserializer. ---
+	// Fixed: stale chunks are dropped at session start and on timeout, so only the real pool is parsed
 	if (violations.empty())
 	{
 		Pool activated;
@@ -200,11 +175,8 @@ int main()
 		}
 	}
 
-	// --- Chunked upload: a client may send its DDOP as several Request/Transfer pairs, and the
-	// chunk boundaries need not fall on object boundaries (a real implement sent 72/241/2045/2888
-	// byte chunks). The server queues every chunk and activate_object_pool() concatenates them
-	// before parsing once, so the result must match a single-shot parse of the same bytes, for
-	// any split point. ---
+	// Chunked upload: chunks split mid-object (a real implement sent 72/241/2045/2888 bytes), so the
+	// concatenated parse must match a single-shot parse for any split point
 	if (violations.empty())
 	{
 		Pool whole;
