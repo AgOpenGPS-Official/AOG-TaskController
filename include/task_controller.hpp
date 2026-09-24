@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include "ddop_hydration.hpp"
 #include "isobus/isobus/isobus_data_dictionary.hpp"
 #include "isobus/isobus/isobus_device_descriptor_object_pool.hpp"
 #include "isobus/isobus/isobus_standard_data_description_indices.hpp"
@@ -16,8 +17,11 @@
 
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <mutex>
+#include <optional>
 #include <queue>
+#include <string>
 
 constexpr std::uint8_t NUMBER_SECTIONS_PER_CONDENSED_MESSAGE = 16;
 
@@ -62,9 +66,19 @@ public:
 	// Element work state management these act like master / override for actual sections
 	void set_element_work_state(std::uint16_t elementNumber, bool isWorking);
 	bool try_get_element_work_state(std::uint16_t elementNumber, bool &isWorking) const;
+	// Hydrated DDOP snapshot support, see ddop_hydration.hpp
+	void set_canonical_pool(std::vector<std::vector<std::uint8_t>> chunks, std::string fileStem);
+	const std::vector<std::vector<std::uint8_t>> &get_canonical_pool_chunks() const;
+	const std::string &get_canonical_file_stem() const;
+	ddop_hydration::ProcessDataIndex &get_process_data_index();
+	ddop_hydration::ShadowValueStore &get_shadow_values();
 
 private:
 	isobus::DeviceDescriptorObjectPool pool; ///< The device descriptor object pool (DDOP) for the TC
+	std::shared_ptr<const std::vector<std::vector<std::uint8_t>>> canonicalPoolChunks; ///< The DDOP exactly as uploaded, shared so get_clients() copies stay cheap
+	std::string canonicalFileStem; ///< "<NAME>/<label>"; the canonical pool is stored as "<stem>.ddop"
+	ddop_hydration::ProcessDataIndex processDataIndex; ///< (DDI, element number) -> object ID
+	ddop_hydration::ShadowValueStore shadowValues; ///< Latest reported process data values by object ID
 	bool areMeasurementCommandsSent = false; ///< Whether or not the measurement commands have been sent
 	std::map<isobus::DataDescriptionIndex, std::uint16_t> ddiToElementNumber; ///< Mapping of DDI to element number // TODO: better way to do this?
 
@@ -116,13 +130,37 @@ public:
 	void update_section_states(std::vector<bool> &sectionStates);
 	void update_section_control_enabled(bool enabled);
 
+	enum class HydrationStartResult
+	{
+		Started,
+		AlreadyRunning,
+		UnknownClient
+	};
+
+	/// @brief Starts a hydrated DDOP snapshot for a client. Sends value requests for hydratable
+	/// objects without a known value; does not block. Finish it with poll_hydration_snapshot().
+	HydrationStartResult begin_hydration_snapshot(std::shared_ptr<isobus::ControlFunction> client);
+
+	/// @brief Call from the main loop. Once the request wait has elapsed, writes the snapshot and returns true.
+	/// @param[out] result The outcome of the finished snapshot, only set when this returns true
+	bool poll_hydration_snapshot(ddop_hydration::SnapshotResult &result);
+
 private:
+	struct PendingHydration
+	{
+		std::shared_ptr<isobus::ControlFunction> client;
+		std::vector<ddop_hydration::SnapshotEntry> entries;
+		std::uint32_t startedAt_ms = 0;
+		std::uint32_t wait_ms = 0;
+	};
+
 	void send_section_setpoint_states(std::shared_ptr<isobus::ControlFunction> client, std::uint8_t ddiOffset);
 	void send_section_control_state(std::shared_ptr<isobus::ControlFunction> client, bool enabled);
 	bool is_ddi_settable(std::shared_ptr<isobus::ControlFunction> client, std::uint16_t ddi);
 
 	std::map<std::shared_ptr<isobus::ControlFunction>, ClientState> clients;
 	std::map<std::shared_ptr<isobus::ControlFunction>, std::queue<std::vector<std::uint8_t>>> uploadedPools;
+	std::optional<PendingHydration> pendingHydration; ///< Guarded by clientsMutex
 
 	/// @brief Guards clients and uploadedPools.
 	///

@@ -8,6 +8,7 @@
  */
 #pragma once
 
+#include <atomic>
 #include <boost/asio.hpp>
 #include <cstdint>
 #include <map>
@@ -68,6 +69,7 @@ private:
 	void sync_vt_config_once();
 	void update_vt_section_map();
 	void update_vt_status_strings(bool aogConnected);
+	void update_hydration_snapshot();
 
 	void send_vt_string_if_changed(std::uint16_t objectID, const std::string &value);
 	void send_hardware_message(const std::string &text, std::uint8_t duration, std::uint8_t color);
@@ -97,6 +99,7 @@ private:
 	bool vtWasConnected = false;
 	bool vtConnectionWarningLogged = false;
 	bool vtCapabilitiesLogged = false;
+	std::atomic<bool> hydrationSnapshotRequested{ false }; ///< Set by the VT button listener, handled in update()
 	std::uint8_t nmea2000SequenceIdentifier = 0;
 	std::uint32_t lastJ1939SpeedTransmit = 0;
 	std::uint32_t lastTCStatusTransmit = 0;

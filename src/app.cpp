@@ -596,6 +596,7 @@ bool Application::update()
 	tcServer->request_measurement_commands();
 	warn_if_late("tcServer->update()", lastTcServerUpdateCallMs, 200);
 	tcServer->update();
+	update_hydration_snapshot();
 	if (tcFunctionalities)
 		tcFunctionalities->update();
 	if (tecuFunctionalities)
@@ -930,6 +931,50 @@ void Application::send_task_controller_status_message()
 	lastTCStatusTransmit = transmitAttemptTimestamp;
 }
 
+void Application::update_hydration_snapshot()
+{
+	if (hydrationSnapshotRequested.exchange(false))
+	{
+		auto clients = tcServer->get_clients(); // snapshot copy — see get_clients()'s declaration
+		if (clients.empty())
+		{
+			send_hardware_message("DDOP snapshot: no implement connected", 5, HW_MSG_ALERT);
+		}
+		else
+		{
+			// Same client the Implement page shows, see update_vt_status_strings()
+			switch (tcServer->begin_hydration_snapshot(clients.begin()->first))
+			{
+				case MyTCServer::HydrationStartResult::Started:
+					send_hardware_message("DDOP snapshot started", 5, HW_MSG_INFO);
+					break;
+				case MyTCServer::HydrationStartResult::AlreadyRunning:
+					send_hardware_message("DDOP snapshot already in progress", 5, HW_MSG_INFO);
+					break;
+				case MyTCServer::HydrationStartResult::UnknownClient:
+					send_hardware_message("DDOP snapshot: implement not active", 5, HW_MSG_ALERT);
+					break;
+			}
+		}
+	}
+
+	ddop_hydration::SnapshotResult result;
+	if (tcServer->poll_hydration_snapshot(result))
+	{
+		if (result.success)
+		{
+			log("TC Server") << "Saved hydrated DDOP snapshot: " << result.ddopPath << " (" << result.patchedObjects << " values patched, "
+			                 << result.missingValues << " missing, details in " << result.metadataPath << ")" << std::endl;
+			send_hardware_message("DDOP snapshot saved: " + std::to_string(result.patchedObjects) + " values, " + std::to_string(result.missingValues) + " missing", 10, HW_MSG_INFO);
+		}
+		else
+		{
+			log("TC Server") << "Hydrated DDOP snapshot failed: " << result.error << std::endl;
+			send_hardware_message("DDOP snapshot failed: " + result.error, 10, HW_MSG_ALERT);
+		}
+	}
+}
+
 void Application::setup_vt_client()
 {
 	vtObjectPool.assign(std::begin(AOG_TC_IOP_DATA), std::end(AOG_TC_IOP_DATA));
@@ -985,8 +1030,14 @@ void Application::setup_vt_client()
 			log("VT") << "Navigating to mask " << targetMask << std::endl;
 		}
 	});
-	vtClient->get_vt_button_event_dispatcher().add_listener([](const isobus::VirtualTerminalClient::VTKeyEvent &event) {
+	vtClient->get_vt_button_event_dispatcher().add_listener([this](const isobus::VirtualTerminalClient::VTKeyEvent &event) {
 		log("VT") << "Button event, key=" << static_cast<int>(event.keyNumber) << std::endl;
+		if ((event.objectID == ImplementSnapshotButton) &&
+		    (event.keyEvent == isobus::VirtualTerminalClient::KeyActivationCode::ButtonPressedOrLatched))
+		{
+			// Only flag it: this runs on the CAN thread, the snapshot is driven from update()
+			hydrationSnapshotRequested = true;
+		}
 	});
 	vtUpdateHelper = std::make_unique<isobus::VirtualTerminalClientUpdateHelper>(vtClient);
 	vtUpdateHelper->add_tracked_numeric_value(VTSpeedValue, 0);

@@ -78,6 +78,16 @@ AOG-TaskController reads its configuration from a `settings.json` file located i
 }
 ```
 
+### Hydrated DDOP snapshots
+
+Many implement values, such as element offsets and working width, are not stored in the DDOP; the implement reports them as process data once it is running. The **Snapshot DDOP** button on the VT Implement page writes a copy of the connected implement's DDOP with those values filled in, for viewing in tools such as AgIsoDDOPGenerator.
+
+- The objects are picked from the DDOP itself: every DeviceProperty, and every DeviceProcessData that reports on change and is not a total, a setpoint, a work state, section control state or an actual rate.
+- Values that were already reported are used directly. For the rest, the TC sends value requests and waits 10 seconds for answers.
+- DeviceProcessData objects with a value are replaced by DeviceProperty objects with the same object ID, DDI and designator. The Device designator gets a `SNAP ` prefix and the structure label is changed.
+- The snapshot is stored next to the canonical pool as `<NAME>/<label>.SNAP-<timestamp>.ddop`, with a `.json` file that lists every object, its value and where the value came from.
+- Snapshots are for debugging only: never upload one to a TC. The canonical `<label>.ddop` is not changed.
+
 ### Virtual Terminal compatibility
 
 The VT object pool is embedded in the executable and automatically scales from its authored 480-pixel data mask and 80-pixel softkey designator to the connected terminal. It uses five virtual navigation softkeys. A VT with fewer than five physical keys must support softkey paging.
