@@ -25,6 +25,7 @@
 #include "logging_utils.hpp"
 #include "settings.hpp"
 #include "task_controller.hpp"
+#include "tractor_facilities.hpp"
 #include "udp_connections.hpp"
 
 class Application
@@ -86,6 +87,7 @@ private:
 	std::shared_ptr<isobus::InternalControlFunction> tecuCF = nullptr;
 	std::unique_ptr<isobus::SpeedMessagesInterface> speedMessagesInterface;
 	std::unique_ptr<isobus::NMEA2000MessageInterface> nmea2000MessageInterface;
+	std::unique_ptr<TractorFacilities> tractorFacilities;
 	std::unique_ptr<isobus::ControlFunctionFunctionalities> tecuFunctionalities;
 	std::unique_ptr<isobus::ControlFunctionFunctionalities> tcFunctionalities;
 	std::shared_ptr<isobus::VirtualTerminalClient> vtClient;
@@ -104,6 +106,8 @@ private:
 	std::int32_t lastXteValue = 0;
 	std::uint32_t lastDistanceMm = 0;
 	std::uint32_t lastAogPacketMs = 0;
+
+	bool tractorFacilitiesSentOnPowerUp = false;
 	std::uint32_t vtDisconnectedSinceMs = 0;
 	std::uint32_t lastVtStatusUpdateMs = 0;
 	std::uint32_t lastVtSectionUpdateMs = 0;

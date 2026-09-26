@@ -13,6 +13,7 @@
 #include "isobus/hardware_integration/can_hardware_interface.hpp"
 #include "isobus/isobus/can_internal_control_function.hpp"
 #include "isobus/isobus/can_network_manager.hpp"
+#include "isobus/isobus/can_parameter_group_number_request_protocol.hpp"
 #include "isobus/isobus/isobus_device_descriptor_object_pool_helpers.hpp"
 #include "isobus/isobus/isobus_preferred_addresses.hpp"
 #include "isobus/isobus/isobus_standard_data_description_indices.hpp"
@@ -21,6 +22,7 @@
 #include "isobus/utility/system_timing.hpp"
 
 #include "task_controller.hpp"
+#include "tractor_facilities.hpp"
 
 #include "AOG_TC.iop.h"
 
@@ -42,6 +44,59 @@ static std::string format_hex_address(std::uint8_t address)
 	std::ostringstream value;
 	value << "0x" << std::hex << std::uppercase << std::setw(2) << std::setfill('0') << static_cast<int>(address);
 	return value.str();
+}
+
+// Diagnostic callback: log any Request for Repetition Rate (PGN 0xCC00)
+// that is properly addressed to one of our control functions.  We never
+// comply (return false) – this is purely for bus analysis.
+static bool log_repetition_rate_request(
+  std::uint32_t requestedPGN,
+  std::shared_ptr<isobus::ControlFunction> requestingCF,
+  std::shared_ptr<isobus::ControlFunction> /*targetCF*/,
+  std::uint32_t repetitionRate,
+  void * /*parentPointer*/)
+{
+	std::uint8_t srcAddr = requestingCF ? requestingCF->get_address() : 0xFF;
+	std::cout << "[" << get_timestamp() << "] [Diag] Repetition-rate request from SA "
+	          << static_cast<int>(srcAddr)
+	          << ": PGN " << requestedPGN
+	          << " (0x" << std::hex << requestedPGN << std::dec
+	          << "), rate=" << repetitionRate << " ms" << std::endl;
+	return false; // We don't comply; just logging.
+}
+
+// Diagnostic callback: log broadcast PGN 0xCC00 messages that AgIsoStack
+// warns about ("malformed or broadcast request for repetition rate").
+// These bypass the per-ICF callback, so we catch them with a global
+// PGN listener.
+static void log_broadcast_repetition_rate(
+  const isobus::CANMessage &message,
+  void * /*parentPointer*/)
+{
+	const auto &data = message.get_data();
+	if (data.size() < 8)
+	{
+		return;
+	}
+
+	auto sourceCF = message.get_source_control_function();
+	std::uint8_t srcAddr = sourceCF ? sourceCF->get_address() : 0xFF;
+
+	// PGN is a 3-byte little-endian value at bytes 0-2.
+	std::uint32_t requestedPGN =
+	  static_cast<std::uint32_t>(data[0]) |
+	  (static_cast<std::uint32_t>(data[1]) << 8) |
+	  (static_cast<std::uint32_t>(data[2]) << 16);
+	std::uint16_t requestedRate =
+	  static_cast<std::uint16_t>(data[3]) |
+	  (static_cast<std::uint16_t>(data[4]) << 8);
+
+	std::cout << "[" << get_timestamp() << "] [Diag] Broadcast repetition-rate request from SA "
+	          << static_cast<int>(srcAddr)
+	          << ": PGN " << requestedPGN
+	          << " (0x" << std::hex << requestedPGN << std::dec
+	          << "), rate=" << requestedRate << " ms"
+	          << " (broadcast – AgIsoStack will warn and ignore)" << std::endl;
 }
 
 // Enumerate and log all Control Functions on the bus
@@ -432,6 +487,24 @@ void Application::setup_tecu_interfaces()
 		nmea2000MessageInterface = std::make_unique<isobus::NMEA2000MessageInterface>(tecuCF, settings->is_nmea_send_enabled(), false, false, false, false, false, false);
 		nmea2000MessageInterface->initialize();
 		log("Init") << "NMEA2000 Message Interface created and initialized." << std::endl;
+
+		// Initialize Tractor Facilities (PGN 65033 / 65032)
+		tractorFacilities = std::make_unique<TractorFacilities>(tecuCF, settings);
+		tractorFacilities->set_speed_messages_interface(speedMessagesInterface.get());
+		tractorFacilities->set_nmea2000_message_interface(nmea2000MessageInterface.get());
+		tractorFacilities->initialize();
+
+		// Register repetition-rate diagnostic on the TECU's PGN request protocol
+		auto tecuPgnReq = tecuCF->get_pgn_request_protocol().lock();
+		if (tecuPgnReq)
+		{
+			tecuPgnReq->register_request_for_repetition_rate_callback(
+			  static_cast<std::uint32_t>(isobus::CANLibParameterGroupNumber::Any), &log_repetition_rate_request, nullptr);
+		}
+
+		// Also catch broadcast PGN 0xCC00 messages that AgIsoStack warns about
+		isobus::CANNetworkManager::CANNetwork.add_global_parameter_group_number_callback(
+		  0xCC00 /* RequestForRepetitionRate */, &log_broadcast_repetition_rate, nullptr);
 	}
 	else
 	{
@@ -607,6 +680,19 @@ bool Application::update()
 	}
 	if (nmea2000MessageInterface)
 		nmea2000MessageInterface->update();
+
+	// Transmit PGN 65033 once on power-up (ISO 11783-7 B.24.3 repetition
+	// rate: "on power-up, and then on request").
+	// The send fails until the TECU has claimed an address (or if the transmit queue rejects it),
+	// so only stop once it went out and retry once a second until then.
+	static std::uint32_t lastFacilitiesAttemptMs = 0;
+	if (!tractorFacilitiesSentOnPowerUp && tractorFacilities &&
+	    isobus::SystemTiming::time_expired_ms(lastFacilitiesAttemptMs, 1000))
+	{
+		lastFacilitiesAttemptMs = isobus::SystemTiming::get_timestamp_ms();
+		tractorFacilitiesSentOnPowerUp = tractorFacilities->send_facilities_response();
+	}
+
 	if (vtClient)
 		update_vt_client();
 
