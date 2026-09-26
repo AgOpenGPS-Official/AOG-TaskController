@@ -252,6 +252,7 @@ Common NAME fields: Industry Group `2` (Agricultural), Device Class `0`, Manufac
 | `0xFEE8` (PGN 65256 Speed/Direction) | 100 ms | TECU | Ground/Wheel/Machine-selected speed + machine direction, J1939 format. Only when TECU enabled. |
 | `0xFC8E` (Control Function Functionalities) | At claim + periodic | TECU | Announces Class 1 BasicTractorECUServer (no options). |
 | `0xFE09` (PGN 65033 Tractor Facilities) | Power-up + on request | TECU | 8-byte facility bitmask advertising which PGNs the TECU actually broadcasts. See §5.6. |
+| `0xFEE6` (PGN 65254 Time/Date) | 10 s, suppressed if another provider is detected | TECU | Wall-clock UTC + local offset, from `TimeDateInterface`. Also answers PGN-request for `0xFEE6`. |
 | NMEA2000 COG/SOG | Periodic | TECU | Optional course/speed over ground. |
 
 The TC also receives all ISOBUS Process Data (PGN 0xCB00) and Section Control commands from connected implements.
@@ -293,13 +294,13 @@ When the TECU is enabled, the TC responds to PGN 65033 requests (ISO 11783-7 B.2
 | 1 | 8,7 | TECU class | Always `00` (Class 1). |
 | 1 | 2 | Ground-based speed (PGN 65097) | `speedMessagesInterface` exists (always true when TECU is enabled). |
 | 1 | 3 | Wheel-based speed (PGN 65096) | `speedMessagesInterface` exists (always true when TECU is enabled). |
+| 3 | 8 | Time/date (PGN 65254) | `timeDateActive` — set whenever the TC's `TimeDateInterface` is actively broadcasting FEE6 (i.e. no duplicate Time/Date provider has been detected on the bus). Cleared if another ECU's FEE6 is seen. |
 | 3 | 7,6 | Ground-based distance + direction | Same as ground-based speed. |
 | 3 | 5,4 | Wheel-based distance + direction | Same as wheel-based speed. |
 
 **Facilities NOT advertised (bits always 0):**
 
 - Engine speed — no engine CAN access.
-- Time/date (PGN 65254) — the TC does not broadcast it.
 - Power management — no key switch or power timer signals.
 - Hitch position / in-work / draft — the hydraulic lift output is a command we issue, not measured feedback; implements would trust it for work-state logic.
 - PTO shaft speed / engagement — no PTO sensor.
@@ -311,7 +312,7 @@ When the TECU is enabled, the TC responds to PGN 65033 requests (ISO 11783-7 B.2
 - Front hitch / PTO — no front hitch or PTO sensors.
 - All reserved bits (byte 2 bits 2–1, byte 4 bits 3–1, byte 5 bit 5, byte 7, byte 8 including the reserved-bit indicator at bit 1).
 
-**Default payload** (TECU enabled, speed broadcasts active): `[0x06, 0x00, 0x78, 0x00, 0x00, 0x00, 0x00, 0x00]`.
+**Default payload** (TECU enabled, speed broadcasts active, TC is the sole Time/Date provider on the bus): `[0x06, 0x00, 0xF8, 0x00, 0x00, 0x00, 0x00, 0x00]`. Byte 3 drops to `0x78` (Time/date bit cleared) if another ECU's FEE6 is detected and the TC suppresses its own broadcast.
 
 **PGN 65032 (Required Tractor Facilities):** When an implement broadcasts what it needs, the TC logs the request at debug level. The response is not modified based on the implement's requirements — a facility bit is set to 1 only when backed by a live broadcast.
 
