@@ -30,6 +30,16 @@ enum SectionState : std::uint8_t
 	NOT_INSTALLED = 3 ///< Section is not installed
 };
 
+/// @brief Track control levels, as the bits an implement sets in DDI 505 for the levels it supports.
+/// Only Level 1 is implemented by the TC.
+enum class TrackControlLevel : std::uint8_t
+{
+	None = 0,
+	Level1 = 1,
+	Level2 = 2,
+	Level3 = 4
+};
+
 class ClientState
 {
 public:
@@ -69,6 +79,16 @@ public:
 	/// @returns The sequence number to announce.
 	std::uint32_t update_guidance_track_sequence(std::int32_t trackNumber, std::uint32_t referenceLineId);
 
+	// Track control level negotiation. The implement reports the levels it supports in DDI 505,
+	// the TC answers by writing the level it wants to use to DDI 506, and the implement's echo of
+	// that completes the negotiation.
+	int get_supported_track_control_levels() const;
+	void set_supported_track_control_levels(int levels);
+	bool is_track_control_level_sent() const;
+	void set_track_control_level_sent(bool sent);
+	bool is_track_negotiation_complete() const;
+	void set_track_negotiation_complete(bool complete);
+
 private:
 	isobus::DeviceDescriptorObjectPool pool; ///< The device descriptor object pool (DDOP) for the TC
 	bool areMeasurementCommandsSent = false; ///< Whether or not the measurement commands have been sent
@@ -88,6 +108,9 @@ private:
 	std::int32_t lastSentTrackNumber = 0; ///< Last track number announced, for DDI 507 change detection
 	std::uint32_t lastSentReferenceLineId = 0; ///< Last reference line ID announced, for DDI 507 change detection
 	std::uint32_t guidanceTrackSequenceNumber = 0; ///< Per-client DDI 507 sequence number
+	int supportedTrackControlLevels = 0; ///< Raw DDI 505 bitmask from the implement (bit 0 = Level 1, bit 1 = Level 2, bit 2 = Level 3)
+	bool trackControlLevelSent = false; ///< Whether DDI 506 has been written
+	bool trackNegotiationComplete = false; ///< Whether the implement confirmed the level written to DDI 506
 };
 
 // Create the task controller server object, this will handle all the ISOBUS communication for us
@@ -134,6 +157,11 @@ public:
 	/// @param ctx Current guidance track state from AOG
 	/// @param lineDeviationMm Deviation from the guidance line in mm
 	void send_guidance_track_data(const GuidanceTrackContext &ctx, std::int32_t lineDeviationMm);
+
+	/// @brief Writes the track control state (DDI 515) to every client that has finished negotiating
+	/// a track control level and declares that DDI.
+	/// @param enabled true = automatic, false = manual/off
+	void update_track_control_enabled(bool enabled);
 
 private:
 	void send_section_setpoint_states(std::shared_ptr<isobus::ControlFunction> client, std::uint8_t ddiOffset);
