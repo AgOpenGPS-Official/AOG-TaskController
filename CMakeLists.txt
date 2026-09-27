@@ -165,11 +165,13 @@ if(AOG_TC_VALIDATE_IOP)
   add_executable(
     test_guidance_track
     ${CMAKE_CURRENT_LIST_DIR}/tools/test_guidance_track.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/src/guidance_track_context.cpp)
+    ${CMAKE_CURRENT_LIST_DIR}/src/guidance_track_context.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/src/async_log.cpp)
   target_compile_features(test_guidance_track PRIVATE cxx_std_20)
   set_target_properties(test_guidance_track PROPERTIES CXX_EXTENSIONS OFF)
   target_include_directories(test_guidance_track
                              PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
+  target_link_libraries(test_guidance_track PRIVATE Threads::Threads)
   add_dependencies(iop_validator test_guidance_track)
   add_test(NAME guidance_track_parsing COMMAND test_guidance_track)
 
