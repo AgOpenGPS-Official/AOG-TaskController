@@ -48,7 +48,7 @@ Every packet — both directions — uses the same frame:
  5+N     1     Checksum      Sum of bytes [Source .. last payload byte], mod 256
 ```
 
-Total wire size is `N + 6` bytes. The maximum payload is currently 250 bytes (limited by the TC's 512-byte receive buffer; in practice the largest PGN in use is 8 bytes).
+Total wire size is `N + 6` bytes. The maximum payload is currently 250 bytes (limited by the TC's 512-byte receive buffer). Most PGNs are ≤10 bytes; the outlier is `0xD6` (GPS/IMU data, see §2.5), which needs at least 39 bytes today.
 
 **Checksum**: the TC currently does **not** validate inbound checksums (the verification code is present but commented out in `udp_connections.cpp`). Clients **should still compute and include a correct checksum** so that future TC versions, or third-party listeners, can validate.
 
@@ -58,6 +58,7 @@ Source byte identifies the logical sender of a frame. The conventions used today
 
 | Source | Logical sender |
 |---|---|
+| `0x7C` (124) | **AOG's GPS/IMU submodule** — sends PGN `0xD6` only (see §2.5). |
 | `0x7F` (127) | **AgIO / AgValonia** (the GUI/host application) |
 | `0x80` (128) | **AOG-TaskController** itself |
 
@@ -87,11 +88,12 @@ If no NIC matches, the TC falls back to loopback (`127.0.0.1`) — useful for lo
 
 ### 2.5 PGNs inbound (client → TC)
 
-All PGNs sent **by AgIO/AgValonia to the TC** use source `0x7F`.
+All PGNs sent **by AgIO/AgValonia to the TC** use source `0x7F`, except `0xD6` (GPS/IMU data), which comes from AOG's GPS submodule at source `0x7C`.
 
 | PGN | Name | Length | Payload |
 |---|---|---|---|
 | `0xC9` (201) | Subnet detection | 5 | `[0xC9, 0xC9, IP0, IP1, IP2]` |
+| `0xD6` (214) | GPS/IMU data | variable (≥39 used) | Only byte 38 (fix quality) is parsed today; rest of frame is currently unused. Source `0x7C`. |
 | `0xE5` (229) | Section states (64 sections) | 8 | Bitfield: bit `8·j + i` of byte `j` is section `(8j + i)` ON/OFF |
 | `0xF1` (241) | Section control mode | 1 | `[mode]` where `1` = enabled, `0` = disabled |
 | `0xF2` (242) | Process data | 6 | `[DDI_lo, DDI_hi, val0, val1, val2, val3]` — DDI is little-endian `uint16`; value is little-endian `int32` |
@@ -101,6 +103,12 @@ All PGNs sent **by AgIO/AgValonia to the TC** use source `0x7F`.
 Tells the TC which `/24` subnet AgIO/AgValonia lives on. The first two payload bytes are `0xC9 0xC9` (a magic to disambiguate from other PGNs that share the source). The next three bytes are the first three octets of AgIO's IP.
 
 On receipt the TC sets `settings.subnet = [IP0, IP1, IP2]`, closes the main socket, re-runs NIC enumeration, and rebinds. Useful for plug-and-play scenarios where the host may move between subnets.
+
+#### `0xD6` — GPS/IMU data
+
+Sent from AOG's GPS submodule, source `0x7C` (not `0x7F`). The TC only reads byte 38: AOG's fix-quality code (`0`=invalid, `1`=GPS, `2`=DGPS, `3`=PPS, `4`=RTK Fixed, `5`=RTK Float, `6`=Estimated, `7`=Manual, `8`=Simulated — the NMEA 2000 GNSS Method values DDI 514 uses). Values `0`–`8` are forwarded unchanged to implements as DDI 514 (GNSSQuality) — see §5.2.
+
+Two fallback cases both resolve to `1` (weakest real GNSS fix), not `0` (No GNSS): AOG reporting a value above `8` (not a defined GNSS Method), and no fresh `0xD6` (AOG doesn't always send this PGN at all — e.g. Simulator mode — and if none has arrived within 2 s the last value is treated as stale). `0` is deliberately avoided as a fallback because some implements gate TRACK/section control on GNSS quality being non-zero.
 
 #### `0xE5` — Section states
 
@@ -252,6 +260,7 @@ Common NAME fields: Industry Group `2` (Agricultural), Device Class `0`, Manufac
 | `0xFEE8` (PGN 65256 Speed/Direction) | 100 ms | TECU | Ground/Wheel/Machine-selected speed + machine direction, J1939 format. Only when TECU enabled. |
 | `0xFC8E` (Control Function Functionalities) | At claim + periodic | TECU | Announces Class 1 BasicTractorECUServer (no options). |
 | NMEA2000 COG/SOG | Periodic | TECU | Optional course/speed over ground. |
+| GNSS Quality (DDI 514, via `0xCB00` Process Data) | 250 ms | TC | AOG's GPS fix quality (PGN `0xD6`, see §2.5), sent to each client whose DDOP declares DDI 514 as settable. Falls back to `1` when no fresh fix quality is available. |
 
 The TC also receives all ISOBUS Process Data (PGN 0xCB00) and Section Control commands from connected implements.
 
