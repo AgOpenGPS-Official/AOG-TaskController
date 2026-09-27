@@ -67,6 +67,9 @@ namespace
 void log_crash(const std::string &reason)
 {
 	std::ofstream out(crash_file_path(".log"), std::ios::app);
+	// Queued log lines lead up to the crash, so get them out first. Bounded, since the
+	// writer thread may itself be the one that is stuck or crashed.
+	async_log::flush(std::chrono::milliseconds(500));
 	std::ostream &sink = out.is_open() ? static_cast<std::ostream &>(out) : std::cout;
 	sink << "[" << get_timestamp() << "] [Crash] " << reason << std::endl;
 }

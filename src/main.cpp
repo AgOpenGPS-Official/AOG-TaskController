@@ -1,4 +1,5 @@
 #include "app.hpp"
+#include "async_log.hpp"
 #include "crash_handler.hpp"
 #include "logging.cpp"
 #include "settings.hpp"
@@ -15,6 +16,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -326,11 +328,13 @@ static int run_application_loop(std::shared_ptr<isobus::CANHardwarePlugin> canDr
 	{
 		if (!app.initialize())
 		{
-			std::cout << "Failed to initialize application..." << std::endl;
+			log() << "Failed to initialize application..." << std::endl;
+			app.stop();
+			async_log::flush(std::chrono::seconds(2));
 			return -1;
 		}
 
-		std::cout << "[" << get_timestamp() << "] Press Ctrl+C to stop the application..." << std::endl;
+		log() << "Press Ctrl+C to stop the application..." << std::endl;
 
 		while (running)
 		{
@@ -370,8 +374,9 @@ static int run_application_loop(std::shared_ptr<isobus::CANHardwarePlugin> canDr
 		log_crash("Unhandled exception of unknown type escaped the main loop.");
 	}
 
-	std::cout << "[" << get_timestamp() << "] Shutting down..." << std::endl;
+	log() << "Shutting down..." << std::endl;
 	app.stop();
+	async_log::flush(std::chrono::seconds(2));
 	return 0;
 }
 

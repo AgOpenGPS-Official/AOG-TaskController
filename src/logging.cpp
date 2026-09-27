@@ -1,3 +1,4 @@
+#include "async_log.hpp"
 #include "isobus/isobus/can_stack_logger.hpp"
 #include "logging_utils.hpp"
 
@@ -43,7 +44,8 @@ protected:
 	}
 };
 
-static std::unique_ptr<TeeStreambuf> teeStream;
+// Never deleted: the async log writer thread can still be inside it when the process exits.
+static TeeStreambuf *teeStream = nullptr;
 
 static void setup_file_logging()
 {
@@ -64,7 +66,7 @@ static void setup_file_logging()
 	  std::to_string(localTime.tm_hour) + "-" +
 	  std::to_string(localTime.tm_min) + ".log";
 
-	teeStream = std::make_unique<TeeStreambuf>(std::cout, Settings::get_filename_path(logFilename));
+	teeStream = new TeeStreambuf(std::cout, Settings::get_filename_path(logFilename));
 }
 
 // A log sink for the CAN stack
@@ -76,40 +78,41 @@ public:
 
 	void sink_CAN_stack_log(CANStackLogger::LoggingLevel level, const std::string &text) override
 	{
-		std::cout << "[" << get_timestamp() << "] ";
+		std::ostream &out = async_log::stream();
+		out << "[" << get_timestamp() << "] ";
 		switch (level)
 		{
 			case LoggingLevel::Debug:
 			{
-				std::cout << "[Debug]";
+				out << "[Debug]";
 			}
 			break;
 
 			case LoggingLevel::Info:
 			{
-				std::cout << "[Info]";
+				out << "[Info]";
 			}
 			break;
 
 			case LoggingLevel::Warning:
 			{
-				std::cout << "[Warn]";
+				out << "[Warn]";
 			}
 			break;
 
 			case LoggingLevel::Error:
 			{
-				std::cout << "[Error]";
+				out << "[Error]";
 			}
 			break;
 
 			case LoggingLevel::Critical:
 			{
-				std::cout << "[Critical]";
+				out << "[Critical]";
 			}
 			break;
 		}
-		std::cout << text << std::endl; // Write the text to stdout
+		out << text << std::endl;
 	}
 };
 

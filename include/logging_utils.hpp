@@ -1,5 +1,7 @@
 #pragma once
 
+#include "async_log.hpp"
+
 #include <chrono>
 #include <ctime>
 #include <iomanip>
@@ -30,7 +32,7 @@ inline std::string get_timestamp()
 
 inline std::ostream &log()
 {
-	return std::cout << "[" << get_timestamp() << "] ";
+	return async_log::stream() << "[" << get_timestamp() << "] ";
 }
 
 inline std::ostream &log(const std::string &tag)
