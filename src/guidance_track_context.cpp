@@ -30,8 +30,8 @@ GuidanceTrackContext GuidanceTrackProvider::parse(std::span<const std::uint8_t> 
 
 	if (data.size() < MIN_PAYLOAD_SIZE)
 	{
-		std::cout << "[" << get_timestamp() << "] [TRACK][real] PGN 0xF4 too short (len="
-		          << data.size() << ")" << std::endl;
+		log("TRACK") << "[real] PGN 0xF4 too short (len="
+		             << data.size() << ")" << std::endl;
 		return ctx;
 	}
 
@@ -87,13 +87,13 @@ GuidanceTrackContext GuidanceTrackProvider::parse(std::span<const std::uint8_t> 
 		}
 	}
 
-	std::cout << "[" << get_timestamp() << "] [TRACK][real] seq=" << static_cast<int>(sequence)
-	          << " flags=0x" << std::hex << static_cast<int>(flags) << std::dec
-	          << " (valid=" << isValid << " sameHeading=" << headingSameWay << " curve=" << curveMode << ")"
-	          << " ref=" << refId
-	          << " left=" << trackLeft << " actual=" << currentTrack << " right=" << trackRight
-	          << " swath=" << ctx.swathWidthMm << "mm"
-	          << " -> " << outcome << std::endl;
+	log("TRACK") << "[real] seq=" << static_cast<int>(sequence)
+	             << " flags=0x" << std::hex << static_cast<int>(flags) << std::dec
+	             << " (valid=" << isValid << " sameHeading=" << headingSameWay << " curve=" << curveMode << ")"
+	             << " ref=" << refId
+	             << " left=" << trackLeft << " actual=" << currentTrack << " right=" << trackRight
+	             << " swath=" << ctx.swathWidthMm << "mm"
+	             << " -> " << outcome << std::endl;
 
 	return ctx;
 }
