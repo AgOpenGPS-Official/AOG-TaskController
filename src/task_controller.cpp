@@ -14,10 +14,12 @@
 #include "isobus/isobus/isobus_task_controller_server.hpp"
 
 #include <bitset>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <set>
+#include <sstream>
 
 // Sanitize a string for use as a filename by replacing invalid characters with underscores
 static std::string sanitize_filename(const std::string &input)
@@ -33,6 +35,46 @@ static std::string sanitize_filename(const std::string &input)
 		}
 	}
 	return result;
+}
+
+// Logs and keeps the DDOP bytes exactly as received, so pools from different sessions can be compared byte for byte.
+// Files are named by hash, so each distinct pool is written once. Never affects activation.
+static void save_received_ddop(std::uint64_t clientName, const std::vector<std::uint8_t> &rawPool, const std::vector<std::size_t> &chunkSizes)
+{
+	// FNV-1a 64-bit
+	std::uint64_t hash = 0xcbf29ce484222325ULL;
+	for (auto byte : rawPool)
+	{
+		hash = (hash ^ byte) * 0x100000001b3ULL;
+	}
+	std::ostringstream hashText;
+	hashText << std::hex << std::setw(16) << std::setfill('0') << hash;
+
+	std::ostringstream chunks;
+	for (std::size_t i = 0; i < chunkSizes.size(); i++)
+	{
+		chunks << (i ? "/" : "") << chunkSizes[i];
+	}
+
+	auto fileName = std::to_string(clientName) + "/received/" + hashText.str() + ".ddop";
+	auto &out = log("TC Server") << "Client " << clientName << " received DDOP: " << rawPool.size() << " bytes in "
+	                             << chunkSizes.size() << " chunk(s) [" << chunks.str() << "], fnv1a64=" << hashText.str();
+	try
+	{
+		auto path = Settings::get_filename_path(fileName);
+		if (std::filesystem::exists(path))
+		{
+			out << " (already saved)" << std::endl;
+			return;
+		}
+		std::ofstream outFile(path, std::ios::binary);
+		outFile.write(reinterpret_cast<const char *>(rawPool.data()), static_cast<std::streamsize>(rawPool.size()));
+		out << (outFile ? ", saved to " + fileName : ", failed to save " + fileName) << std::endl;
+	}
+	catch (const std::exception &e)
+	{
+		out << ", failed to save: " << e.what() << std::endl;
+	}
 }
 
 void ClientState::set_number_of_sections(std::uint8_t number)
@@ -366,12 +408,17 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 	state.get_pool().set_task_controller_compatibility_level(static_cast<std::uint8_t>(TaskControllerVersion::SecondEditionDraft));
 
 	bool deserialized = false;
+	std::vector<std::uint8_t> receivedPool;
+	std::vector<std::size_t> receivedChunkSizes;
 	while (!uploadedPools[partnerCF].empty())
 	{
 		auto binaryPool = uploadedPools[partnerCF].front();
 		uploadedPools[partnerCF].pop();
+		receivedPool.insert(receivedPool.end(), binaryPool.begin(), binaryPool.end());
+		receivedChunkSizes.push_back(binaryPool.size());
 		deserialized = state.get_pool().deserialize_binary_object_pool(binaryPool.data(), static_cast<std::uint32_t>(binaryPool.size()), partnerCF->get_NAME());
 	}
+	save_received_ddop(partnerCF->get_NAME().get_full_name(), receivedPool, receivedChunkSizes);
 	if (deserialized)
 	{
 		log() << "Successfully deserialized device descriptor object pool." << std::endl;
