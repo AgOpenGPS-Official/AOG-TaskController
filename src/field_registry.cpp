@@ -87,7 +87,7 @@ void FieldRegistry::load()
 		nextIndexExhausted = (highestIndex >= std::numeric_limits<std::uint16_t>::max());
 	}
 
-	std::cout << "[" << get_timestamp() << "] [FieldRegistry] Loaded " << nameToIndex.size() << " field(s) from " << filePath << std::endl;
+	log("FieldRegistry") << "Loaded " << nameToIndex.size() << " field(s) from " << filePath << std::endl;
 }
 
 void FieldRegistry::append_entry(const std::string &fieldName, std::uint16_t index)
@@ -95,7 +95,7 @@ void FieldRegistry::append_entry(const std::string &fieldName, std::uint16_t ind
 	std::ofstream out(filePath, std::ios::app);
 	if (!out.is_open())
 	{
-		std::cout << "[" << get_timestamp() << "] [FieldRegistry] Failed to persist field '" << fieldName << "' (could not open " << filePath << " for append)" << std::endl;
+		log("FieldRegistry") << "Failed to persist field '" << fieldName << "' (could not open " << filePath << " for append)" << std::endl;
 		return;
 	}
 	out << index << ',' << fieldName << '\n';
@@ -112,8 +112,8 @@ std::uint16_t FieldRegistry::get_or_assign_index(const std::string &rawFieldName
 
 	if (nextIndexExhausted)
 	{
-		std::cout << "[" << get_timestamp() << "] [FieldRegistry] Field index space exhausted (65536 fields already registered); "
-		          << "reusing the last index for '" << fieldName << "' instead of assigning a new one." << std::endl;
+		log("FieldRegistry") << "Field index space exhausted (65536 fields already registered); "
+		                     << "reusing the last index for '" << fieldName << "' instead of assigning a new one." << std::endl;
 		return nextIndex;
 	}
 
@@ -129,6 +129,6 @@ std::uint16_t FieldRegistry::get_or_assign_index(const std::string &rawFieldName
 	}
 
 	append_entry(fieldName, assigned);
-	std::cout << "[" << get_timestamp() << "] [FieldRegistry] Assigned index " << assigned << " to field '" << fieldName << "'" << std::endl;
+	log("FieldRegistry") << "Assigned index " << assigned << " to field '" << fieldName << "'" << std::endl;
 	return assigned;
 }

@@ -1,0 +1,123 @@
+name: Submit a machine
+description: Share data about an implement (sprayer, seeder, planter, ...) so we can support it properly
+title: "[Machine] <brand> <model>"
+labels: ["machine-data"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping us support more machines. The more of this you can fill in, the better: the
+        physical measurements are what let us tell "the implement reports something odd" from "we parse it wrong".
+        Partial submissions are welcome.
+
+  - type: input
+    id: machine
+    attributes:
+      label: Brand, model and year
+      placeholder: "Amazone Precea 4500-2, 2022"
+    validations:
+      required: true
+
+  - type: input
+    id: firmware
+    attributes:
+      label: Implement ECU software / firmware version
+      description: Usually shown on the implement's own terminal (VT) under diagnostics or "About".
+    validations:
+      required: false
+
+  - type: input
+    id: tc-version
+    attributes:
+      label: AOG-TaskController version
+      placeholder: "e.g. v1.4.0 or the develop commit hash"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: type
+    attributes:
+      label: Implement type
+      options:
+        - Sprayer
+        - Fertilizer spreader
+        - Seeder (drill)
+        - Precision planter
+        - Combined (e.g. planter + fertilizer + microgranulate)
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: physical
+    attributes:
+      label: Physical layout (measured or from the manual)
+      description: |
+        This is the ground truth we compare the DDOP against. Please give real numbers, not what the terminal displays.
+        - Total working width
+        - Number of rows / dispensers / nozzles **per product**
+        - Row spacing
+        - Distance (front to back) between the different toolbars or rows, e.g. fertilizer coulters to planting units
+        - Whether each row, group or product can be switched on and off independently
+        - How the implement is attached (drawbar, 3-point mounted, semi-mounted, self-propelled)
+      placeholder: |
+        Working width: 4.5 m
+        Fertilizer: 1 dispenser feeding 6 rows, 75 cm spacing
+        Planting units: 6 rows, 75 cm spacing, switched individually
+        Microgranulate: 6 rows, 75 cm spacing, switched individually
+        Fertilizer bar is ~50 cm ahead of the planting units
+        3-point mounted
+    validations:
+      required: true
+
+  - type: textarea
+    id: aog
+    attributes:
+      label: What did AOG / the TC show?
+      description: |
+        For example the number of sections and the width reported on the Implement page, and any section
+        widths you had to enter in AgOpenGPS. Mismatches with the physical layout above are exactly what we want to see.
+      placeholder: |
+        Implement page: 3 sections, 12.00 m
+        Actual machine: one 4 m bar with 3 products
+    validations:
+      required: false
+
+  - type: textarea
+    id: behaviour
+    attributes:
+      label: What worked and what did not?
+      description: Section control on/off, coverage painted in AOG, feedback from the implement, error messages on the implement terminal.
+    validations:
+      required: false
+
+  - type: textarea
+    id: files
+    attributes:
+      label: Data bundle
+      description: |
+        Zip everything in your `%APPDATA%` AOG-TaskController folder (all the sub-folders, they contain the `.ddop` files)
+        together with the log files, then drag the zip in here.
+
+        If your version has the **Snapshot DDOP** button on the VT Implement page, press it after the implement has been
+        working for a minute or so, then include the resulting `*.SNAP-*` files. They contain values the implement reports
+        while running, such as offsets and widths, which are not in the normal `.ddop`.
+      placeholder: Drag and drop the zip file here
+    validations:
+      required: true
+
+  - type: textarea
+    id: photos
+    attributes:
+      label: Photos (optional)
+      description: The implement from behind and from above, and the data plate. A photo of the row layout is very useful.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: consent
+    attributes:
+      label: Sharing
+      options:
+        - label: I am happy for the attached DDOP and logs to be used publicly as a test case in this repository.
+          required: true
