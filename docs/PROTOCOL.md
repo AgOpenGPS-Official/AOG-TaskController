@@ -95,8 +95,11 @@ All PGNs sent **by AgIO/AgValonia to the TC** use source `0x7F`, except `0xD6` (
 | `0xC9` (201) | Subnet detection | 5 | `[0xC9, 0xC9, IP0, IP1, IP2]` |
 | `0xD6` (214) | GPS/IMU data | variable (≥39 used) | Only byte 38 (fix quality) is parsed today; rest of frame is currently unused. Source `0x7C`. |
 | `0xE5` (229) | Section states (64 sections) | 8 | Bitfield: bit `8·j + i` of byte `j` is section `(8j + i)` ON/OFF |
+| `0xEF` (239) | Machine data | variable | Only used as an AOG-liveness signal; payload not parsed. |
 | `0xF1` (241) | Section control mode | 1 | `[mode]` where `1` = enabled, `0` = disabled |
 | `0xF2` (242) | Process data | 6 | `[DDI_lo, DDI_hi, val0, val1, val2, val3]` — DDI is little-endian `uint16`; value is little-endian `int32` |
+| `0xF3` (243) | Field name | variable | The open field's name as raw UTF-8; empty = field closed. |
+| `0xF4` (244) | Guidance track context | 10 or 12 | Real-time AB-line/track guidance state, announced to implements as DDI 507-513 — see §5.4.1. |
 
 #### `0xC9` — Subnet detection
 
@@ -126,9 +129,33 @@ Wraps a single ISO 11783 DDI/value pair. The TC currently dispatches on these DD
 |---|---|---|
 | `156` | Actual speed (mm/s) | Stored. If TECU enabled, broadcast as Ground/Wheel/Machine-selected speed (PGN 65256) + NMEA2000 SOG. Drives forward/reverse direction. Also produces J1939 PGN 65256 every 100 ms. |
 | `597` | Total distance (mm) | Stored and displayed on the VT Status page. If TECU is enabled, also populated into Speed Messages distance fields. |
-| Guidance line deviation | XTE (mm) | Converted to metres. Broadcast as NMEA2000 XTE (PGN 0x1F903) at 1 Hz. |
+| Guidance line deviation | XTE (mm) | Converted to metres. Broadcast as NMEA2000 XTE (PGN 0x1F903) at 1 Hz. Also announced to implements as DDI 513 (GuidanceLineDeviation) — see §5.4.1. |
 
 Unknown DDIs are silently ignored (PGN 0xF2 is the generic process-data channel — the TC will gain more DDIs over time).
+
+#### `0xF3` — Field name
+
+The whole payload is the open field's name as raw UTF-8 — no length prefix, no offset — up to 248 bytes (longer names are truncated). An empty payload means the field was closed, which also invalidates the current track context.
+
+The TC maps each field name to a persistent 16-bit index, stored one `index,name` line per field in `field_registry.csv` next to `settings.json`. The index is folded into the upper 16 bits of DDI 508 (see `0xF4`), so a track's reference line ID stays unique across fields.
+
+#### `0xF4` — Guidance track context
+
+AOG's real-time AB-line/track guidance state. 12-byte payload (a 10-byte payload without the last field is also accepted):
+
+```
+ Byte 0    Sequence counter (0–255, wraps)
+ Byte 1    Flags: bit0=valid, bit1=heading same way, bit2=curve mode
+ Bytes 2-3 Guidance Reference Line ID (uint16 LE) — 0 = no active track
+ Bytes 4-5 Actual Track Number (int16 LE, signed — can be negative and jump by more than 1)
+ Bytes 6-7 Track Number Left (int16 LE, signed)
+ Bytes 8-9 Track Number Right (int16 LE, signed)
+ Bytes 10-11 Swath Width in mm (uint16 LE) — distance between adjacent tracks; 0 = not reported
+```
+
+AOG sends this **only when the guidance state actually changes** — there is no heartbeat. The TC rejects any packet whose sequence number isn't strictly ahead of the last accepted one (catches duplicates, freezes, and reordered/stale UDP delivery).
+
+**Track-number offset:** the TC adds `+1` to all three track numbers (current/left/right) before announcing them — confirmed by field testing, not documented anywhere on AOG's side. As sent raw by AOG, a tramline implement's own on-board phase (which pass of N is "on") was consistently one pass out of sync with AOG's own intended on/off state, for both left and right passes; a uniform `+1` (independent of sign) brought them into agreement. See `GuidanceTrackProvider::parse()` (`AOG_TRACK_NUMBER_OFFSET`).
 
 ### 2.6 PGNs outbound (TC → client)
 
@@ -261,6 +288,7 @@ Common NAME fields: Industry Group `2` (Agricultural), Device Class `0`, Manufac
 | `0xFC8E` (Control Function Functionalities) | At claim + periodic | TECU | Announces Class 1 BasicTractorECUServer (no options). |
 | NMEA2000 COG/SOG | Periodic | TECU | Optional course/speed over ground. |
 | GNSS Quality (DDI 514, via `0xCB00` Process Data) | 250 ms | TC | AOG's GPS fix quality (PGN `0xD6`, see §2.5), sent to each client whose DDOP declares DDI 514 as settable. Falls back to `1` when no fresh fix quality is available. |
+| Guidance track data (DDI 507-513, via `0xCB00` Process Data) | 250 ms, while AOG has a valid track | TC | Track number, adjacent tracks, reference line, swath width and line deviation from AOG's PGN `0xF4`/`0xF2`, sent to each client whose DDOP declares them as settable. See §5.4.1. |
 
 The TC also receives all ISOBUS Process Data (PGN 0xCB00) and Section Control commands from connected implements.
 
@@ -280,6 +308,22 @@ The TC also receives all ISOBUS Process Data (PGN 0xCB00) and Section Control co
 | Max booms | 1 |
 | Max sections | 64 |
 | Supported DDIs | 160 / 161 / 290 (condensed section setpoint and actual states), plus speed/distance/guidance DDIs from the tractor side |
+
+#### 5.4.1 Guidance data sent to implements
+
+The TC pushes guidance data to each client whose DDOP declares the DDI as settable. Clients can't request values from the TC, so a DDI a client doesn't declare, or declares as not settable, is never sent to it. Only clients with sections (implements, not tractors) are considered, as with the other DDI mappings.
+
+| DDI | Name | Sent when |
+|---|---|---|
+| 507 | GuidanceTrackSequenceNumber | Valid track. Increments whenever the actual track number or the reference line ID changes — not on section-control toggles. |
+| 508 | UniqueGuidanceReferenceLineID | Valid track. AOG's 16-bit reference line ID in the low 16 bits, the persistent field index (see `0xF3`) in the high 16 bits. |
+| 509 | ActualGuidanceTrackNumber | Valid track. Signed; can be negative and can jump by more than 1 in a single update (e.g. skipping several tracks on a headland turn). |
+| 510 / 511 | GuidanceTrackNumberToTheRight / ...ToTheLeft | Valid track. |
+| 512 | GuidanceLineSwathWidth | Valid track, and AOG reported a non-zero swath width in `0xF4`. AOG's track spacing (tool width minus overlap), the same spacing the track numbers are derived from. |
+| 513 | GuidanceLineDeviation | Valid track. AOG's XTE in mm (PGN `0xF2`, see §2.5). |
+| 514 | GNSSQuality | Always — see `0xD6`. |
+
+"Valid track" means the TC holds an accepted PGN `0xF4` payload with the valid flag set, a non-zero reference line ID, and an open field (PGN `0xF3`) to scope the ID to. Since AOG only sends `0xF4` on change, validity is *not* cleared just because no new `0xF4` has arrived; it is cleared only by an explicit "guidance off" packet, by the field closing, or by AOG disconnecting entirely (no packets of any kind for 3 s).
 
 ### 5.5 Virtual Terminal UI
 

@@ -96,6 +96,7 @@ The application logs the detected VT version, screen size, softkey dimensions, a
 Sent to any implement whose device description declares the DDI as settable.
 
 - **GNSS quality (DDI 514):** AgOpenGPS's GPS fix quality, every 250 ms.
+- **Guidance track (DDI 507-513):** the current track number, the tracks to its left and right, the track spacing, a reference line ID that is unique across fields, and the deviation from the guidance line, every 250 ms while AgOpenGPS has an active track.
 
 ## Contributing
 
