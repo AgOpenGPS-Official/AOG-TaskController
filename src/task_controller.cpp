@@ -597,6 +597,11 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 				log() << "  Section " << static_cast<int>(i) << " -> element " << sectionElementNumbers[i] << std::endl;
 			}
 		}
+		else if (0 == numberOfSections)
+		{
+			// e.g. a tractor ECU describing hitch or GNSS geometry: nothing to control, nothing wrong
+			log("TC Server") << "Non-section client: the DDOP has no section elements, section control not applicable." << std::endl;
+		}
 		else
 		{
 			log("TC Server") << "WARNING: No supported section control method detected! "
