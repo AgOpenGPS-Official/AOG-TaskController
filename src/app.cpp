@@ -27,6 +27,8 @@
 #include "logging_utils.hpp"
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <iomanip>
 #include <iostream>
 #include <span>
@@ -42,6 +44,42 @@ static std::string format_hex_address(std::uint8_t address)
 	std::ostringstream value;
 	value << "0x" << std::hex << std::uppercase << std::setw(2) << std::setfill('0') << static_cast<int>(address);
 	return value.str();
+}
+
+// Requests to Send with a global destination are invalid and ignored by the stack. Its per-message warning
+// has no source address, so count them per source here (CAN thread) and report once per minute from update().
+static std::array<std::atomic<std::uint32_t>, 256> globalRtsCountBySource{};
+
+static void count_global_rts(const isobus::CANMessageFrame &frame)
+{
+	constexpr std::uint8_t TP_CONNECTION_MANAGEMENT_PF = 0xEC;
+	constexpr std::uint8_t TP_REQUEST_TO_SEND = 16;
+	if (frame.isExtendedFrame && (frame.dataLength > 0) &&
+	    (((frame.identifier >> 16) & 0xFF) == TP_CONNECTION_MANAGEMENT_PF) &&
+	    (((frame.identifier >> 8) & 0xFF) == 0xFF) &&
+	    (frame.data[0] == TP_REQUEST_TO_SEND))
+	{
+		globalRtsCountBySource[frame.identifier & 0xFF]++;
+	}
+}
+
+static void report_global_rts_counts()
+{
+	std::ostringstream sources;
+	std::uint32_t total = 0;
+	for (std::size_t source = 0; source < globalRtsCountBySource.size(); source++)
+	{
+		const std::uint32_t count = globalRtsCountBySource[source].exchange(0);
+		if (count > 0)
+		{
+			sources << (total > 0 ? ", " : "") << format_hex_address(static_cast<std::uint8_t>(source)) << " (" << count << ")";
+			total += count;
+		}
+	}
+	if (total > 0)
+	{
+		log("TP") << "Ignored " << total << " Request to Send message(s) with a global destination in the last minute, from source address(es) " << sources.str() << std::endl;
+	}
 }
 
 // Enumerate and log all Control Functions on the bus
@@ -194,6 +232,7 @@ bool Application::setup_can_hardware()
 	}
 	isobus::CANHardwareInterface::set_number_of_can_channels(1);
 	isobus::CANHardwareInterface::assign_can_channel_frame_handler(0, canDriver);
+	isobus::CANHardwareInterface::get_can_frame_received_event_dispatcher().add_listener(count_global_rts);
 
 	canHardwareStarted = isobus::CANHardwareInterface::start();
 	if ((!canHardwareStarted) || (!canDriver->get_is_valid()))
@@ -625,6 +664,13 @@ bool Application::update()
 		}
 		tcAddressConflictActive = conflictActive;
 		lastConflictCheck = isobus::SystemTiming::get_timestamp_ms();
+	}
+
+	static std::uint32_t lastGlobalRtsReportMs = 0;
+	if (isobus::SystemTiming::time_expired_ms(lastGlobalRtsReportMs, 60000))
+	{
+		report_global_rts_counts();
+		lastGlobalRtsReportMs = isobus::SystemTiming::get_timestamp_ms();
 	}
 
 	// Diff active implement clients once per second so disconnect messages retain prior metadata.
