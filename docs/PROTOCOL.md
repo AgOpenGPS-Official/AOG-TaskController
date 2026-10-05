@@ -58,7 +58,7 @@ Source byte identifies the logical sender of a frame. The conventions used today
 
 | Source | Logical sender |
 |---|---|
-| `0x7C` (124) | **AOG's GPS/IMU submodule** — sends PGN `0xD6` only (see §2.5). |
+| `0x7C` (124) | **GPS data from AgIO's NMEA parser** — sends PGN `0xD6` only (see §2.5). Not a separate device: AgIO builds this frame from the receiver's NMEA sentences. |
 | `0x7F` (127) | **AgIO / AgValonia** (the GUI/host application) |
 | `0x80` (128) | **AOG-TaskController** itself |
 
@@ -88,7 +88,7 @@ If no NIC matches, the TC falls back to loopback (`127.0.0.1`) — useful for lo
 
 ### 2.5 PGNs inbound (client → TC)
 
-All PGNs sent **by AgIO/AgValonia to the TC** use source `0x7F`, except `0xD6` (GPS/IMU data), which comes from AOG's GPS submodule at source `0x7C`.
+All PGNs sent **by AgIO/AgValonia to the TC** use source `0x7F`, except `0xD6` (GPS/IMU data), which AgIO's NMEA parser sends with source `0x7C`.
 
 | PGN | Name | Length | Payload |
 |---|---|---|---|
@@ -106,9 +106,13 @@ On receipt the TC sets `settings.subnet = [IP0, IP1, IP2]`, closes the main sock
 
 #### `0xD6` — GPS/IMU data
 
-Sent from AOG's GPS submodule, source `0x7C` (not `0x7F`). The TC only reads byte 38: AOG's fix-quality code (`0`=invalid, `1`=GPS, `2`=DGPS, `3`=PPS, `4`=RTK Fixed, `5`=RTK Float, `6`=Estimated, `7`=Manual, `8`=Simulated — the NMEA 2000 GNSS Method values DDI 514 uses). Values `0`–`8` are forwarded unchanged to implements as DDI 514 (GNSSQuality) — see §5.2.
+Built by AgIO's NMEA parser from the GPS receiver's NMEA sentences (serial and UDP input both go through it), source `0x7C` (not `0x7F`). No hardware sends this PGN directly.
 
-Two fallback cases both resolve to `1` (weakest real GNSS fix), not `0` (No GNSS): AOG reporting a value above `8` (not a defined GNSS Method), and no fresh `0xD6` (AOG doesn't always send this PGN at all — e.g. Simulator mode — and if none has arrived within 2 s the last value is treated as stale). `0` is deliberately avoided as a fallback because some implements gate TRACK/section control on GNSS quality being non-zero.
+AgIO always sends it to AOG over loopback, but only sends it to the module network on 8888 when the AgIO profile setting `setUDP_isSendNMEAToUDP` is on. That setting defaults to off and has had no UI since Feb 2024, so on a default AgIO install the TC never receives `0xD6`. This is tracked upstream in [AgOpenGPS#1231](https://github.com/AgOpenGPS-Official/AgOpenGPS/issues/1231).
+
+The TC only reads byte 38: the fix-quality code (`0`=invalid, `1`=GPS, `2`=DGPS, `3`=PPS, `4`=RTK Fixed, `5`=RTK Float, `6`=Estimated, `7`=Manual, `8`=Simulated — the NMEA 2000 GNSS Method values DDI 514 uses). Values `0`–`8` are forwarded unchanged to implements as DDI 514 (GNSSQuality) — see §5.2.
+
+Two fallback cases both resolve to `1` (weakest real GNSS fix), not `0` (No GNSS): AgIO reporting a value above `8` (not a defined GNSS Method), and no fresh `0xD6` (the default AgIO setup doesn't forward it to 8888 — see above — and Simulator mode doesn't produce it at all; if none has arrived within 2 s the last value is treated as stale). `0` is deliberately avoided as a fallback because some implements gate TRACK/section control on GNSS quality being non-zero.
 
 #### `0xE5` — Section states
 
@@ -260,7 +264,7 @@ Common NAME fields: Industry Group `2` (Agricultural), Device Class `0`, Manufac
 | `0xFEE8` (PGN 65256 Speed/Direction) | 100 ms | TECU | Ground/Wheel/Machine-selected speed + machine direction, J1939 format. Only when TECU enabled. |
 | `0xFC8E` (Control Function Functionalities) | At claim + periodic | TECU | Announces Class 1 BasicTractorECUServer (no options). |
 | NMEA2000 COG/SOG | Periodic | TECU | Optional course/speed over ground. |
-| GNSS Quality (DDI 514, via `0xCB00` Process Data) | 250 ms | TC | AOG's GPS fix quality (PGN `0xD6`, see §2.5), sent to each client whose DDOP declares DDI 514 as settable. Falls back to `1` when no fresh fix quality is available. |
+| GNSS Quality (DDI 514, via `0xCB00` Process Data) | 250 ms | TC | GPS fix quality from AgIO (PGN `0xD6`, see §2.5), sent to each client whose DDOP declares DDI 514 as settable. Falls back to `1` when no fresh fix quality is available. |
 
 The TC also receives all ISOBUS Process Data (PGN 0xCB00) and Section Control commands from connected implements.
 
