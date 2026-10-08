@@ -29,6 +29,8 @@
 #include "logging_utils.hpp"
 
 #include <algorithm>
+#include <chrono>
+#include <ctime>
 #include <iomanip>
 #include <iostream>
 #include <span>
@@ -44,6 +46,48 @@ static std::string format_hex_address(std::uint8_t address)
 	std::ostringstream value;
 	value << "0x" << std::hex << std::uppercase << std::setw(2) << std::setfill('0') << static_cast<int>(address);
 	return value.str();
+}
+
+// Helper: populate TimeDateInterface::TimeAndDate from the system clock.
+// Used as the callback for TimeDateInterface to provide wall-clock time
+// for PGN 65254 (FEE6) broadcasts.
+static bool get_system_time(isobus::TimeDateInterface::TimeAndDate &td)
+{
+	auto now = std::chrono::system_clock::now();
+	auto time_t_now = std::chrono::system_clock::to_time_t(now);
+	auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+	            now.time_since_epoch())
+	            .count() %
+	  1000;
+
+	std::tm tm_utc{};
+	std::tm tm_local{};
+#if defined(_WIN32)
+	gmtime_s(&tm_utc, &time_t_now);
+	localtime_s(&tm_local, &time_t_now);
+#else
+	gmtime_r(&time_t_now, &tm_utc);
+	localtime_r(&time_t_now, &tm_local);
+#endif
+
+	// PGN 65254 (FEE6) requires the main fields to be UTC; localHourOffset/localMinuteOffset
+	// are what a receiver adds to UTC to reconstruct local time. Derive the real, DST-aware
+	// offset using only standard functions (avoid non-portable timegm/_mkgmtime).
+	const std::time_t localSeconds = std::mktime(&tm_local);
+	const std::time_t utcAsLocalSeconds = std::mktime(&tm_utc);
+	const long offsetSeconds = static_cast<long>(localSeconds - utcAsLocalSeconds);
+
+	td.year = static_cast<std::uint16_t>(tm_utc.tm_year + 1900);
+	td.month = static_cast<std::uint8_t>(tm_utc.tm_mon + 1);
+	td.day = static_cast<std::uint8_t>(tm_utc.tm_mday);
+	td.hours = static_cast<std::uint8_t>(tm_utc.tm_hour);
+	td.minutes = static_cast<std::uint8_t>(tm_utc.tm_min);
+	td.seconds = static_cast<std::uint8_t>(tm_utc.tm_sec);
+	td.milliseconds = static_cast<std::uint16_t>((ms / 250) * 250); // J1939: 0.25s resolution
+	td.quarterDays = static_cast<std::uint8_t>(tm_utc.tm_hour / 6);
+	td.localHourOffset = static_cast<std::int8_t>(offsetSeconds / 3600);
+	td.localMinuteOffset = static_cast<std::int8_t>((offsetSeconds % 3600) / 60);
+	return true;
 }
 
 // Diagnostic callback: log any Request for Repetition Rate (PGN 0xCC00)
@@ -494,6 +538,39 @@ void Application::setup_tecu_interfaces()
 		tractorFacilities->set_nmea2000_message_interface(nmea2000MessageInterface.get());
 		tractorFacilities->initialize();
 
+		// Initialize TimeDateInterface for PGN 65254 (FEE6) broadcasting.
+		// We broadcast FEE6 proactively so implements can discover us as a
+		// time source without needing to send a REQRR. If another ECU is
+		// already providing FEE6, we stay silent (duplicate provider detection).
+		timeDateInterface = std::make_unique<isobus::TimeDateInterface>(tecuCF, get_system_time);
+		timeDateInterface->initialize();
+
+		// Listen for FEE6 from other ECUs to detect duplicate providers.
+		// If we see FEE6 from another ECU, we suppress our own broadcast.
+		timeDateInterface->get_event_dispatcher().add_listener(
+		  [this](const isobus::TimeDateInterface::TimeAndDateInformation &info) {
+			  if (info.controlFunction && tecuCF &&
+			      info.controlFunction->get_address() != tecuCF->get_address())
+			  {
+				  // Fires on the isobus stack's background thread — see fee6Mutex's comment.
+				  std::lock_guard<std::mutex> lock(fee6Mutex);
+				  if (lastExternalFee6Ms == 0)
+				  {
+					  log("TECU") << "FEE6 provider detected at SA "
+					              << static_cast<int>(info.controlFunction->get_address())
+					              << " — suppressing our FEE6 broadcast" << std::endl;
+					  if (fee6Broadcasting && tractorFacilities)
+					  {
+						  tractorFacilities->set_time_date_active(false);
+						  fee6Broadcasting = false;
+					  }
+				  }
+				  lastExternalFee6Ms = isobus::SystemTiming::get_timestamp_ms();
+			  }
+		  });
+		log("Init") << "Time/Date interface (PGN 65254 / FEE6) created, interval="
+		            << FEE6_TX_INTERVAL_MS << " ms" << std::endl;
+
 		// Register repetition-rate diagnostic on the TECU's PGN request protocol
 		auto tecuPgnReq = tecuCF->get_pgn_request_protocol().lock();
 		if (tecuPgnReq)
@@ -680,6 +757,56 @@ bool Application::update()
 	}
 	if (nmea2000MessageInterface)
 		nmea2000MessageInterface->update();
+
+	// Periodic FEE6 (Time/Date, PGN 65254) broadcast.
+	// Only transmit if no other FEE6 provider is active on the bus.
+	if (timeDateInterface && tecuCF && tecuCF->get_address_valid())
+	{
+		std::lock_guard<std::mutex> fee6Lock(fee6Mutex);
+		const bool otherProviderActive =
+		  (lastExternalFee6Ms != 0) &&
+		  !isobus::SystemTiming::time_expired_ms(lastExternalFee6Ms, FEE6_PROVIDER_TIMEOUT_MS);
+
+		if (otherProviderActive)
+		{
+			// Another ECU is broadcasting FEE6 — stay silent.
+			if (fee6Broadcasting)
+			{
+				std::cout << "[" << get_timestamp() << "] [TECU] Stopping FEE6 broadcast; another provider active" << std::endl;
+				fee6Broadcasting = false;
+				if (tractorFacilities)
+				{
+					tractorFacilities->set_time_date_active(false);
+				}
+			}
+		}
+		else
+		{
+			// No other provider — broadcast FEE6 at our configured interval.
+			if (!fee6Broadcasting)
+			{
+				std::cout << "[" << get_timestamp() << "] [TECU] Starting FEE6 broadcast (no other provider detected)" << std::endl;
+				fee6Broadcasting = true;
+				lastFee6TransmitMs = 0; // Force immediate first transmission
+				if (tractorFacilities)
+				{
+					tractorFacilities->set_time_date_active(true);
+				}
+			}
+
+			if (isobus::SystemTiming::time_expired_ms(lastFee6TransmitMs, FEE6_TX_INTERVAL_MS))
+			{
+				isobus::TimeDateInterface::TimeAndDate td;
+				if (get_system_time(td))
+				{
+					if (timeDateInterface->send_time_and_date(td))
+					{
+						lastFee6TransmitMs = isobus::SystemTiming::get_timestamp_ms();
+					}
+				}
+			}
+		}
+	}
 
 	// Transmit PGN 65033 once on power-up (ISO 11783-7 B.24.3 repetition
 	// rate: "on power-up, and then on request").
