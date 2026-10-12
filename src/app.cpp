@@ -381,6 +381,7 @@ void Application::setup_task_controller_server()
 	languageInterface.set_language_code(settings->get_language_code());
 	languageInterface.set_country_code(settings->get_country_code());
 	tcServer->initialize();
+	tcServer->set_initial_section_control_enabled(settings->is_section_control_on_connect());
 	tcServer->set_task_totals_active(true); // TODO: make this dynamic based on status in AOG
 	tcFunctionalities = std::make_unique<isobus::ControlFunctionFunctionalities>(tcCF);
 	tcFunctionalities->set_functionality_is_supported(
