@@ -2,6 +2,10 @@
 
 This is an experimental project to control sections of an ISOBUS implement using AgOpenGPS. It is based on the [AgIsoStack++](https://github.com/Open-Agriculture/AgIsoStack-plus-plus) library.
 
+AOG-TaskController joins the ISOBUS as its own device and takes over the Task Controller role. The terminal's built-in TC is turned off, but the terminal stays on the bus as the VT, so the implement's operator screens keep working as before.
+
+![ISOBUS + AgOpenGPS: replacing the TC](resources/isobus_agopen_tc_en.png)
+
 ## Documentation
 
 - [docs/LINUX_DAEMON.md](docs/LINUX_DAEMON.md) — running AOG-TaskController as a headless Linux service (Raspberry Pi, x86 SBCs, generic Linux). Install, systemd, CAN setup, troubleshooting.
