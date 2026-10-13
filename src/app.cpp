@@ -804,14 +804,19 @@ bool Application::update()
 	static std::uint32_t lastGnssSendMs = 0;
 	if (tcServer && isobus::SystemTiming::time_expired_ms(lastGnssSendMs, 250))
 	{
-		// PGN 0xD6 is an independently-timed stream — treat the fix quality as unknown once it
-		// goes stale. Fall back to 1 (weakest real GNSS fix), not 0 (No GNSS): some implements gate
-		// TRACK/section control on GNSS quality being non-zero, and AOG doesn't always send 0xD6 at
-		// all (e.g. in Simulator mode) — 0 would falsely claim there is no position fix at all and
-		// can get commands rejected.
-		const bool gnssQualityFresh = (lastGnssQualityMs != 0) &&
-		  !isobus::SystemTiming::time_expired_ms(lastGnssQualityMs, GNSS_QUALITY_TIMEOUT_MS);
-		tcServer->send_gnss_quality(gnssQualityFresh ? gnssFixQuality : 1);
+		// PGN 0xD6 is an independently-timed stream, so the two ways of not having a fresh value mean different things.
+		// Never received: AgIO isn't forwarding it to 8888, or AOG runs in Simulator mode, which doesn't produce it.
+		// Fall back to 1 (weakest real GNSS fix), not 0 (No GNSS): some implements gate TRACK/section control on GNSS
+		// quality being non-zero. Received and then stale: the NMEA stream itself stopped (e.g. the receiver cable came
+		// loose), so send 0 rather than claim a fix the tractor no longer has. This also applies when switching from a
+		// real receiver to Simulator mid-session, until the TC is restarted.
+		std::uint8_t quality = 1;
+		if (lastGnssQualityMs != 0)
+		{
+			const bool gnssQualityFresh = !isobus::SystemTiming::time_expired_ms(lastGnssQualityMs, GNSS_QUALITY_TIMEOUT_MS);
+			quality = gnssQualityFresh ? gnssFixQuality : 0;
+		}
+		tcServer->send_gnss_quality(quality);
 		lastGnssSendMs = isobus::SystemTiming::get_timestamp_ms();
 	}
 

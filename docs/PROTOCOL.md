@@ -112,7 +112,13 @@ AgIO always sends it to AOG over loopback, but only sends it to the module netwo
 
 The TC only reads byte 38: the fix-quality code (`0`=invalid, `1`=GPS, `2`=DGPS, `3`=PPS, `4`=RTK Fixed, `5`=RTK Float, `6`=Estimated, `7`=Manual, `8`=Simulated — the NMEA 2000 GNSS Method values DDI 514 uses). Values `0`–`8` are forwarded unchanged to implements as DDI 514 (GNSSQuality) — see §5.2.
 
-Two fallback cases both resolve to `1` (weakest real GNSS fix), not `0` (No GNSS): AgIO reporting a value above `8` (not a defined GNSS Method), and no fresh `0xD6` (the default AgIO setup doesn't forward it to 8888 — see above — and Simulator mode doesn't produce it at all; if none has arrived within 2 s the last value is treated as stale). `0` is deliberately avoided as a fallback because some implements gate TRACK/section control on GNSS quality being non-zero.
+Fallbacks when there is no usable fix-quality value:
+
+| Case | Sent as DDI 514 | Why |
+|---|---|---|
+| AgIO reports a value above `8` | `1` | Not a defined GNSS Method; treated as the weakest real GNSS fix. |
+| No `0xD6` received since the TC started | `1` | The default AgIO setup doesn't forward it to 8888 (see above), and Simulator mode doesn't produce it at all. `0` is avoided here because some implements gate TRACK/section control on GNSS quality being non-zero. |
+| `0xD6` was received, but none in the last 2 s | `0` | The NMEA stream itself stopped (e.g. the receiver was unplugged), so the TC no longer claims a fix. This also happens when switching from a real receiver to Simulator mode mid-session, until the TC is restarted. |
 
 #### `0xE5` — Section states
 
@@ -264,7 +270,7 @@ Common NAME fields: Industry Group `2` (Agricultural), Device Class `0`, Manufac
 | `0xFEE8` (PGN 65256 Speed/Direction) | 100 ms | TECU | Ground/Wheel/Machine-selected speed + machine direction, J1939 format. Only when TECU enabled. |
 | `0xFC8E` (Control Function Functionalities) | At claim + periodic | TECU | Announces Class 1 BasicTractorECUServer (no options). |
 | NMEA2000 COG/SOG | Periodic | TECU | Optional course/speed over ground. |
-| GNSS Quality (DDI 514, via `0xCB00` Process Data) | 250 ms | TC | GPS fix quality from AgIO (PGN `0xD6`, see §2.5), sent to each client whose DDOP declares DDI 514 as settable. Falls back to `1` when no fresh fix quality is available. |
+| GNSS Quality (DDI 514, via `0xCB00` Process Data) | 250 ms | TC | GPS fix quality from AgIO (PGN `0xD6`, see §2.5), sent to each client whose DDOP declares DDI 514 as settable. Falls back to `1` if `0xD6` has never arrived, and to `0` once it stops arriving (see §2.5). |
 
 The TC also receives all ISOBUS Process Data (PGN 0xCB00) and Section Control commands from connected implements.
 
