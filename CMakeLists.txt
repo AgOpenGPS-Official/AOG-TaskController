@@ -59,11 +59,19 @@ FetchContent_Declare(
   USES_TERMINAL_DOWNLOAD TRUE DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(Boost)
 
+# Upstream main plus AgIsoStack++ PR #718 (a control function restored to the
+# address table is pruned again on the next address claim request). Drop the
+# patch once that PR is merged.
+find_package(Git REQUIRED)
 FetchContent_Declare(
   isobus
   GIT_REPOSITORY https://github.com/Open-Agriculture/AgIsoStack-plus-plus.git
-  GIT_TAG c0e1ebb06a2ad9d5bf86c98b3d028ab8fa350130
-  DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+  GIT_TAG f3c37b84d017df2228cb00e4366a5f7972da1176
+  PATCH_COMMAND
+    ${CMAKE_COMMAND} -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+    -DPATCH_FILE=${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/agisostack-pr718-restored-cf-claim-credit.patch
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/ApplyPatchOnce.cmake
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(isobus)
 
 FetchContent_Declare(

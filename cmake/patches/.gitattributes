@@ -1,0 +1,2 @@
+# Patches for fetched dependencies must keep LF so git apply matches them on every checkout.
+*.patch text eol=lf
