@@ -452,6 +452,39 @@ void Application::setup_udp_connections()
 	static std::uint32_t lastXteTransmit = 0;
 
 	auto packetHandler = [this](std::uint8_t src, std::uint8_t pgn, std::span<std::uint8_t> data) {
+		// PGN 0xD6 (214) — GPS/IMU data from AOG (src=0x7C, frame [0x80,0x81,0x7C,0xD6,...]).
+		// Only the fix-quality byte is consumed today; the rest of the frame (position,
+		// heading, speed, etc.) is not yet parsed by this TC.
+		static constexpr std::size_t GNSS_FIX_QUALITY_OFFSET = 38; // frame byte 43
+		static constexpr std::size_t MIN_0xD6_PAYLOAD_SIZE = GNSS_FIX_QUALITY_OFFSET + 1;
+		static constexpr std::uint8_t GNSS_QUALITY_MAX = 8; // SimulateMode
+		if (src == 0x7C && pgn == 0xD6)
+		{
+			static std::uint8_t lastLoggedQuality = 0xFF;
+			if (data.size() < MIN_0xD6_PAYLOAD_SIZE)
+			{
+				log("AOG") << "PGN 0xD6 received but too short for fix quality (len="
+				           << data.size() << ")" << std::endl;
+				return;
+			}
+
+			std::uint8_t quality = data[GNSS_FIX_QUALITY_OFFSET];
+			// AOG fix values follow the NMEA 2000 GNSS Method enumeration that DDI 514 uses: 0=invalid, 1=GPS,
+			// 2=DGPS, 3=PPS, 4=RTK Fix, 5=Float, 6=Estimated, 7=Manual, 8=Simulated. Forward 0-8 unchanged so
+			// the implement sees the real source; anything above 8 is not a defined value, so map it to the
+			// weakest real fix (1=GNSS) rather than 0=No GPS, which would falsely claim there is no position.
+			gnssFixQuality = (quality <= GNSS_QUALITY_MAX) ? quality : 1;
+			lastGnssQualityMs = isobus::SystemTiming::get_timestamp_ms();
+
+			if (quality != lastLoggedQuality)
+			{
+				log("GNSS") << "fix quality byte=" << static_cast<int>(quality)
+				            << " -> DDI514=" << static_cast<int>(gnssFixQuality) << std::endl;
+				lastLoggedQuality = quality;
+			}
+			return;
+		}
+
 		if (src != 0x7F)
 		{
 			return;
@@ -765,6 +798,26 @@ bool Application::update()
 			log("TC Status") << "First TC Status message sent (PGN 0xCB00)" << std::endl;
 			firstStatusSent = true;
 		}
+	}
+
+	// Send GNSS quality (DDI 514) to implements every 250 ms
+	static std::uint32_t lastGnssSendMs = 0;
+	if (tcServer && isobus::SystemTiming::time_expired_ms(lastGnssSendMs, 250))
+	{
+		// PGN 0xD6 is an independently-timed stream, so the two ways of not having a fresh value mean different things.
+		// Never received: AgIO isn't forwarding it to 8888, or AOG runs in Simulator mode, which doesn't produce it.
+		// Fall back to 1 (weakest real GNSS fix), not 0 (No GNSS): some implements gate TRACK/section control on GNSS
+		// quality being non-zero. Received and then stale: the NMEA stream itself stopped (e.g. the receiver cable came
+		// loose), so send 0 rather than claim a fix the tractor no longer has. This also applies when switching from a
+		// real receiver to Simulator mid-session, until the TC is restarted.
+		std::uint8_t quality = 1;
+		if (lastGnssQualityMs != 0)
+		{
+			const bool gnssQualityFresh = !isobus::SystemTiming::time_expired_ms(lastGnssQualityMs, GNSS_QUALITY_TIMEOUT_MS);
+			quality = gnssQualityFresh ? gnssFixQuality : 0;
+		}
+		tcServer->send_gnss_quality(quality);
+		lastGnssSendMs = isobus::SystemTiming::get_timestamp_ms();
 	}
 
 	return true;

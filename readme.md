@@ -91,6 +91,12 @@ The application logs the detected VT version, screen size, softkey dimensions, a
 - **Maximum Sections:** 64 (supports both individual sections and zone-based control)
 - **Section Control:** Generation 1 (TC-SC) with support for DDI 160/161/290
 
+### Guidance data sent to implements
+
+Sent to any implement whose device description declares the DDI as settable.
+
+- **GNSS quality (DDI 514):** AgOpenGPS's GPS fix quality, every 250 ms.
+
 ## Contributing
 
 Please keep pull requests small and focused on one change. A PR that fixes one bug or adds one
