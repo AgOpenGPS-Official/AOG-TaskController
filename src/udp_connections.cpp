@@ -8,8 +8,11 @@
  */
 
 #include "udp_connections.hpp"
+#include <algorithm>
 #include <cassert>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
 #include "aog_packet_parser.hpp"
 #include "logging_utils.hpp"
 
@@ -156,7 +159,29 @@ std::uint8_t UdpConnections::calculate_crc(std::span<std::uint8_t> data)
 
 namespace
 {
-	void log_parse_stop(const char *socketName, std::span<std::uint8_t> datagram, const aog_packet::ParseResult &result)
+	/// Bytes of a datagram shown in the log when it is not (only) AOG packets
+	constexpr std::size_t MAX_LOGGED_DATAGRAM_BYTES = 64;
+
+	/// @brief Hex dump with a "|" where parsing stopped, then the printable characters (others as ".")
+	std::string describe_datagram(std::span<std::uint8_t> datagram, std::size_t stopOffset)
+	{
+		const std::size_t count = std::min(datagram.size(), MAX_LOGGED_DATAGRAM_BYTES);
+		std::ostringstream hex;
+		std::string text;
+		hex << std::hex << std::setfill('0');
+		for (std::size_t i = 0; i < count; i++)
+		{
+			hex << ((i == stopOffset) ? ((0 == i) ? "| " : " | ") : ((0 == i) ? "" : " ")) << std::setw(2) << static_cast<int>(datagram[i]);
+			text += ((datagram[i] >= 0x20) && (datagram[i] < 0x7F)) ? static_cast<char>(datagram[i]) : '.';
+		}
+		if (count < datagram.size())
+		{
+			hex << " ...";
+		}
+		return hex.str() + "  \"" + text + "\"";
+	}
+
+	void log_parse_stop(const char *socketName, const udp::endpoint &sender, std::span<std::uint8_t> datagram, const aog_packet::ParseResult &result)
 	{
 		if (aog_packet::ParseStop::Complete == result.stop)
 		{
@@ -164,17 +189,10 @@ namespace
 		}
 
 		const std::size_t dropped = datagram.size() - result.offset;
-		if (aog_packet::ParseStop::UnknownStart == result.stop)
-		{
-			const std::uint16_t start = static_cast<std::uint16_t>((datagram[result.offset] << 8) |
-			                                                       ((result.offset + 1 < datagram.size()) ? datagram[result.offset + 1] : 0));
-			log() << "Unknown start of message: 0x" << std::hex << start << std::dec
-			      << " (" << socketName << ", dropped " << dropped << " of " << datagram.size() << " bytes)" << std::endl;
-		}
-		else
-		{
-			log() << "Truncated AOG packet (" << socketName << ", dropped " << dropped << " of " << datagram.size() << " bytes)" << std::endl;
-		}
+		log() << ((aog_packet::ParseStop::UnknownStart == result.stop) ? "Unknown start of message" : "Truncated AOG packet")
+		      << " from " << sender.address().to_string() << ":" << sender.port()
+		      << " (" << socketName << ", dropped " << dropped << " of " << datagram.size() << " bytes): "
+		      << describe_datagram(datagram, result.offset) << std::endl;
 	}
 }
 
@@ -199,7 +217,7 @@ void UdpConnections::handle_incoming_packets()
 				packetCallback(src, pgn, data);
 			}
 		});
-		log_parse_stop("AOG", datagram, result);
+		log_parse_stop("AOG", sender_endpoint, datagram, result);
 	}
 	else
 	{
@@ -243,7 +261,7 @@ void UdpConnections::handle_address_detection()
 			udpConnection.non_blocking(true);
 			udpConnection.bind(get_local_endpoint());
 		});
-		log_parse_stop("address detection", datagram, result);
+		log_parse_stop("address detection", sender_endpoint, datagram, result);
 	}
 	else
 	{
