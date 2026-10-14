@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include "element_hierarchy.hpp"
 #include "isobus/isobus/isobus_data_dictionary.hpp"
 #include "isobus/isobus/isobus_device_descriptor_object_pool.hpp"
 #include "isobus/isobus/isobus_standard_data_description_indices.hpp"
@@ -58,7 +59,9 @@ public:
 	std::uint16_t get_element_number_for_ddi(isobus::DataDescriptionIndex ddi) const;
 	void set_element_number_for_ddi(isobus::DataDescriptionIndex ddi, std::uint16_t elementNumber);
 	bool has_element_number_for_ddi(isobus::DataDescriptionIndex ddi) const;
-	bool is_element_or_parent_off(std::uint16_t elementNumber) const; ///< Recursively checks if element or any parent is off
+	bool is_element_or_parent_off(std::uint16_t elementNumber) const; ///< Checks if the element or any of its parents is off
+	/// @brief Caches each element's parent from the pool. Call once the pool is deserialized.
+	void build_element_hierarchy();
 	// Element work state management these act like master / override for actual sections
 	void set_element_work_state(std::uint16_t elementNumber, bool isWorking);
 	bool try_get_element_work_state(std::uint16_t elementNumber, bool &isWorking) const;
@@ -76,6 +79,7 @@ private:
 	bool setpointWorkState = false; ///< The overall work state desired (DDI 289)
 	bool actualWorkState = false; ///< The overall work state actual
 	std::map<std::uint16_t, bool> elementWorkStates; ///< Work state per element (element number -> is working)
+	element_hierarchy::ParentMap elementParents; ///< Parent of each element, built once at pool activation
 	bool isSectionControlEnabled = false; ///< Stores auto vs manual mode setting
 	bool usesPerElementControl = false; ///< Legacy mode: use per-element setpoint instead of condensed
 	std::uint16_t perElementSetpointDDI = 0; ///< The DDI to use for per-element setpoints (289 or 141), 0 if not applicable
