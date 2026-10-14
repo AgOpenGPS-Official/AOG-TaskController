@@ -2,6 +2,10 @@
 
 This is an experimental project to control sections of an ISOBUS implement using AgOpenGPS. It is based on the [AgIsoStack++](https://github.com/Open-Agriculture/AgIsoStack-plus-plus) library.
 
+AOG-TaskController joins the ISOBUS as its own device and takes over the Task Controller role. You turn off the terminal's built-in TC (section control) in the terminal's own settings. The terminal stays on the bus as the VT, so the implement's operator screens keep working as before.
+
+![ISOBUS + AgOpenGPS: replacing the TC](resources/isobus_agopen_tc_en.svg)
+
 ## Documentation
 
 - [docs/LINUX_DAEMON.md](docs/LINUX_DAEMON.md) — running AOG-TaskController as a headless Linux service (Raspberry Pi, x86 SBCs, generic Linux). Install, systemd, CAN setup, troubleshooting.
@@ -11,11 +15,12 @@ This is an experimental project to control sections of an ISOBUS implement using
 
 After installing the desired release of AOG-TaskController, you can run it directly through AgOpenGPS itself:
 
-1. Open AgIO.
-2. Go to the `Settings` tab.
-3. Click on the `ISOBUS` tab.
-4. Select the CAN adapter and channel you want to use.
-5. Click on the `connect` button.
+1. Turn off the Task Controller (section control) on your ISOBUS terminal, so the implement connects to AOG-TaskController instead. Where this setting is depends on the terminal.
+2. Open AgIO.
+3. Go to the `Settings` tab.
+4. Click on the `ISOBUS` tab.
+5. Select the CAN adapter and channel you want to use.
+6. Click on the `connect` button.
 
 ![how-to](resources/agopengps-howto.png)
 

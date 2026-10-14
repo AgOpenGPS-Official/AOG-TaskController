@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="740" viewBox="0 0 1000 740" font-family="DejaVu Sans, Verdana, Arial, Helvetica, sans-serif">
+<rect width="1000" height="740" fill="#ffffff"/>
+<text x="60" y="48" font-size="24" font-weight="bold" fill="#2C2C2A">ISOBUS + AgOpenGPS: replacing the TC</text>
+<g transform="translate(0,50)">
+<text x="60" y="50" font-size="19" font-weight="bold" fill="#444441">Factory setup: 2 devices on the bus</text>
+<rect x="60" y="75" width="420" height="160" rx="14" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="1"/>
+<text x="270" y="105" font-size="18" font-weight="bold" fill="#444441" text-anchor="middle">Terminal</text>
+<rect x="85" y="125" width="175" height="85" rx="10" fill="#EEEDFE" stroke="#534AB7"/>
+<text x="172" y="160" font-size="18" font-weight="bold" fill="#3C3489" text-anchor="middle">VT</text>
+<text x="172" y="187" font-size="15" fill="#534AB7" text-anchor="middle">Operator UI</text>
+<rect x="285" y="125" width="175" height="85" rx="10" fill="#E1F5EE" stroke="#0F6E56"/>
+<text x="372" y="160" font-size="18" font-weight="bold" fill="#085041" text-anchor="middle">TC</text>
+<text x="372" y="187" font-size="15" fill="#0F6E56" text-anchor="middle">OEM TC + SC</text>
+<rect x="600" y="75" width="340" height="160" rx="14" fill="#F1EFE8" stroke="#5F5E5A"/>
+<text x="770" y="125" font-size="18" font-weight="bold" fill="#444441" text-anchor="middle">Implement ECU</text>
+<text x="770" y="160" font-size="15" fill="#5F5E5A" text-anchor="middle">Object pool, DDOP</text>
+<text x="770" y="187" font-size="15" fill="#5F5E5A" text-anchor="middle">Section valves</text>
+<line x1="270" y1="235" x2="270" y2="290" stroke="#888780" stroke-width="3"/>
+<line x1="770" y1="235" x2="770" y2="290" stroke="#888780" stroke-width="3"/>
+<line x1="60" y1="290" x2="940" y2="290" stroke="#888780" stroke-width="6" stroke-linecap="round"/>
+<text x="940" y="318" font-size="15" fill="#5F5E5A" text-anchor="end">ISOBUS (CAN)</text>
+
+<text x="60" y="380" font-size="19" font-weight="bold" fill="#444441">AgOpenGPS setup: 3 devices on the bus</text>
+<rect x="60" y="405" width="280" height="160" rx="14" fill="#F1EFE8" stroke="#5F5E5A"/>
+<text x="200" y="435" font-size="18" font-weight="bold" fill="#444441" text-anchor="middle">Terminal</text>
+<rect x="80" y="455" width="115" height="85" rx="10" fill="#EEEDFE" stroke="#534AB7"/>
+<text x="137" y="490" font-size="18" font-weight="bold" fill="#3C3489" text-anchor="middle">VT</text>
+<text x="137" y="517" font-size="15" fill="#534AB7" text-anchor="middle">Active</text>
+<rect x="210" y="455" width="115" height="85" rx="10" fill="none" stroke="#888780" stroke-dasharray="6 4" stroke-width="1.5"/>
+<text x="267" y="490" font-size="18" font-weight="bold" fill="#888780" text-anchor="middle">TC</text>
+<text x="267" y="517" font-size="14" fill="#888780" text-anchor="middle">Disabled</text>
+<rect x="370" y="405" width="280" height="160" rx="14" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1.5"/>
+<text x="510" y="442" font-size="18" font-weight="bold" fill="#085041" text-anchor="middle">AOG-TaskController</text>
+<text x="510" y="477" font-size="15" fill="#0F6E56" text-anchor="middle">TC + section control</text>
+<text x="510" y="503" font-size="15" fill="#0F6E56" text-anchor="middle">1 boom, 64 sections</text>
+<text x="510" y="529" font-size="15" fill="#0F6E56" text-anchor="middle">Runs with AgOpenGPS</text>
+<rect x="680" y="405" width="260" height="160" rx="14" fill="#F1EFE8" stroke="#5F5E5A"/>
+<text x="810" y="442" font-size="18" font-weight="bold" fill="#444441" text-anchor="middle">Implement ECU</text>
+<text x="810" y="477" font-size="15" fill="#5F5E5A" text-anchor="middle">Object pool → VT</text>
+<text x="810" y="503" font-size="15" fill="#5F5E5A" text-anchor="middle">DDOP → AOG-TC</text>
+<text x="810" y="529" font-size="15" fill="#5F5E5A" text-anchor="middle">Section valves</text>
+<line x1="200" y1="565" x2="200" y2="620" stroke="#888780" stroke-width="3"/>
+<line x1="510" y1="565" x2="510" y2="620" stroke="#888780" stroke-width="3"/>
+<line x1="810" y1="565" x2="810" y2="620" stroke="#888780" stroke-width="3"/>
+<line x1="60" y1="620" x2="940" y2="620" stroke="#888780" stroke-width="6" stroke-linecap="round"/>
+<text x="940" y="648" font-size="15" fill="#5F5E5A" text-anchor="end">ISOBUS (CAN)</text>
+</g>
+</svg>
