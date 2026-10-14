@@ -501,6 +501,12 @@ void Application::setup_udp_connections()
 					sectionStates.push_back(data[j] & (1 << i));
 				}
 			}
+			lastSectionDemandMs = (0 == lastAogPacketMs) ? 1 : lastAogPacketMs;
+			if (sectionStates != sectionDemand)
+			{
+				sectionDemand = sectionStates;
+				sectionDemandChangesSinceLog++;
+			}
 			tcServer->update_section_states(sectionStates);
 		}
 		else if (pgn == 0xF1 && !data.empty()) // 241 - Section Control
@@ -642,6 +648,14 @@ bool Application::update()
 		nmea2000MessageInterface->update();
 	if (vtClient)
 		update_vt_client();
+
+	log_section_demand();
+	static std::uint32_t lastSectionDemandCheckMs = 0;
+	if (isobus::SystemTiming::time_expired_ms(lastSectionDemandCheckMs, 1000))
+	{
+		check_section_demand();
+		lastSectionDemandCheckMs = isobus::SystemTiming::get_timestamp_ms();
+	}
 
 	// Check for TC address conflicts every 15 seconds
 	static std::uint32_t lastConflictCheck = 0;
@@ -931,6 +945,124 @@ Application::ImplementDetails Application::derive_implement_details(ClientState 
 	}
 
 	return details;
+}
+
+std::string Application::describe_section_demand(const std::vector<bool> &demand, std::uint8_t numberOfSections)
+{
+	// Sections that are on, as ranges: "4 on: 3-6"
+	std::ostringstream ranges;
+	std::size_t onCount = 0;
+	std::size_t count = (0 == numberOfSections) ? demand.size() : std::min<std::size_t>(numberOfSections, demand.size());
+	for (std::size_t i = 0; i < count; i++)
+	{
+		if (!demand[i] || ((i > 0) && demand[i - 1]))
+		{
+			onCount += demand[i] ? 1 : 0;
+			continue;
+		}
+		std::size_t last = i;
+		while ((last + 1 < count) && demand[last + 1])
+		{
+			last++;
+		}
+		ranges << ((0 == onCount) ? "" : ",") << (i + 1);
+		if (last > i)
+		{
+			ranges << "-" << (last + 1);
+		}
+		onCount++;
+	}
+	if (0 == onCount)
+	{
+		return "all off";
+	}
+	return std::to_string(onCount) + " on: " + ranges.str();
+}
+
+void Application::log_section_demand()
+{
+	if ((0 == sectionDemandChangesSinceLog) ||
+	    !isobus::SystemTiming::time_expired_ms(lastSectionDemandLogMs, SECTION_DEMAND_LOG_INTERVAL_MS))
+	{
+		return;
+	}
+
+	if (sectionDemand != loggedSectionDemand)
+	{
+		std::uint8_t numberOfSections = 0;
+		for (auto &client : tcServer->get_clients())
+		{
+			numberOfSections = std::max(numberOfSections, client.second.get_number_of_sections());
+		}
+
+		std::ostream &line = log("AOG");
+		line << "Section demand (PGN 229): " << describe_section_demand(sectionDemand, numberOfSections);
+		if (sectionDemandChangesSinceLog > 1)
+		{
+			line << " (" << (sectionDemandChangesSinceLog - 1) << " intermediate changes not logged)";
+		}
+		line << std::endl;
+		loggedSectionDemand = sectionDemand;
+	}
+	sectionDemandChangesSinceLog = 0;
+	lastSectionDemandLogMs = isobus::SystemTiming::get_timestamp_ms();
+}
+
+void Application::check_section_demand()
+{
+	const bool arriving = (0 != lastSectionDemandMs) && !isobus::SystemTiming::time_expired_ms(lastSectionDemandMs, SECTION_DEMAND_TIMEOUT_MS);
+	if (arriving != sectionDemandArriving)
+	{
+		sectionDemandArriving = arriving;
+		log("AOG") << (arriving ? "Section demand (PGN 229) started arriving"
+		                        : "Section demand (PGN 229) stopped arriving (AOG sends it only while a field is open)")
+		           << std::endl;
+	}
+
+	const std::uint32_t nowMs = isobus::SystemTiming::get_timestamp_ms();
+	for (auto &client : tcServer->get_clients())
+	{
+		auto &state = client.second;
+		const std::uint64_t name = client.first->get_NAME().get_full_name();
+		std::vector<bool> actual;
+		bool demanded = false;
+		for (std::uint8_t i = 0; i < state.get_number_of_sections(); i++)
+		{
+			actual.push_back(SectionState::ON == state.get_section_actual_state(i));
+			demanded = demanded || (arriving && (i < sectionDemand.size()) && sectionDemand[i]);
+		}
+		const bool working = (actual.end() != std::find(actual.begin(), actual.end(), true));
+
+		std::ostringstream clientText;
+		clientText << "0x" << std::hex << std::uppercase << std::setw(2) << std::setfill('0') << static_cast<int>(client.first->get_address());
+
+		if (!state.is_section_control_enabled() || !working || demanded)
+		{
+			if (workingWithoutDemandWarned[name])
+			{
+				log("AOG") << "Client " << clientText.str() << " sections follow AOG's section control again" << std::endl;
+			}
+			workingWithoutDemandSinceMs.erase(name);
+			workingWithoutDemandWarned.erase(name);
+			continue;
+		}
+
+		auto since = workingWithoutDemandSinceMs.try_emplace(name, nowMs).first;
+		if (!workingWithoutDemandWarned[name] && ((nowMs - since->second) >= WORKING_WITHOUT_DEMAND_WARNING_MS))
+		{
+			workingWithoutDemandWarned[name] = true;
+			log("AOG") << "WARNING: client " << clientText.str() << " has been in automatic and working for "
+			           << (WORKING_WITHOUT_DEMAND_WARNING_MS / 1000) << " s (actual: "
+			           << describe_section_demand(actual, state.get_number_of_sections()) << ") but AOG "
+			           << (arriving ? "asks for no sections. Is AOG's section Auto button on?"
+			                        : "sends no section states. Is a field open in AOG?")
+			           << std::endl;
+			send_hardware_message(arriving ? "Implement working but AOG sections are off: turn on AOG's section Auto"
+			                               : "Implement working but no field is open in AOG",
+			                      20,
+			                      HW_MSG_ALERT);
+		}
+	}
 }
 
 void Application::send_task_controller_status_message()
