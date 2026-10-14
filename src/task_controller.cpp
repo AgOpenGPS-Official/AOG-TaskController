@@ -20,6 +20,7 @@
 #include <iostream>
 #include <set>
 #include <sstream>
+#include <vector>
 
 // Sanitize a string for use as a filename by replacing invalid characters with underscores
 static std::string sanitize_filename(const std::string &input)
@@ -35,6 +36,22 @@ static std::string sanitize_filename(const std::string &input)
 		}
 	}
 	return result;
+}
+
+// Returns the IDs of a device element's child objects.
+// Do not iterate DeviceElementObject::get_child_object_ids() instead: it returns a DataSpan<const std::uint16_t>,
+// and DataSpan scales end() and operator[] by sizeof(T) on top of the pointer arithmetic, so iterating it reads
+// twice as many IDs as the element has children, the second half from past the end of the list. Whatever is in
+// that memory can match an object ID and map a DDI to the wrong element.
+static std::vector<std::uint16_t> get_child_object_ids(isobus::task_controller_object::DeviceElementObject &element)
+{
+	std::vector<std::uint16_t> childIds;
+	childIds.reserve(element.get_number_child_objects());
+	for (std::uint16_t i = 0; i < element.get_number_child_objects(); i++)
+	{
+		childIds.push_back(element.get_child_object_id(i));
+	}
+	return childIds;
 }
 
 // Finds the number of the first device element that lists the process data object as a child.
@@ -56,7 +73,7 @@ static bool find_owning_element_number(isobus::DeviceDescriptorObjectPool &pool,
 			continue;
 		}
 
-		for (std::uint16_t childId : elementObject->get_child_object_ids())
+		for (std::uint16_t childId : get_child_object_ids(*elementObject))
 		{
 			if (childId == processData.get_object_id())
 			{
@@ -326,7 +343,7 @@ bool ClientState::is_element_or_parent_off(std::uint16_t elementNumber) const
 				continue;
 			}
 
-			for (std::uint16_t childId : elementObject->get_child_object_ids())
+			for (std::uint16_t childId : get_child_object_ids(*elementObject))
 			{
 				for (std::uint32_t j = 0; j < nonConstPool.size(); j++)
 				{
@@ -834,7 +851,7 @@ void MyTCServer::request_measurement_commands()
 							if (parentObject && parentObject->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceElement)
 							{
 								auto elementObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceElementObject>(parentObject);
-								for (std::uint16_t elementObjectChild : elementObject->get_child_object_ids())
+								for (std::uint16_t elementObjectChild : get_child_object_ids(*elementObject))
 								{
 									if (elementObjectChild == processDataObject->get_object_id())
 									{
@@ -881,7 +898,7 @@ void MyTCServer::request_measurement_commands()
 							if (parentObject && parentObject->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceElement)
 							{
 								auto elementObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceElementObject>(parentObject);
-								for (std::uint16_t elementObjectChild : elementObject->get_child_object_ids())
+								for (std::uint16_t elementObjectChild : get_child_object_ids(*elementObject))
 								{
 									if (elementObjectChild == processDataObject->get_object_id())
 									{
