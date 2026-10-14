@@ -54,6 +54,12 @@ private:
 
 	void send_task_controller_status_message();
 
+	/// @brief Keeps the TC off the bus (no TC Status, no TC server update) for TC_QUIET_PERIOD_MS
+	/// @param reason Logged, so the log shows why clients are about to reconnect
+	void start_tc_quiet_period(const std::string &reason);
+	bool is_tc_quiet(); ///< Also ends an expired quiet period
+	void recover_stale_clients();
+
 	bool setup_can_hardware();
 	bool setup_control_functions();
 	void setup_task_controller_server();
@@ -100,6 +106,16 @@ private:
 	std::uint8_t nmea2000SequenceIdentifier = 0;
 	std::uint32_t lastJ1939SpeedTransmit = 0;
 	std::uint32_t lastTCStatusTransmit = 0;
+
+	/// Longer than the 6 s a client waits for TC Status before it drops the connection and starts over
+	static constexpr std::uint32_t TC_QUIET_PERIOD_MS = 6500;
+	/// Minimum time between two quiet periods started for stale clients, so reconnecting clients get time to finish
+	static constexpr std::uint32_t STALE_CLIENT_RECOVERY_COOLDOWN_MS = 30000;
+	/// A client still stale after this many quiet periods does not reconnect this way; stop disturbing the others
+	static constexpr std::uint8_t MAX_STALE_CLIENT_RECOVERIES = 3;
+	std::uint32_t tcQuietUntilMs = 0; ///< 0 = not quiet
+	std::uint32_t lastStaleClientRecoveryMs = 0;
+	std::map<std::uint64_t, std::uint8_t> staleClientRecoveries; ///< Quiet periods started per client NAME
 	std::int32_t lastSpeedValue = 0;
 	std::int32_t lastXteValue = 0;
 	std::uint8_t gnssFixQuality = 0; ///< AOG fix quality (NMEA 2000 GNSS Method): 0=invalid, 1=GPS, 2=DGPS, 3=PPS, 4=RTK Fix, 5=Float, 6=Estimated, 7=Manual, 8=Simulated

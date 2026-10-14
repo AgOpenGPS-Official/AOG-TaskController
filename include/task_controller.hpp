@@ -18,6 +18,7 @@
 #include <map>
 #include <mutex>
 #include <queue>
+#include <vector>
 
 constexpr std::uint8_t NUMBER_SECTIONS_PER_CONDENSED_MESSAGE = 16;
 
@@ -120,7 +121,25 @@ public:
 	/// @param quality NMEA 2000 GNSS Method: 0=No GNSS, 1=GNSS, 2=DGNSS, 3=Precise, 4=RTK Fixed, 5=RTK Float, 6=Estimated, 7=Manual, 8=Simulated
 	void send_gnss_quality(std::uint8_t quality);
 
+	/// @brief Starts watching for clients that talk to us as if connected although we do not know them.
+	/// See take_stale_clients(). Call once, after initialize().
+	void start_stale_client_detection();
+
+	/// @brief Returns the clients that sent us a Client Task or Value message since the last call without
+	/// being one of our active clients. Such a client still believes it is connected (typically because the
+	/// TC restarted faster than the client's 6 s TC Status timeout) and the stack ignores or NACKs it until
+	/// it reconnects, which it will not do while it keeps seeing our TC Status.
+	/// Call from the thread that calls update().
+	std::vector<std::shared_ptr<isobus::ControlFunction>> take_stale_clients();
+
+	/// @brief Drops the stale client candidates collected so far, e.g. ones that arrived while the TC was quiet
+	void clear_stale_clients();
+
+	~MyTCServer() override;
+
 private:
+	static void on_process_data_for_stale_check(const isobus::CANMessage &message, void *parentPointer);
+
 	void send_section_setpoint_states(std::shared_ptr<isobus::ControlFunction> client, std::uint8_t ddiOffset);
 	void send_section_control_state(std::shared_ptr<isobus::ControlFunction> client, bool enabled);
 	bool is_ddi_settable(std::shared_ptr<isobus::ControlFunction> client, std::uint16_t ddi);
@@ -146,4 +165,10 @@ private:
 	/// update_section_states -> send_section_setpoint_states), and get_clients()
 	/// must keep returning a copy, not a reference (see its declaration above).
 	mutable std::recursive_mutex clientsMutex;
+
+	/// @brief Sources of Client Task / Value messages to us, collected on the CAN thread and checked
+	/// against the active clients in take_stale_clients(). Guarded by staleCandidatesMutex.
+	std::vector<std::shared_ptr<isobus::ControlFunction>> staleCandidates;
+	std::mutex staleCandidatesMutex;
+	bool staleClientDetectionStarted = false;
 };
