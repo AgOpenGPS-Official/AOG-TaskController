@@ -12,7 +12,9 @@
 
 #include "isobus/isobus/isobus_device_descriptor_object_pool_helpers.hpp"
 #include "isobus/isobus/isobus_task_controller_server.hpp"
+#include "isobus/utility/system_timing.hpp"
 
+#include <algorithm>
 #include <bitset>
 #include <filesystem>
 #include <fstream>
@@ -197,6 +199,22 @@ std::uint8_t ClientState::get_section_actual_state(std::uint8_t section) const
 		return sectionActualStates[section];
 	}
 	return SectionState::NOT_INSTALLED;
+}
+
+void ClientState::request_full_setpoint()
+{
+	fullSetpointRequested = true;
+}
+
+bool ClientState::is_full_setpoint_due(std::uint32_t nowMs, std::uint32_t intervalMs) const
+{
+	return fullSetpointRequested || (0 == lastFullSetpointMs) || ((nowMs - lastFullSetpointMs) >= intervalMs);
+}
+
+void ClientState::mark_full_setpoint_sent(std::uint32_t nowMs)
+{
+	fullSetpointRequested = false;
+	lastFullSetpointMs = (0 == nowMs) ? 1 : nowMs;
 }
 
 bool ClientState::is_any_section_setpoint_on() const
@@ -760,14 +778,30 @@ bool MyTCServer::on_value_command(std::shared_ptr<isobus::ControlFunction> partn
 
 		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SectionControlState):
 		{
-			clients[partner].set_section_control_enabled(processDataValue == 1);
+			const bool enabled = (processDataValue == 1);
+			if (enabled && !clients[partner].is_section_control_enabled())
+			{
+				// The implement went to automatic (possibly from its own terminal): give it our setpoint now
+				clients[partner].request_full_setpoint();
+			}
+			clients[partner].set_section_control_enabled(enabled);
 		}
 		break;
 
 		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualWorkState):
 		{
+			// Master switch on: some implements then turn every section on until told otherwise
+			bool wasWorking = false;
+			const bool isWorking = (processDataValue == 1);
+			if (isWorking &&
+			    (!clients[partner].try_get_element_work_state(elementNumber, wasWorking) || !wasWorking) &&
+			    clients[partner].is_section_control_enabled())
+			{
+				clients[partner].request_full_setpoint();
+			}
+
 			// Store the work state per element (used for parent-off checks)
-			clients[partner].set_element_work_state(elementNumber, processDataValue == 1);
+			clients[partner].set_element_work_state(elementNumber, isWorking);
 
 			// For legacy per-element devices only: propagate to section actual states
 			// so the heartbeat (PGN 0xF0) can report them to AOG.
@@ -948,14 +982,16 @@ void MyTCServer::request_measurement_commands()
 void MyTCServer::update_section_states(std::vector<bool> &sectionStates)
 {
 	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
+	aogSectionDemand = sectionStates;
+	lastSectionDemandMs = isobus::SystemTiming::get_timestamp_ms();
+	if (0 == lastSectionDemandMs)
+	{
+		lastSectionDemandMs = 1; // 0 means "never"
+	}
+
 	for (auto &client : clients)
 	{
 		auto &state = client.second;
-		if (!state.is_section_control_enabled())
-		{
-			// According to standard, the section setpoint states should only be sent when in auto mode
-			continue;
-		}
 
 		// Skip clients that don't have any sections configured (e.g., tractors or other non-implement devices)
 		if (state.get_number_of_sections() == 0)
@@ -963,30 +999,21 @@ void MyTCServer::update_section_states(std::vector<bool> &sectionStates)
 			continue;
 		}
 
-		bool requiresUpdate = false;
-		for (std::uint8_t i = 0; i < state.get_number_of_sections(); i++)
-		{
-			if ((i % NUMBER_SECTIONS_PER_CONDENSED_MESSAGE == 0) && requiresUpdate)
-			{
-				// Send the previous 16 sections
-				std::uint8_t ddiOffset = (i / NUMBER_SECTIONS_PER_CONDENSED_MESSAGE) - 1;
-				send_section_setpoint_states(client.first, ddiOffset);
-				requiresUpdate = false;
-			}
+		// Keep the setpoints current in manual mode too, so switching to automatic can send them right away
+		const std::uint16_t changedBlocks = apply_section_demand(state);
 
-			if (i < sectionStates.size())
-			{
-				if (sectionStates[i] != (state.get_section_setpoint_state(i) == SectionState::ON))
-				{
-					state.set_section_setpoint_state(i, sectionStates[i] ? SectionState::ON : SectionState::OFF);
-					requiresUpdate = true;
-				}
-			}
-		}
-		if (requiresUpdate)
+		if (!state.is_section_control_enabled())
 		{
-			std::uint8_t ddiOffset = (state.get_number_of_sections() - 1) / NUMBER_SECTIONS_PER_CONDENSED_MESSAGE;
-			send_section_setpoint_states(client.first, ddiOffset);
+			// According to standard, the section setpoint states should only be sent when in auto mode
+			continue;
+		}
+
+		for (std::uint8_t block = 0; block * NUMBER_SECTIONS_PER_CONDENSED_MESSAGE < state.get_number_of_sections(); block++)
+		{
+			if (0 != (changedBlocks & (1u << block)))
+			{
+				send_section_setpoint_states(client.first, block);
+			}
 		}
 	}
 }
@@ -1008,6 +1035,80 @@ void MyTCServer::update_section_control_enabled(bool enabled)
 		{
 			send_section_control_state(client.first, enabled);
 		}
+
+		if (enabled)
+		{
+			// Without this the implement runs on its own state until AOG's demand next changes
+			client.second.request_full_setpoint();
+		}
+	}
+}
+
+void MyTCServer::update_section_setpoints()
+{
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
+	const std::uint32_t nowMs = isobus::SystemTiming::get_timestamp_ms();
+
+	const bool demandReceived = (0 != lastSectionDemandMs) && !isobus::SystemTiming::time_expired_ms(lastSectionDemandMs, SECTION_DEMAND_TIMEOUT_MS);
+	if (demandReceived != sectionDemandReceived)
+	{
+		sectionDemandReceived = demandReceived;
+		if (demandReceived)
+		{
+			log("TC Server") << "Receiving section states from AOG (PGN 229)" << std::endl;
+		}
+		else
+		{
+			// AOG stops sending PGN 229 when no field is open. The last demand may have had sections on.
+			log("TC Server") << "No section states from AOG (PGN 229) for " << SECTION_DEMAND_TIMEOUT_MS
+			                 << " ms (no field open?): commanding all sections off" << std::endl;
+			std::fill(aogSectionDemand.begin(), aogSectionDemand.end(), false);
+			for (auto &client : clients)
+			{
+				apply_section_demand(client.second);
+				client.second.request_full_setpoint();
+			}
+		}
+	}
+
+	for (auto &client : clients)
+	{
+		auto &state = client.second;
+		if ((0 == state.get_number_of_sections()) || !state.is_section_control_enabled())
+		{
+			continue;
+		}
+
+		if (state.is_full_setpoint_due(nowMs, SECTION_SETPOINT_REFRESH_MS))
+		{
+			send_all_section_setpoint_states(client.first);
+			state.mark_full_setpoint_sent(nowMs);
+		}
+	}
+}
+
+std::uint16_t MyTCServer::apply_section_demand(ClientState &state)
+{
+	std::uint16_t changedBlocks = 0;
+	for (std::uint8_t i = 0; i < state.get_number_of_sections(); i++)
+	{
+		const bool on = (i < aogSectionDemand.size()) && aogSectionDemand[i];
+		if (on != (state.get_section_setpoint_state(i) == SectionState::ON))
+		{
+			state.set_section_setpoint_state(i, on ? SectionState::ON : SectionState::OFF);
+			changedBlocks |= static_cast<std::uint16_t>(1u << (i / NUMBER_SECTIONS_PER_CONDENSED_MESSAGE));
+		}
+	}
+	return changedBlocks;
+}
+
+void MyTCServer::send_all_section_setpoint_states(std::shared_ptr<isobus::ControlFunction> client)
+{
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
+	const std::uint8_t numberOfSections = clients[client].get_number_of_sections();
+	for (std::uint8_t block = 0; block * NUMBER_SECTIONS_PER_CONDENSED_MESSAGE < numberOfSections; block++)
+	{
+		send_section_setpoint_states(client, block, true);
 	}
 }
 
@@ -1024,7 +1125,7 @@ void MyTCServer::send_gnss_quality(std::uint8_t quality)
 	}
 }
 
-void MyTCServer::send_section_setpoint_states(std::shared_ptr<isobus::ControlFunction> client, std::uint8_t ddiOffset)
+void MyTCServer::send_section_setpoint_states(std::shared_ptr<isobus::ControlFunction> client, std::uint8_t ddiOffset, bool forceWorkState)
 {
 	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
 	std::uint8_t sectionOffset = ddiOffset * NUMBER_SECTIONS_PER_CONDENSED_MESSAGE;
@@ -1044,12 +1145,12 @@ void MyTCServer::send_section_setpoint_states(std::shared_ptr<isobus::ControlFun
 		send_set_value(client, ddiTarget, elementNumber, value);
 
 		bool setpointWorkState = clients[client].is_any_section_setpoint_on();
-		if ((clients[client].get_setpoint_work_state() != setpointWorkState) && clients[client].has_element_number_for_ddi(isobus::DataDescriptionIndex::SetpointWorkState))
+		if ((forceWorkState || (clients[client].get_setpoint_work_state() != setpointWorkState)) && clients[client].has_element_number_for_ddi(isobus::DataDescriptionIndex::SetpointWorkState))
 		{
 			send_set_value(client, static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SetpointWorkState), clients[client].get_element_number_for_ddi(isobus::DataDescriptionIndex::SetpointWorkState), setpointWorkState ? 1 : 0);
 			clients[client].set_setpoint_work_state(setpointWorkState);
 		}
-		else if (!clients[client].has_element_number_for_ddi(isobus::DataDescriptionIndex::SetpointWorkState))
+		else if (!forceWorkState && !clients[client].has_element_number_for_ddi(isobus::DataDescriptionIndex::SetpointWorkState))
 		{
 			log("TC Server") << "DDI 289 (SetpointWorkState) not available!" << std::endl;
 		}
@@ -1088,7 +1189,7 @@ void MyTCServer::send_section_setpoint_states(std::shared_ptr<isobus::ControlFun
 
 		// Also send global work state on the boom/device element if DDI 289 is available
 		bool setpointWorkState = clients[client].is_any_section_setpoint_on();
-		if (clients[client].get_setpoint_work_state() != setpointWorkState)
+		if (forceWorkState || (clients[client].get_setpoint_work_state() != setpointWorkState))
 		{
 			if (clients[client].has_element_number_for_ddi(isobus::DataDescriptionIndex::SetpointWorkState))
 			{
