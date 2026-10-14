@@ -104,6 +104,12 @@ public:
 	/// @brief Set whether section control is switched on automatically when an implement connects.
 	bool set_section_control_on_connect(bool enabled, bool save = true);
 
+	/// @brief Check whether section control is switched on when AOG opens a field, as if AOG's SC button was pressed.
+	bool is_section_control_on_field_open() const;
+
+	/// @brief Set whether section control is switched on when AOG opens a field.
+	bool set_section_control_on_field_open(bool enabled, bool save = true);
+
 	/**
 	 * @brief Get the configured TC version
 	 * @return The configured version (0-4, default 3)
@@ -168,6 +174,7 @@ private:
 	constexpr static bool DEFAULT_AOG_HEARTBEAT_ENABLED = true;
 	constexpr static bool DEFAULT_VT_ENABLED = true;
 	constexpr static bool DEFAULT_SECTION_CONTROL_ON_CONNECT = true;
+	constexpr static bool DEFAULT_SECTION_CONTROL_ON_FIELD_OPEN = true;
 	constexpr static std::uint8_t DEFAULT_TC_VERSION = 3; ///< SecondEditionDraft (V3 default for maximum implement compatibility)
 	static const std::string DEFAULT_LANGUAGE_CODE;
 	static const std::string DEFAULT_COUNTRY_CODE;
@@ -177,6 +184,7 @@ private:
 	bool aogHeartbeatEnabled = DEFAULT_AOG_HEARTBEAT_ENABLED;
 	bool vtEnabled = DEFAULT_VT_ENABLED;
 	bool sectionControlOnConnect = DEFAULT_SECTION_CONTROL_ON_CONNECT;
+	bool sectionControlOnFieldOpen = DEFAULT_SECTION_CONTROL_ON_FIELD_OPEN;
 	std::uint8_t tcVersion = DEFAULT_TC_VERSION;
 	std::string languageCode = DEFAULT_LANGUAGE_CODE;
 	std::string countryCode = DEFAULT_COUNTRY_CODE;

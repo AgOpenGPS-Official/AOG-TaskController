@@ -104,6 +104,16 @@ private:
 	std::int32_t lastXteValue = 0;
 	std::uint32_t lastDistanceMm = 0;
 	std::uint32_t lastAogPacketMs = 0;
+
+	/// @brief AOG opened a field: switch section control on, as if AOG's SC button was pressed (if enabled in settings)
+	/// @param how What showed the field opening, for the log
+	void on_aog_field_opened(const std::string &how);
+	/// AOG sends PGN 229 every frame while a field is open; a gap this long means no field was open
+	static constexpr std::uint32_t FIELD_CLOSED_GAP_MS = 2000;
+	/// The field name (PGN 0xF3) and PGN 229 resuming both report one field opening; act on it once
+	static constexpr std::uint32_t FIELD_OPEN_DEDUPLICATE_MS = 5000;
+	std::uint32_t lastSectionStatesMs = 0; ///< When PGN 229 was last received, 0 = never
+	std::uint32_t lastFieldOpenAppliedMs = 0; ///< When on_aog_field_opened() last switched section control on, 0 = never
 	std::uint32_t vtDisconnectedSinceMs = 0;
 	std::uint32_t lastVtStatusUpdateMs = 0;
 	std::uint32_t lastVtSectionUpdateMs = 0;

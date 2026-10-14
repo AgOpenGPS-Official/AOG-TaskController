@@ -447,6 +447,27 @@ void Application::setup_tecu_interfaces()
 	}
 }
 
+void Application::on_aog_field_opened(const std::string &how)
+{
+	if (!settings->is_section_control_on_field_open())
+	{
+		return;
+	}
+	if ((0 != lastFieldOpenAppliedMs) && !isobus::SystemTiming::time_expired_ms(lastFieldOpenAppliedMs, FIELD_OPEN_DEDUPLICATE_MS))
+	{
+		return;
+	}
+	lastFieldOpenAppliedMs = isobus::SystemTiming::get_timestamp_ms();
+	if (0 == lastFieldOpenAppliedMs)
+	{
+		lastFieldOpenAppliedMs = 1; // 0 means "never"
+	}
+
+	// Saves pressing AOG's SC button after every field change; same effect as PGN 241 "enabled"
+	log("TC") << "AOG " << how << ": switching section control on, as if AOG's SC button was pressed" << std::endl;
+	tcServer->update_section_control_enabled(true);
+}
+
 void Application::setup_udp_connections()
 {
 	static std::uint8_t xteSid = 0;
@@ -470,6 +491,28 @@ void Application::setup_udp_connections()
 				}
 			}
 			tcServer->update_section_states(sectionStates);
+
+			// Older AOG versions do not send the field name, but PGN 229 only flows while a field is open
+			const bool resumed = (0 == lastSectionStatesMs) || isobus::SystemTiming::time_expired_ms(lastSectionStatesMs, FIELD_CLOSED_GAP_MS);
+			lastSectionStatesMs = (0 == lastAogPacketMs) ? 1 : lastAogPacketMs;
+			if (resumed)
+			{
+				on_aog_field_opened("started sending section states (PGN 229)");
+			}
+		}
+		else if (pgn == 0xF3) // 243 - Field name, empty when the field is closed
+		{
+			lastAogPacketMs = isobus::SystemTiming::get_timestamp_ms();
+			const std::string fieldName(data.begin(), data.end());
+			if (fieldName.empty())
+			{
+				log("Field") << "AOG closed the field" << std::endl;
+			}
+			else
+			{
+				log("Field") << "AOG opened field '" << fieldName << "'" << std::endl;
+				on_aog_field_opened("opened field '" + fieldName + "'");
+			}
 		}
 		else if (pgn == 0xF1 && !data.empty()) // 241 - Section Control
 		{
