@@ -10,7 +10,9 @@
 #pragma once
 
 #include <boost/asio.hpp>
+#include <chrono>
 #include <span>
+#include <string>
 #include "settings.hpp"
 
 using boost::asio::ip::udp;
@@ -92,7 +94,16 @@ private:
       */
 	std::uint8_t calculate_crc(std::span<std::uint8_t> data);
 
+	/**
+	  * @brief Log a packet that does not start with PACKET_START, once even if both sockets receive it
+	  * @param sender The endpoint the packet came from
+	  * @param data The bytes from the unexpected start onwards
+	  */
+	void log_unknown_start(const udp::endpoint &sender, std::span<const std::uint8_t> data);
+
 	PacketCallback packetCallback = nullptr;
+	std::string lastUnknownStartSignature; ///< Sender and leading bytes of the last logged unknown start
+	std::chrono::steady_clock::time_point lastUnknownStartTime;
 	std::shared_ptr<Settings> settings;
 	udp::socket udpConnection;
 	udp::socket udpConnectionAddressDetection;

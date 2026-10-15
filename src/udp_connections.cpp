@@ -8,8 +8,11 @@
  */
 
 #include "udp_connections.hpp"
+#include <algorithm>
 #include <cassert>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
 #include "logging_utils.hpp"
 
 #if !defined(_WIN32)
@@ -153,6 +156,34 @@ std::uint8_t UdpConnections::calculate_crc(std::span<std::uint8_t> data)
 	return static_cast<std::uint8_t>(result & 0xFF);
 }
 
+void UdpConnections::log_unknown_start(const udp::endpoint &sender, std::span<const std::uint8_t> data)
+{
+	// Both sockets listen on port 8888 (one on the AOG subnet address, one on all interfaces), so a
+	// broadcast packet usually arrives on both. Only log it once.
+	static constexpr std::size_t MAX_LOGGED_BYTES = 16;
+	static constexpr auto DUPLICATE_WINDOW = std::chrono::milliseconds(50);
+
+	std::ostringstream signature;
+	signature << sender.address().to_string() << ":" << sender.port() << " " << std::hex << std::setfill('0');
+	for (std::size_t i = 0; i < std::min(data.size(), MAX_LOGGED_BYTES); i++)
+	{
+		signature << (i ? " " : "") << std::setw(2) << static_cast<int>(data[i]);
+	}
+	if (data.size() > MAX_LOGGED_BYTES)
+	{
+		signature << " ...";
+	}
+
+	const auto now = std::chrono::steady_clock::now();
+	if ((signature.str() == lastUnknownStartSignature) && (now - lastUnknownStartTime < DUPLICATE_WINDOW))
+	{
+		return;
+	}
+	lastUnknownStartSignature = signature.str();
+	lastUnknownStartTime = now;
+	log() << "Unknown start of message from " << lastUnknownStartSignature << " (" << std::dec << data.size() << " bytes)" << std::endl;
+}
+
 void UdpConnections::handle_incoming_packets()
 {
 	static std::array<std::uint8_t, 512> rxBuffer;
@@ -200,7 +231,7 @@ void UdpConnections::handle_incoming_packets()
 			else
 			{
 				// Unknown start of message, reset buffer
-				log() << "Unknown start of message: 0x" << std::hex << start << std::dec << std::endl;
+				log_unknown_start(sender_endpoint, { rxBuffer.data() + index - 2, rxIndex - (index - 2) });
 				rxIndex = 0;
 			}
 
@@ -288,7 +319,7 @@ void UdpConnections::handle_address_detection()
 			else
 			{
 				// Unknown start of message, reset buffer
-				log() << "Unknown start of message: 0x" << std::hex << start << std::dec << std::endl;
+				log_unknown_start(sender_endpoint, { rxBuffer.data() + index - 2, rxIndex - (index - 2) });
 				rxIndex = 0;
 			}
 
