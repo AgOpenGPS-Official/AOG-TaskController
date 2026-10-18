@@ -31,7 +31,10 @@ machine's terminal pool is ever available.
   DDI, and the value has to be requested from the implement over the bus after activation. `none` is a pool
   without sections.
 - **section_control**: the method the TC picks, in priority order: `DDI290` (condensed setpoint), `DDI161`
-  (settable condensed actual), `DDI141` (per-element work state). `none` means the TC cannot control it.
+  (settable condensed actual), `DDI289` (per-element setpoint work state, actual on DDI 141 of the same element),
+  `DDI141` (settable per-element work state). `none` means the TC cannot control it. Only process data that a
+  device element links counts, because some implements also send objects no element references. The
+  `section_control_method` test checks every file against this column.
 - **connector_types**: DDI 157 values found on the connector elements (0 unknown, 1 drawbar,
   2 semi-mounted three-point, 3 mounted three-point, 4 hitch hook, ...).
 
@@ -46,6 +49,17 @@ VIN-style serial.
 Attach the DDOP to a "Submit a machine" issue, then add it here with its issue number in the `source`
 column. Only add pools from a machine you can name, and keep `unsorted/` for the ones you cannot.
 
+## Synthetic pools
+
+Files ending in `_synthetic.ddop` were not captured from a machine. They are derived from a real capture by the
+implement firmware's own rules, to cover configurations nobody has captured yet. Replace one once a real capture of
+that configuration exists.
+
+The three MIDI 3 variants come from `ME_SPRITZE_SPR_MIDI_3_11sec.ddop` (firmware SPR_MIDI_3 V07.10.05.33), one per
+section-control setting: old or new SC DDIs, condensed work state on or off. The firmware sends every template
+object and only filters the element child lists, so these pools hold process data that no element links. The same
+rules rebuild the real capture byte for byte.
+
 ## Files
 
 
@@ -57,6 +71,9 @@ column. Only add pools from a machine you can name, and keep `unsorted/` for the
 | `JD_740_SPRAYER_9sec.ddop` | 9 | process-data | DDI161 | 1 | #34 | Settable DDI 161. Geometry only as process data (Y + width). |
 | `ME_ECO_SPRITZE_SC_BOX_9sec.ddop` | 9 | static | DDI141 | - | #64 | Mueller SC-Box from 2006. Per-section DDI 141 elements, no condensed DDIs. Static geometry. |
 | `ME_SPRITZE_SPR_MIDI_3_11sec.ddop` | 11 | static | DDI290 | 0 | bench capture 2026-09-20 (no issue) | Full static geometry (DPT). Best reference pool. |
+| `ME_SPRITZE_SPR_MIDI_3_11sec_newSC_perElement_synthetic.ddop` | 11 | static | DDI289 | 0 | synthetic, derived from the bench capture by firmware rules | SYNTHETIC, never seen on the wire. ISO options: new SC DDIs, condensed work state off. Each section links settable DDI 289 + DDI 141. |
+| `ME_SPRITZE_SPR_MIDI_3_11sec_oldSC_CWS_synthetic.ddop` | 11 | static | DDI161 | 0 | synthetic, derived from the bench capture by firmware rules | SYNTHETIC, never seen on the wire. ISO options: old SC DDIs, condensed work state on. The boom links a settable DDI 161; the original DDI 161 objects stay in the pool, unlinked and not settable. |
+| `ME_SPRITZE_SPR_MIDI_3_11sec_oldSC_perElement_synthetic.ddop` | 11 | static | DDI141 | 0 | synthetic, derived from the bench capture by firmware rules | SYNTHETIC, never seen on the wire. ISO options: old SC DDIs, condensed work state off. Each section links a settable DDI 141 (translated from 289). |
 
 ### spreader
 
