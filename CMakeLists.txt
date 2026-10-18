@@ -194,6 +194,24 @@ if(AOG_TC_VALIDATE_IOP)
   add_dependencies(iop_validator test_async_log)
   add_test(NAME async_log COMMAND test_async_log)
 
+  # Section control method detection against every DDOP in
+  # tools/testdata/implements, expected values from its manifest.csv. Made a
+  # dependency of iop_validator so the validation workflow also builds it.
+  add_executable(
+    test_section_control
+    ${CMAKE_CURRENT_LIST_DIR}/tools/test_section_control_method.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/src/section_control_method.cpp)
+  target_compile_features(test_section_control PRIVATE cxx_std_20)
+  set_target_properties(test_section_control PROPERTIES CXX_EXTENSIONS OFF)
+  target_include_directories(test_section_control
+                             PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
+  target_link_libraries(test_section_control PRIVATE isobus::Isobus
+                                                     isobus::Utility)
+  add_dependencies(iop_validator test_section_control)
+  add_test(NAME section_control_method
+           COMMAND test_section_control
+                   "${CMAKE_CURRENT_LIST_DIR}/tools/testdata/implements")
+
   # PASS_REGULAR_EXPRESSION makes CTest ignore the exit code, which is the part
   # a CI gate actually reads.
   add_test(NAME malformed_pool_exit_status COMMAND iop_validator

@@ -13,6 +13,7 @@
 #include "isobus/isobus/isobus_device_descriptor_object_pool.hpp"
 #include "isobus/isobus/isobus_standard_data_description_indices.hpp"
 #include "isobus/isobus/isobus_task_controller_server.hpp"
+#include "section_control_method.hpp"
 
 #include <cstdint>
 #include <map>
@@ -49,9 +50,8 @@ public:
 	bool is_section_control_enabled() const;
 	void set_section_control_enabled(bool state);
 	bool uses_per_element_control() const;
-	void set_uses_per_element_control(bool state);
-	std::uint16_t get_per_element_setpoint_ddi() const;
-	void set_per_element_setpoint_ddi(std::uint16_t ddi);
+	const SectionControlPlan &get_section_control_plan() const;
+	void set_section_control_plan(const SectionControlPlan &plan);
 	isobus::DeviceDescriptorObjectPool &get_pool();
 	bool are_measurement_commands_sent() const;
 	void mark_measurement_commands_sent();
@@ -77,8 +77,7 @@ private:
 	bool actualWorkState = false; ///< The overall work state actual
 	std::map<std::uint16_t, bool> elementWorkStates; ///< Work state per element (element number -> is working)
 	bool isSectionControlEnabled = false; ///< Stores auto vs manual mode setting
-	bool usesPerElementControl = false; ///< Legacy mode: use per-element setpoint instead of condensed
-	std::uint16_t perElementSetpointDDI = 0; ///< The DDI to use for per-element setpoints (289 or 141), 0 if not applicable
+	SectionControlPlan sectionControlPlan; ///< How to switch the sections, resolved from the DDOP at activation
 };
 
 // Create the task controller server object, this will handle all the ISOBUS communication for us
@@ -123,7 +122,6 @@ public:
 private:
 	void send_section_setpoint_states(std::shared_ptr<isobus::ControlFunction> client, std::uint8_t ddiOffset);
 	void send_section_control_state(std::shared_ptr<isobus::ControlFunction> client, bool enabled);
-	bool is_ddi_settable(std::shared_ptr<isobus::ControlFunction> client, std::uint16_t ddi);
 
 	std::map<std::shared_ptr<isobus::ControlFunction>, ClientState> clients;
 	std::map<std::shared_ptr<isobus::ControlFunction>, std::queue<std::vector<std::uint8_t>>> uploadedPools;
