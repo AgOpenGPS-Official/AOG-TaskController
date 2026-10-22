@@ -62,6 +62,11 @@ public:
 	// Element work state management these act like master / override for actual sections
 	void set_element_work_state(std::uint16_t elementNumber, bool isWorking);
 	bool try_get_element_work_state(std::uint16_t elementNumber, bool &isWorking) const;
+	/// @brief Asks for every section setpoint to be sent on the next MyTCServer::update_section_setpoints()
+	void request_full_setpoint();
+	/// @brief Whether a full setpoint is due, either requested or because the last one is older than intervalMs
+	bool is_full_setpoint_due(std::uint32_t nowMs, std::uint32_t intervalMs) const;
+	void mark_full_setpoint_sent(std::uint32_t nowMs);
 
 private:
 	isobus::DeviceDescriptorObjectPool pool; ///< The device descriptor object pool (DDOP) for the TC
@@ -79,6 +84,8 @@ private:
 	bool isSectionControlEnabled = false; ///< Stores auto vs manual mode setting
 	bool usesPerElementControl = false; ///< Legacy mode: use per-element setpoint instead of condensed
 	std::uint16_t perElementSetpointDDI = 0; ///< The DDI to use for per-element setpoints (289 or 141), 0 if not applicable
+	bool fullSetpointRequested = false; ///< Send every section setpoint on the next update_section_setpoints()
+	std::uint32_t lastFullSetpointMs = 0; ///< When every section setpoint was last sent, 0 = never
 };
 
 // Create the task controller server object, this will handle all the ISOBUS communication for us
@@ -116,17 +123,34 @@ public:
 	void update_section_states(std::vector<bool> &sectionStates);
 	void update_section_control_enabled(bool enabled);
 
+	/// @brief Keeps implements in automatic mode on AOG's section demand. Call from the update() thread.
+	/// @details Sending only on changes left an implement on its own state whenever AOG's demand did not
+	/// change: after switching to automatic, after the implement's master switch went on, and when AOG
+	/// sent no demand at all (no field open). This sends every setpoint right after those events and
+	/// every SECTION_SETPOINT_REFRESH_MS while in automatic, and treats a missing demand as all off.
+	void update_section_setpoints();
+
 	/// @brief Sends GNSS quality (DDI 514) to every client that declares that DDI.
 	/// @param quality NMEA 2000 GNSS Method: 0=No GNSS, 1=GNSS, 2=DGNSS, 3=Precise, 4=RTK Fixed, 5=RTK Float, 6=Estimated, 7=Manual, 8=Simulated
 	void send_gnss_quality(std::uint8_t quality);
 
 private:
-	void send_section_setpoint_states(std::shared_ptr<isobus::ControlFunction> client, std::uint8_t ddiOffset);
+	/// @brief Copies AOG's section demand into a client's section setpoints
+	/// @returns A bit per condensed block (bit 0 = sections 1-16) whose setpoint changed
+	std::uint16_t apply_section_demand(ClientState &state);
+	void send_all_section_setpoint_states(std::shared_ptr<isobus::ControlFunction> client);
+	void send_section_setpoint_states(std::shared_ptr<isobus::ControlFunction> client, std::uint8_t ddiOffset, bool forceWorkState = false);
 	void send_section_control_state(std::shared_ptr<isobus::ControlFunction> client, bool enabled);
 	bool is_ddi_settable(std::shared_ptr<isobus::ControlFunction> client, std::uint16_t ddi);
 
 	std::map<std::shared_ptr<isobus::ControlFunction>, ClientState> clients;
 	std::map<std::shared_ptr<isobus::ControlFunction>, std::queue<std::vector<std::uint8_t>>> uploadedPools;
+
+	static constexpr std::uint32_t SECTION_SETPOINT_REFRESH_MS = 2000; ///< Resend interval while in automatic
+	static constexpr std::uint32_t SECTION_DEMAND_TIMEOUT_MS = 2000; ///< AOG sends PGN 229 every frame while a field is open
+	std::vector<bool> aogSectionDemand; ///< Last section states from AOG (PGN 229); all off when none is received
+	std::uint32_t lastSectionDemandMs = 0; ///< When AOG's section demand was last received, 0 = never
+	bool sectionDemandReceived = false; ///< Whether AOG's section demand is currently arriving
 
 	/// @brief Guards clients and uploadedPools.
 	///
