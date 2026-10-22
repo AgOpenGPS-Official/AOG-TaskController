@@ -194,6 +194,16 @@ if(AOG_TC_VALIDATE_IOP)
   add_dependencies(iop_validator test_async_log)
   add_test(NAME async_log COMMAND test_async_log)
 
+  # AOG UDP datagram parsing; the parser is header-only.
+  add_executable(test_aog_packet_parser
+                 ${CMAKE_CURRENT_LIST_DIR}/tools/test_aog_packet_parser.cpp)
+  target_compile_features(test_aog_packet_parser PRIVATE cxx_std_20)
+  set_target_properties(test_aog_packet_parser PROPERTIES CXX_EXTENSIONS OFF)
+  target_include_directories(test_aog_packet_parser
+                             PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
+  add_dependencies(iop_validator test_aog_packet_parser)
+  add_test(NAME aog_packet_parser COMMAND test_aog_packet_parser)
+
   # PASS_REGULAR_EXPRESSION makes CTest ignore the exit code, which is the part
   # a CI gate actually reads.
   add_test(NAME malformed_pool_exit_status COMMAND iop_validator
