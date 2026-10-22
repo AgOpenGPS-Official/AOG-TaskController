@@ -10,9 +10,11 @@
 #include "logging_utils.hpp"
 #include "settings.hpp"
 
+#include "isobus/isobus/can_network_manager.hpp"
 #include "isobus/isobus/isobus_device_descriptor_object_pool_helpers.hpp"
 #include "isobus/isobus/isobus_task_controller_server.hpp"
 
+#include <algorithm>
 #include <bitset>
 #include <filesystem>
 #include <fstream>
@@ -408,6 +410,77 @@ MyTCServer::MyTCServer(std::shared_ptr<isobus::InternalControlFunction> internal
                          .with_implement_section_control(), // We support section control
                        version)
 {
+}
+
+MyTCServer::~MyTCServer()
+{
+	if (staleClientDetectionStarted)
+	{
+		isobus::CANNetworkManager::CANNetwork.remove_any_control_function_parameter_group_number_callback(
+		  static_cast<std::uint32_t>(isobus::CANLibParameterGroupNumber::ProcessData), on_process_data_for_stale_check, this);
+	}
+}
+
+void MyTCServer::start_stale_client_detection()
+{
+	if (!staleClientDetectionStarted)
+	{
+		isobus::CANNetworkManager::CANNetwork.add_any_control_function_parameter_group_number_callback(
+		  static_cast<std::uint32_t>(isobus::CANLibParameterGroupNumber::ProcessData), on_process_data_for_stale_check, this);
+		staleClientDetectionStarted = true;
+	}
+}
+
+void MyTCServer::on_process_data_for_stale_check(const isobus::CANMessage &message, void *parentPointer)
+{
+	// Runs on the CAN thread: only collect here, the active client list is checked on the update() thread
+	auto server = static_cast<MyTCServer *>(parentPointer);
+	if ((nullptr == server) ||
+	    (isobus::CAN_DATA_LENGTH != message.get_data_length()) ||
+	    (nullptr == message.get_source_control_function()) ||
+	    (server->serverControlFunction != message.get_destination_control_function()))
+	{
+		return;
+	}
+
+	// A client sends these only once it considers itself connected
+	const auto command = static_cast<ProcessDataCommands>(message.get_data()[0] & 0x0F);
+	if ((ProcessDataCommands::ClientTask == command) ||
+	    (ProcessDataCommands::Value == command) ||
+	    (ProcessDataCommands::SetValueAndAcknowledge == command))
+	{
+		std::lock_guard<std::mutex> lock(server->staleCandidatesMutex);
+		if (server->staleCandidates.end() == std::find(server->staleCandidates.begin(), server->staleCandidates.end(), message.get_source_control_function()))
+		{
+			server->staleCandidates.push_back(message.get_source_control_function());
+		}
+	}
+}
+
+std::vector<std::shared_ptr<isobus::ControlFunction>> MyTCServer::take_stale_clients()
+{
+	std::vector<std::shared_ptr<isobus::ControlFunction>> candidates;
+	{
+		std::lock_guard<std::mutex> lock(staleCandidatesMutex);
+		candidates.swap(staleCandidates);
+	}
+
+	// update() has processed the stack's queue by now, so a client that just connected is already active
+	std::vector<std::shared_ptr<isobus::ControlFunction>> staleClients;
+	for (const auto &candidate : candidates)
+	{
+		if (candidate->get_address_valid() && (nullptr == get_active_client(candidate)))
+		{
+			staleClients.push_back(candidate);
+		}
+	}
+	return staleClients;
+}
+
+void MyTCServer::clear_stale_clients()
+{
+	std::lock_guard<std::mutex> lock(staleCandidatesMutex);
+	staleCandidates.clear();
 }
 
 bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> partnerCF, ObjectPoolActivationError &activationError, ObjectPoolErrorCodes &objectPoolError, std::uint16_t &parentObjectIDOfFaultyObject, std::uint16_t &faultyObjectID)

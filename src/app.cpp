@@ -381,6 +381,10 @@ void Application::setup_task_controller_server()
 	languageInterface.set_language_code(settings->get_language_code());
 	languageInterface.set_country_code(settings->get_country_code());
 	tcServer->initialize();
+	tcServer->start_stale_client_detection();
+	// An implement still connected to a previous run of the TC (a restart takes only a few seconds) would keep
+	// talking to us without reconnecting, and get NACKed, unless it sees our TC Status stop for longer than 6 s.
+	start_tc_quiet_period("startup");
 	tcServer->set_task_totals_active(true); // TODO: make this dynamic based on status in AOG
 	tcFunctionalities = std::make_unique<isobus::ControlFunctionFunctionalities>(tcCF);
 	tcFunctionalities->set_functionality_is_supported(
@@ -626,9 +630,19 @@ bool Application::update()
 	udpConnections->handle_address_detection();
 	udpConnections->handle_incoming_packets();
 
-	tcServer->request_measurement_commands();
-	warn_if_late("tcServer->update()", lastTcServerUpdateCallMs, 200);
-	tcServer->update();
+	if (is_tc_quiet())
+	{
+		// Not calling update() also holds the stack's own TC Status; messages wait in its queue
+		lastTcServerUpdateCallMs = 0;
+		tcServer->clear_stale_clients();
+	}
+	else
+	{
+		tcServer->request_measurement_commands();
+		warn_if_late("tcServer->update()", lastTcServerUpdateCallMs, 200);
+		tcServer->update();
+		recover_stale_clients();
+	}
 	if (tcFunctionalities)
 		tcFunctionalities->update();
 	if (tecuFunctionalities)
@@ -789,7 +803,11 @@ bool Application::update()
 			lastLateWarningMs = isobus::SystemTiming::get_timestamp_ms();
 		}
 	}
-	if (isobus::SystemTiming::time_expired_ms(lastTCStatusTransmit, 2000) && tcCF && tcCF->get_address_valid())
+	if (is_tc_quiet())
+	{
+		lastTCStatusTransmit = 0; // Send right away when the quiet period ends, without a "late" warning
+	}
+	else if (isobus::SystemTiming::time_expired_ms(lastTCStatusTransmit, 2000) && tcCF && tcCF->get_address_valid())
 	{
 		static bool firstStatusSent = false;
 		send_task_controller_status_message();
@@ -931,6 +949,73 @@ Application::ImplementDetails Application::derive_implement_details(ClientState 
 	}
 
 	return details;
+}
+
+void Application::start_tc_quiet_period(const std::string &reason)
+{
+	tcQuietUntilMs = isobus::SystemTiming::get_timestamp_ms() + TC_QUIET_PERIOD_MS;
+	if (0 == tcQuietUntilMs)
+	{
+		tcQuietUntilMs = 1; // 0 means "not quiet"
+	}
+	log("TC") << "Holding TC Status for " << TC_QUIET_PERIOD_MS << " ms (" << reason
+	          << ") so connected implements drop their connection and reconnect" << std::endl;
+}
+
+bool Application::is_tc_quiet()
+{
+	if (0 == tcQuietUntilMs)
+	{
+		return false;
+	}
+	// Signed difference so the comparison survives timestamp wrap-around
+	if (static_cast<std::int32_t>(isobus::SystemTiming::get_timestamp_ms() - tcQuietUntilMs) < 0)
+	{
+		return true;
+	}
+	tcQuietUntilMs = 0;
+	log("TC") << "Quiet period over, sending TC Status again" << std::endl;
+	return false;
+}
+
+void Application::recover_stale_clients()
+{
+	for (const auto &client : tcServer->take_stale_clients())
+	{
+		const std::uint64_t name = client->get_NAME().get_full_name();
+		std::ostringstream clientText;
+		clientText << "0x" << std::hex << std::uppercase << std::setw(2) << std::setfill('0') << static_cast<int>(client->get_address())
+		           << " (NAME " << std::dec << name << ")";
+
+		if ((0 != lastStaleClientRecoveryMs) &&
+		    !isobus::SystemTiming::time_expired_ms(lastStaleClientRecoveryMs, STALE_CLIENT_RECOVERY_COOLDOWN_MS))
+		{
+			continue; // Give the clients of the last quiet period time to reconnect
+		}
+
+		auto &recoveries = staleClientRecoveries[name];
+		if (recoveries >= MAX_STALE_CLIENT_RECOVERIES)
+		{
+			if (MAX_STALE_CLIENT_RECOVERIES == recoveries)
+			{
+				log("TC") << "Client " << clientText.str() << " is still talking to us without being connected after "
+				          << static_cast<int>(MAX_STALE_CLIENT_RECOVERIES)
+				          << " quiet periods; giving up. Power-cycle the implement to reconnect it." << std::endl;
+				send_hardware_message("Implement not reconnecting: power-cycle it", 20, HW_MSG_ALERT);
+				recoveries++; // Log once
+			}
+			continue;
+		}
+
+		recoveries++;
+		lastStaleClientRecoveryMs = isobus::SystemTiming::get_timestamp_ms();
+		log("TC") << "Client " << clientText.str() << " is talking to us as if connected, but it is not one of our clients "
+		          << "(it missed a TC restart or timeout). Reconnecting it, attempt " << static_cast<int>(recoveries)
+		          << " of " << static_cast<int>(MAX_STALE_CLIENT_RECOVERIES) << "." << std::endl;
+		send_hardware_message("Reconnecting implement", 5, HW_MSG_INFO);
+		start_tc_quiet_period("stale client " + clientText.str());
+		break; // One quiet period reconnects every client
+	}
 }
 
 void Application::send_task_controller_status_message()
