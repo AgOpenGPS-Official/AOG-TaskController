@@ -62,7 +62,7 @@ FetchContent_MakeAvailable(Boost)
 FetchContent_Declare(
   isobus
   GIT_REPOSITORY https://github.com/Open-Agriculture/AgIsoStack-plus-plus.git
-  GIT_TAG c0e1ebb06a2ad9d5bf86c98b3d028ab8fa350130
+  GIT_TAG 1d081d9a9df61e256015efda3683d15c8fa3d580
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(isobus)
 
@@ -193,6 +193,19 @@ if(AOG_TC_VALIDATE_IOP)
   target_link_libraries(test_async_log PRIVATE Threads::Threads)
   add_dependencies(iop_validator test_async_log)
   add_test(NAME async_log COMMAND test_async_log)
+
+  # element_hierarchy (cached element parents for the section state lookup) unit
+  # tests, built with the validation workflow for the same reason.
+  add_executable(test_element_hierarchy
+                 ${CMAKE_CURRENT_LIST_DIR}/tools/test_element_hierarchy.cpp)
+  target_compile_features(test_element_hierarchy PRIVATE cxx_std_20)
+  set_target_properties(test_element_hierarchy PROPERTIES CXX_EXTENSIONS OFF)
+  target_include_directories(test_element_hierarchy
+                             PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
+  target_link_libraries(test_element_hierarchy PRIVATE isobus::Isobus
+                                                       isobus::Utility)
+  add_dependencies(iop_validator test_element_hierarchy)
+  add_test(NAME element_hierarchy COMMAND test_element_hierarchy)
 
   # PASS_REGULAR_EXPRESSION makes CTest ignore the exit code, which is the part
   # a CI gate actually reads.

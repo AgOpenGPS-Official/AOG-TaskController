@@ -14,12 +14,12 @@
 #include "isobus/isobus/isobus_task_controller_server.hpp"
 #include "isobus/utility/system_timing.hpp"
 
+#include <algorithm>
 #include <bitset>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
-#include <set>
 #include <sstream>
 
 /// Delay between pool activation and applying the initial section control state, so the implement
@@ -40,6 +40,37 @@ static std::string sanitize_filename(const std::string &input)
 		}
 	}
 	return result;
+}
+
+// Finds the number of the first device element that lists the process data object as a child.
+static bool find_owning_element_number(isobus::DeviceDescriptorObjectPool &pool,
+                                       const isobus::task_controller_object::DeviceProcessDataObject &processData,
+                                       std::uint16_t &elementNumber)
+{
+	for (std::uint32_t i = 0; i < pool.size(); i++)
+	{
+		auto object = pool.get_object_by_index(i);
+		if (!object || object->get_object_type() != isobus::task_controller_object::ObjectTypes::DeviceElement)
+		{
+			continue;
+		}
+
+		auto elementObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceElementObject>(object);
+		if (!elementObject)
+		{
+			continue;
+		}
+
+		for (std::uint16_t childId : elementObject->get_child_object_ids())
+		{
+			if (childId == processData.get_object_id())
+			{
+				elementNumber = elementObject->get_element_number();
+				return true;
+			}
+		}
+	}
+	return false;
 }
 
 // Logs and keeps the DDOP bytes exactly as received, so pools from different sessions can be compared byte for byte.
@@ -289,87 +320,17 @@ bool ClientState::has_element_number_for_ddi(isobus::DataDescriptionIndex ddi) c
 
 bool ClientState::is_element_or_parent_off(std::uint16_t elementNumber) const
 {
-	std::set<std::uint16_t> visitedElements;
-	auto &nonConstPool = const_cast<isobus::DeviceDescriptorObjectPool &>(pool);
-
-	while (visitedElements.insert(elementNumber).second)
-	{
+	// Called per section from the heartbeat and the VT section map, so this only walks the cached
+	// parent map; searching the pool here cost milliseconds per call on large pools (#100).
+	return element_hierarchy::any_in_chain(elementParents, elementNumber, [this](std::uint16_t element) {
 		bool elementWorkState;
-		if (try_get_element_work_state(elementNumber, elementWorkState) && !elementWorkState)
-		{
-			return true;
-		}
+		return try_get_element_work_state(element, elementWorkState) && !elementWorkState;
+	});
+}
 
-		bool parentFound = false;
-		std::uint16_t parentElementNumber = 0;
-		for (std::uint32_t i = 0; (i < nonConstPool.size()) && !parentFound; i++)
-		{
-			auto object = nonConstPool.get_object_by_index(i);
-			if (!object || (object->get_object_type() != isobus::task_controller_object::ObjectTypes::DeviceElement))
-			{
-				continue;
-			}
-
-			auto elementObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceElementObject>(object);
-			if (!elementObject)
-			{
-				continue;
-			}
-
-			for (std::uint16_t childId : elementObject->get_child_object_ids())
-			{
-				for (std::uint32_t j = 0; j < nonConstPool.size(); j++)
-				{
-					auto childObject = nonConstPool.get_object_by_index(j);
-					if (!childObject || (childObject->get_object_id() != childId))
-					{
-						continue;
-					}
-
-					if (childObject->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceElement)
-					{
-						auto childElementObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceElementObject>(childObject);
-						if (childElementObject &&
-						    (childElementObject->get_element_number() == elementNumber) &&
-						    (elementObject->get_element_number() != elementNumber))
-						{
-							parentElementNumber = elementObject->get_element_number();
-							parentFound = true;
-						}
-					}
-					else if (childObject->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceProcessData)
-					{
-						auto processDataObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceProcessDataObject>(childObject);
-						if (processDataObject)
-						{
-							auto ddi = static_cast<isobus::DataDescriptionIndex>(processDataObject->get_ddi());
-							if (has_element_number_for_ddi(ddi) &&
-							    (get_element_number_for_ddi(ddi) == elementNumber) &&
-							    (elementObject->get_element_number() != elementNumber))
-							{
-								parentElementNumber = elementObject->get_element_number();
-								parentFound = true;
-							}
-						}
-					}
-
-					break;
-				}
-				if (parentFound)
-				{
-					break;
-				}
-			}
-		}
-
-		if (!parentFound)
-		{
-			return false;
-		}
-		elementNumber = parentElementNumber;
-	}
-
-	return false; // A cycle was found without an OFF element.
+void ClientState::build_element_hierarchy()
+{
+	elementParents = element_hierarchy::build_parent_map(pool);
 }
 
 void ClientState::set_element_work_state(std::uint16_t elementNumber, bool isWorking)
@@ -443,6 +404,7 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 	if (deserialized)
 	{
 		log() << "Successfully deserialized device descriptor object pool." << std::endl;
+		state.build_element_hierarchy();
 
 		// Save to NVM
 		std::shared_ptr<isobus::task_controller_object::DeviceObject> deviceObject;
@@ -898,6 +860,37 @@ void MyTCServer::request_measurement_commands()
 				}
 			}
 
+			// Map GNSS quality (DDI 514) so send_gnss_quality() knows which element to address.
+			// Mapping only: this is a value the TC pushes to the implement, not one to subscribe to.
+			for (std::uint32_t i = 0; i < client.second.get_pool().size(); i++)
+			{
+				auto object = client.second.get_pool().get_object_by_index(i);
+				if (!object || object->get_object_type() != isobus::task_controller_object::ObjectTypes::DeviceProcessData)
+				{
+					continue;
+				}
+
+				auto processDataObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceProcessDataObject>(object);
+				if (!processDataObject || processDataObject->get_ddi() != static_cast<std::uint16_t>(isobus::DataDescriptionIndex::GNSSQuality))
+				{
+					continue;
+				}
+
+				if (!processDataObject->has_property(isobus::task_controller_object::DeviceProcessDataObject::PropertiesBit::Settable))
+				{
+					log() << "DDI " << processDataObject->get_ddi() << " (GNSS Quality) is declared but not settable, so it is not sent" << std::endl;
+					continue;
+				}
+
+				std::uint16_t elementNumber = 0;
+				if (find_owning_element_number(client.second.get_pool(), *processDataObject, elementNumber))
+				{
+					client.second.set_element_number_for_ddi(isobus::DataDescriptionIndex::GNSSQuality, elementNumber);
+					log() << "Mapped DDI " << processDataObject->get_ddi() << " (GNSS Quality) to element "
+					      << elementNumber << std::endl;
+				}
+			}
+
 			log() << "Measurement commands sent." << std::endl;
 			client.second.mark_measurement_commands_sent();
 
@@ -985,6 +978,19 @@ void MyTCServer::apply_section_control_state(std::shared_ptr<isobus::ControlFunc
 	    state.get_number_of_sections() > 0)
 	{
 		send_section_control_state(client, enabled);
+	}
+}
+
+void MyTCServer::send_gnss_quality(std::uint8_t quality)
+{
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
+	constexpr auto DDI = isobus::DataDescriptionIndex::GNSSQuality;
+	for (auto &client : clients)
+	{
+		if (client.second.has_element_number_for_ddi(DDI))
+		{
+			send_set_value(client.first, static_cast<std::uint16_t>(DDI), client.second.get_element_number_for_ddi(DDI), static_cast<std::int32_t>(quality));
+		}
 	}
 }
 
