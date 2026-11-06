@@ -629,6 +629,7 @@ bool Application::update()
 	tcServer->request_measurement_commands();
 	warn_if_late("tcServer->update()", lastTcServerUpdateCallMs, 200);
 	tcServer->update();
+	tcServer->update_section_setpoints();
 	if (tcFunctionalities)
 		tcFunctionalities->update();
 	if (tecuFunctionalities)
