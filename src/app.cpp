@@ -195,10 +195,10 @@ bool Application::setup_can_hardware()
 	isobus::CANHardwareInterface::set_number_of_can_channels(1);
 	isobus::CANHardwareInterface::assign_can_channel_frame_handler(0, canDriver);
 
-	canHardwareStarted = isobus::CANHardwareInterface::start();
-	if ((!canHardwareStarted) || (!canDriver->get_is_valid()))
+	if ((!isobus::CANHardwareInterface::start()) || (!canDriver->get_is_valid()))
 	{
-		log() << "Failed to start CAN hardware interface." << std::endl;
+		const std::string reason = canDriver->get_last_error();
+		log() << "Failed to start CAN hardware interface." << (reason.empty() ? "" : " " + reason) << std::endl;
 		return false;
 	}
 
@@ -1448,7 +1448,9 @@ void Application::stop()
 	{
 		tcServer->terminate();
 	}
-	if (canHardwareStarted)
+	// start() also starts the update thread when the driver fails to open, so check is_running()
+	// rather than whether start() succeeded.
+	if (isobus::CANHardwareInterface::is_running())
 	{
 		isobus::CANHardwareInterface::stop();
 	}

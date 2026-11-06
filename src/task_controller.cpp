@@ -13,12 +13,12 @@
 #include "isobus/isobus/isobus_device_descriptor_object_pool_helpers.hpp"
 #include "isobus/isobus/isobus_task_controller_server.hpp"
 
+#include <algorithm>
 #include <bitset>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
-#include <set>
 #include <sstream>
 
 // Sanitize a string for use as a filename by replacing invalid characters with underscores
@@ -299,87 +299,17 @@ bool ClientState::has_element_number_for_ddi(isobus::DataDescriptionIndex ddi) c
 
 bool ClientState::is_element_or_parent_off(std::uint16_t elementNumber) const
 {
-	std::set<std::uint16_t> visitedElements;
-	auto &nonConstPool = const_cast<isobus::DeviceDescriptorObjectPool &>(pool);
-
-	while (visitedElements.insert(elementNumber).second)
-	{
+	// Called per section from the heartbeat and the VT section map, so this only walks the cached
+	// parent map; searching the pool here cost milliseconds per call on large pools (#100).
+	return element_hierarchy::any_in_chain(elementParents, elementNumber, [this](std::uint16_t element) {
 		bool elementWorkState;
-		if (try_get_element_work_state(elementNumber, elementWorkState) && !elementWorkState)
-		{
-			return true;
-		}
+		return try_get_element_work_state(element, elementWorkState) && !elementWorkState;
+	});
+}
 
-		bool parentFound = false;
-		std::uint16_t parentElementNumber = 0;
-		for (std::uint32_t i = 0; (i < nonConstPool.size()) && !parentFound; i++)
-		{
-			auto object = nonConstPool.get_object_by_index(i);
-			if (!object || (object->get_object_type() != isobus::task_controller_object::ObjectTypes::DeviceElement))
-			{
-				continue;
-			}
-
-			auto elementObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceElementObject>(object);
-			if (!elementObject)
-			{
-				continue;
-			}
-
-			for (std::uint16_t childId : elementObject->get_child_object_ids())
-			{
-				for (std::uint32_t j = 0; j < nonConstPool.size(); j++)
-				{
-					auto childObject = nonConstPool.get_object_by_index(j);
-					if (!childObject || (childObject->get_object_id() != childId))
-					{
-						continue;
-					}
-
-					if (childObject->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceElement)
-					{
-						auto childElementObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceElementObject>(childObject);
-						if (childElementObject &&
-						    (childElementObject->get_element_number() == elementNumber) &&
-						    (elementObject->get_element_number() != elementNumber))
-						{
-							parentElementNumber = elementObject->get_element_number();
-							parentFound = true;
-						}
-					}
-					else if (childObject->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceProcessData)
-					{
-						auto processDataObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceProcessDataObject>(childObject);
-						if (processDataObject)
-						{
-							auto ddi = static_cast<isobus::DataDescriptionIndex>(processDataObject->get_ddi());
-							if (has_element_number_for_ddi(ddi) &&
-							    (get_element_number_for_ddi(ddi) == elementNumber) &&
-							    (elementObject->get_element_number() != elementNumber))
-							{
-								parentElementNumber = elementObject->get_element_number();
-								parentFound = true;
-							}
-						}
-					}
-
-					break;
-				}
-				if (parentFound)
-				{
-					break;
-				}
-			}
-		}
-
-		if (!parentFound)
-		{
-			return false;
-		}
-		elementNumber = parentElementNumber;
-	}
-
-	return false; // A cycle was found without an OFF element.
+void ClientState::build_element_hierarchy()
+{
+	elementParents = element_hierarchy::build_parent_map(pool);
 }
 
 void ClientState::set_element_work_state(std::uint16_t elementNumber, bool isWorking)
@@ -453,6 +383,7 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 	if (deserialized)
 	{
 		log() << "Successfully deserialized device descriptor object pool." << std::endl;
+		state.build_element_hierarchy();
 
 		// Save to NVM
 		std::shared_ptr<isobus::task_controller_object::DeviceObject> deviceObject;
