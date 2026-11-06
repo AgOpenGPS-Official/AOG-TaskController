@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <queue>
 
 constexpr std::uint8_t NUMBER_SECTIONS_PER_CONDENSED_MESSAGE = 16;
@@ -56,6 +57,10 @@ public:
 	isobus::DeviceDescriptorObjectPool &get_pool();
 	bool are_measurement_commands_sent() const;
 	void mark_measurement_commands_sent();
+	/// @brief Schedules the TC's section control state to be applied to this client at the given time.
+	void schedule_initial_section_control(std::uint32_t dueMs);
+	/// @brief Returns true (once) when the scheduled initial section control state is due.
+	bool take_due_initial_section_control(std::uint32_t nowMs);
 	std::uint16_t get_element_number_for_ddi(isobus::DataDescriptionIndex ddi) const;
 	void set_element_number_for_ddi(isobus::DataDescriptionIndex ddi, std::uint16_t elementNumber);
 	bool has_element_number_for_ddi(isobus::DataDescriptionIndex ddi) const;
@@ -69,6 +74,7 @@ public:
 private:
 	isobus::DeviceDescriptorObjectPool pool; ///< The device descriptor object pool (DDOP) for the TC
 	bool areMeasurementCommandsSent = false; ///< Whether or not the measurement commands have been sent
+	std::optional<std::uint32_t> initialSectionControlDueMs; ///< When to apply the TC's section control state after connect
 	std::map<isobus::DataDescriptionIndex, std::uint16_t> ddiToElementNumber; ///< Mapping of DDI to element number // TODO: better way to do this?
 
 	std::uint8_t numberOfSections;
@@ -120,6 +126,9 @@ public:
 	void update_section_states(std::vector<bool> &sectionStates);
 	void update_section_control_enabled(bool enabled);
 
+	/// @brief Sets the section control state applied to implements as they connect, before AOG asks for one.
+	void set_initial_section_control_enabled(bool enabled);
+
 	/// @brief Sends GNSS quality (DDI 514) to every client that declares that DDI.
 	/// @param quality NMEA 2000 GNSS Method: 0=No GNSS, 1=GNSS, 2=DGNSS, 3=Precise, 4=RTK Fixed, 5=RTK Float, 6=Estimated, 7=Manual, 8=Simulated
 	void send_gnss_quality(std::uint8_t quality);
@@ -127,10 +136,13 @@ public:
 private:
 	void send_section_setpoint_states(std::shared_ptr<isobus::ControlFunction> client, std::uint8_t ddiOffset);
 	void send_section_control_state(std::shared_ptr<isobus::ControlFunction> client, bool enabled);
+	/// @brief Sets the local auto/manual flag and commands DDI 160 if the client supports it. Caller must hold clientsMutex.
+	void apply_section_control_state(std::shared_ptr<isobus::ControlFunction> client, ClientState &state, bool enabled);
 	bool is_ddi_settable(std::shared_ptr<isobus::ControlFunction> client, std::uint16_t ddi);
 
 	std::map<std::shared_ptr<isobus::ControlFunction>, ClientState> clients;
 	std::map<std::shared_ptr<isobus::ControlFunction>, std::queue<std::vector<std::uint8_t>>> uploadedPools;
+	bool desiredSectionControlEnabled = false; ///< Applied to implements when they connect; follows AOG's ISOBUS SC button. Guarded by clientsMutex
 
 	/// @brief Guards clients and uploadedPools.
 	///
