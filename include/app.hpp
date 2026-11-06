@@ -52,6 +52,12 @@ private:
 		std::string widthText;
 	};
 
+	struct WorkingWithoutDemand
+	{
+		std::uint32_t sinceMs = 0;
+		bool warned = false;
+	};
+
 	void send_task_controller_status_message();
 
 	/// @brief Logs AOG's section demand (PGN 229) when it changed, at most every SECTION_DEMAND_LOG_INTERVAL_MS
@@ -124,8 +130,7 @@ private:
 	std::uint32_t lastSectionDemandMs = 0; ///< When PGN 229 was last received, 0 = never
 	std::uint32_t lastSectionDemandLogMs = 0;
 	bool sectionDemandArriving = false;
-	std::map<std::uint64_t, std::uint32_t> workingWithoutDemandSinceMs; ///< Per client NAME
-	std::map<std::uint64_t, bool> workingWithoutDemandWarned; ///< Per client NAME
+	std::map<std::uint64_t, WorkingWithoutDemand> workingWithoutDemand; ///< Per client NAME
 	std::uint32_t vtDisconnectedSinceMs = 0;
 	std::uint32_t lastVtStatusUpdateMs = 0;
 	std::uint32_t lastVtSectionUpdateMs = 0;

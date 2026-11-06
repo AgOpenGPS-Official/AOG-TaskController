@@ -501,7 +501,7 @@ void Application::setup_udp_connections()
 					sectionStates.push_back(data[j] & (1 << i));
 				}
 			}
-			lastSectionDemandMs = (0 == lastAogPacketMs) ? 1 : lastAogPacketMs;
+			lastSectionDemandMs = lastAogPacketMs;
 			if (sectionStates != sectionDemand)
 			{
 				sectionDemand = sectionStates;
@@ -1033,31 +1033,33 @@ void Application::check_section_demand()
 		}
 		const bool working = (actual.end() != std::find(actual.begin(), actual.end(), true));
 
-		std::ostringstream clientText;
-		clientText << "0x" << std::hex << std::uppercase << std::setw(2) << std::setfill('0') << static_cast<int>(client.first->get_address());
+		const std::string clientText = format_hex_address(client.first->get_address());
 
 		if (!state.is_section_control_enabled() || !working || demanded)
 		{
-			if (workingWithoutDemandWarned[name])
+			auto tracked = workingWithoutDemand.find(name);
+			if (workingWithoutDemand.end() != tracked)
 			{
-				log("AOG") << "Client " << clientText.str() << " sections follow AOG's section control again" << std::endl;
+				if (tracked->second.warned)
+				{
+					log("AOG") << "Client " << clientText << " sections follow AOG's section control again" << std::endl;
+				}
+				workingWithoutDemand.erase(tracked);
 			}
-			workingWithoutDemandSinceMs.erase(name);
-			workingWithoutDemandWarned.erase(name);
 			continue;
 		}
 
-		auto since = workingWithoutDemandSinceMs.try_emplace(name, nowMs).first;
-		if (!workingWithoutDemandWarned[name] && ((nowMs - since->second) >= WORKING_WITHOUT_DEMAND_WARNING_MS))
+		auto &tracked = workingWithoutDemand.try_emplace(name, WorkingWithoutDemand{ nowMs, false }).first->second;
+		if (!tracked.warned && ((nowMs - tracked.sinceMs) >= WORKING_WITHOUT_DEMAND_WARNING_MS))
 		{
-			workingWithoutDemandWarned[name] = true;
-			log("AOG") << "WARNING: client " << clientText.str() << " has been in automatic and working for "
+			tracked.warned = true;
+			log("AOG") << "WARNING: client " << clientText << " has been in automatic and working for "
 			           << (WORKING_WITHOUT_DEMAND_WARNING_MS / 1000) << " s (actual: "
 			           << describe_section_demand(actual, state.get_number_of_sections()) << ") but AOG "
 			           << (arriving ? "asks for no sections. Is AOG's section Auto button on?"
 			                        : "sends no section states. Is a field open in AOG?")
 			           << std::endl;
-			send_hardware_message(arriving ? "Implement working but AOG sections are off: turn on AOG's section Auto"
+			send_hardware_message(arriving ? "Implement working, AOG sections off: turn on section Auto"
 			                               : "Implement working but no field is open in AOG",
 			                      20,
 			                      HW_MSG_ALERT);
