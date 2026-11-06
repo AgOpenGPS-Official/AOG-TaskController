@@ -52,7 +52,20 @@ private:
 		std::string widthText;
 	};
 
+	struct WorkingWithoutDemand
+	{
+		std::uint32_t sinceMs = 0;
+		bool warned = false;
+	};
+
 	void send_task_controller_status_message();
+
+	/// @brief Logs AOG's section demand (PGN 229) when it changed, at most every SECTION_DEMAND_LOG_INTERVAL_MS
+	void log_section_demand();
+	/// @brief Logs when PGN 229 starts and stops, and warns when an implement in automatic is working
+	/// while AOG asks for no sections — e.g. AOG's own section Auto button is off after a field change
+	void check_section_demand();
+	static std::string describe_section_demand(const std::vector<bool> &demand, std::uint8_t numberOfSections);
 
 	bool setup_can_hardware();
 	bool setup_control_functions();
@@ -106,6 +119,17 @@ private:
 	static constexpr std::uint32_t GNSS_QUALITY_TIMEOUT_MS = 2000; ///< No PGN 0xD6 for this long = fix quality unknown
 	std::uint32_t lastDistanceMm = 0;
 	std::uint32_t lastAogPacketMs = 0;
+
+	static constexpr std::uint32_t SECTION_DEMAND_LOG_INTERVAL_MS = 200;
+	static constexpr std::uint32_t SECTION_DEMAND_TIMEOUT_MS = 2000; ///< AOG sends PGN 229 every frame while a field is open
+	static constexpr std::uint32_t WORKING_WITHOUT_DEMAND_WARNING_MS = 10000;
+	std::vector<bool> sectionDemand; ///< Last section states from AOG (PGN 229)
+	std::vector<bool> loggedSectionDemand; ///< The section demand last written to the log
+	std::uint32_t sectionDemandChangesSinceLog = 0;
+	std::uint32_t lastSectionDemandMs = 0; ///< When PGN 229 was last received, 0 = never
+	std::uint32_t lastSectionDemandLogMs = 0;
+	bool sectionDemandArriving = false;
+	std::map<std::uint64_t, WorkingWithoutDemand> workingWithoutDemand; ///< Per client NAME
 	std::uint32_t vtDisconnectedSinceMs = 0;
 	std::uint32_t lastVtStatusUpdateMs = 0;
 	std::uint32_t lastVtSectionUpdateMs = 0;
