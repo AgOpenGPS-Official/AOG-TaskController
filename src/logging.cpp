@@ -78,6 +78,18 @@ public:
 
 	void sink_CAN_stack_log(CANStackLogger::LoggingLevel level, const std::string &text) override
 	{
+		// Some bus devices send these continuously. The stack's text has no source address; the application
+		// reports them per source once per minute instead (see report_global_rts_counts in app.cpp).
+		if ((LoggingLevel::Warning == level) &&
+		    (text == "[TP]: Received a Request to Send (RTS) message with a global destination, ignoring"))
+		{
+			level = LoggingLevel::Debug;
+			if (get_log_level() > LoggingLevel::Debug)
+			{
+				return;
+			}
+		}
+
 		std::ostream &out = async_log::stream();
 		out << "[" << get_timestamp() << "] ";
 		switch (level)
