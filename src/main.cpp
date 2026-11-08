@@ -1,6 +1,7 @@
 #include "app.hpp"
 #include "async_log.hpp"
 #include "crash_handler.hpp"
+#include "isobridge_can_plugin.hpp"
 #include "logging.cpp"
 #include "settings.hpp"
 
@@ -105,6 +106,7 @@ enum class CANAdapter
 	ADAPTER_RUSOKU_TOUCAN,
 	ADAPTER_SYS_TEC_USB2CAN,
 	ADAPTER_SOCKETCAN,
+	ADAPTER_ISOBRIDGE,
 };
 
 class ArgumentProcessor
@@ -150,8 +152,8 @@ private:
 			std::cout << "Options:\n";
 			std::cout << "  --help\t\tShow this help message\n";
 			std::cout << "  --version\t\tShow the version of the application\n";
-			std::cout << "  --can_adapter=<driver>\tSelect the CAN driver (peak-pcan, innomaker-usb2can, rusoku-toucan, sys-tec-usb2can, socketcan)\n";
-			std::cout << "  --can_channel=<channel>\tSelect the CAN channel (numeric, or interface name e.g. can0 for socketcan)\n";
+			std::cout << "  --can_adapter=<driver>\tSelect the CAN driver (peak-pcan, innomaker-usb2can, rusoku-toucan, sys-tec-usb2can, socketcan, isobridge)\n";
+			std::cout << "  --can_channel=<channel>\tSelect the CAN channel (numeric, interface name e.g. can0 for socketcan, or the Teensy IPv4 address for isobridge)\n";
 			std::cout << "  --log_level=<level>\tSet the log level (debug, info, warning, error, critical)\n";
 			std::cout << "  --log2file\t\tLog to file\n";
 			std::exit(0);
@@ -190,6 +192,7 @@ private:
 				{ "rusoku-toucan", CANAdapter::ADAPTER_RUSOKU_TOUCAN },
 				{ "sys-tec-usb2can", CANAdapter::ADAPTER_SYS_TEC_USB2CAN },
 				{ "socketcan", CANAdapter::ADAPTER_SOCKETCAN },
+				{ "isobridge", CANAdapter::ADAPTER_ISOBRIDGE },
 			};
 
 			auto it = adapterMap.find(value);
@@ -269,6 +272,15 @@ static std::shared_ptr<isobus::CANHardwarePlugin> create_can_driver(const Argume
 			return std::make_shared<isobus::SysTecWindowsPlugin>(static_cast<std::uint8_t>(std::stoi(args.get_can_channel())));
 		}
 #endif
+		case CANAdapter::ADAPTER_ISOBRIDGE:
+		{
+			if (args.get_can_channel().empty())
+			{
+				std::cout << "ISOBridge requires --can_channel=<Teensy IPv4 address>" << std::endl;
+				return nullptr;
+			}
+			return std::make_shared<ISOBridgeCANPlugin>(args.get_can_channel());
+		}
 #if defined(ISOBUS_SOCKETCAN_AVAILABLE)
 		case CANAdapter::ADAPTER_SOCKETCAN:
 		{
