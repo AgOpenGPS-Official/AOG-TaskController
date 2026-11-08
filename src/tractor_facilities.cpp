@@ -254,6 +254,30 @@ TractorFacilities::TractorFacilities(
 {
 }
 
+TractorFacilities::~TractorFacilities()
+{
+	if (!initialized)
+	{
+		return;
+	}
+	// The request protocol calls on_pgn_request() under its own lock, so after this returns it no longer
+	// runs. The stack may still call on_required_facilities() once after removal (it iterates a copy of
+	// the global callbacks), which is harmless: that callback only logs and never touches this object.
+	if (auto pgnRequestProtocol = tecuCF ? tecuCF->get_pgn_request_protocol().lock() : nullptr)
+	{
+		pgnRequestProtocol->remove_pgn_request_callback(PGN_TRACTOR_FACILITIES, &TractorFacilities::on_pgn_request, this);
+	}
+	isobus::CANNetworkManager::CANNetwork.remove_global_parameter_group_number_callback(
+	  PGN_REQUIRED_TRACTOR_FACILITIES, &TractorFacilities::on_required_facilities, this);
+}
+
+void TractorFacilities::set_provided_facilities(const Facilities &facilities)
+{
+	std::lock_guard<std::mutex> lock(providedFacilitiesMutex);
+	providedFacilities = facilities;
+	hasProvidedFacilities = true;
+}
+
 void TractorFacilities::set_speed_messages_interface(isobus::SpeedMessagesInterface *iface)
 {
 	speedMessagesInterface = iface;
@@ -271,6 +295,16 @@ void TractorFacilities::set_time_date_active(bool active)
 
 std::array<std::uint8_t, 8> TractorFacilities::build_payload() const
 {
+	{
+		std::lock_guard<std::mutex> lock(providedFacilitiesMutex);
+		if (hasProvidedFacilities)
+		{
+			Facilities provided = providedFacilities;
+			provided.timeDate = timeDateActive;
+			return encode_facilities(provided);
+		}
+	}
+
 	Facilities f;
 	f.tecuClass = 1; // Class 1 – the only class we claim.
 
@@ -333,6 +367,7 @@ bool TractorFacilities::initialize()
 	  PGN_REQUIRED_TRACTOR_FACILITIES, &TractorFacilities::on_required_facilities, this);
 	std::cout << "[" << get_timestamp() << "] [TractorFacilities] Registered PGN 65032 diagnostic listener." << std::endl;
 
+	initialized = true;
 	return true;
 }
 

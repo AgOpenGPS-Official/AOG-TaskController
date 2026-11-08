@@ -227,6 +227,22 @@ if(AOG_TC_VALIDATE_IOP)
                                     isobus::Utility)
   add_test(NAME tractor_facilities_encode_decode
            COMMAND test_tractor_facilities)
+
+  # Sharing the bus with other Tractor ECUs (ISO 11783-9 4.4.2.1)
+  add_executable(
+    test_tecu_coexistence
+    ${CMAKE_CURRENT_LIST_DIR}/tools/test_tecu_coexistence.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/src/tecu_coexistence.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/src/tractor_facilities.cpp)
+  target_compile_features(test_tecu_coexistence PRIVATE cxx_std_20)
+  set_target_properties(test_tecu_coexistence PROPERTIES CXX_EXTENSIONS OFF)
+  target_include_directories(test_tecu_coexistence
+                             PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
+  target_link_libraries(
+    test_tecu_coexistence PRIVATE isobus::Isobus isobus::HardwareIntegration
+                                  isobus::Utility)
+  add_dependencies(iop_validator test_tecu_coexistence)
+  add_test(NAME tecu_coexistence COMMAND test_tecu_coexistence)
 endif()
 
 if(WIN32)

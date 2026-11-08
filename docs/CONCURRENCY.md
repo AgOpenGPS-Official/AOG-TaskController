@@ -59,6 +59,19 @@ registration point itself defers to an `update()` call, or invokes the listener/
   overrides may turn out to already be main-thread-only — the lock is cheap insurance and keeps
   every entry point consistent regardless of how the library's internals might change.
 
+- **`OtherTecuMonitor`** (`tecu_coexistence.hpp`/`.cpp`) — `on_frame()` (frame-received event) and its
+  PGN 65033 callback run on the background thread, `refresh()` and the queries on the main thread. The
+  per-address and per-message flags are atomics; the facility map is under its own mutex. It lives as long
+  as `Application` because the stack calls global PGN callbacks from a copy of the list, so one can still run
+  once after `remove_global_parameter_group_number_callback()` returns.
+- **Rebuilding the TECU at runtime** (`Application::teardown_tecu()`, when stepping down to a secondary Tractor
+  ECU) destroys `TractorFacilities`, `SpeedMessagesInterface`, `NMEA2000MessageInterface` and the functionalities
+  object before `deactivate_control_function()`. The PGN request protocol and the "any control function"
+  callbacks are invoked under the same locks their removal takes, so they cannot run against a destroyed
+  object. `TractorFacilities`' PGN 65032 callback may still run once after removal, which is harmless: it only
+  logs and never touches the object. `TractorFacilities::providedFacilities` is under its own mutex
+  (set on the main thread, read when answering a PGN 65033 request).
+
 ## What's *not* protected yet — known gap
 
 Calls into `vtClient` (`isobus::VirtualTerminalClient`) happen from both the main thread
