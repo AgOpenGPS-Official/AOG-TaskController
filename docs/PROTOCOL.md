@@ -217,8 +217,8 @@ The TC reads `settings.json` from a per-user config directory:
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `subnet` | `int[3]` | `[192, 168, 5]` | First three octets of the LAN AgIO/AgValonia lives on. Used for NIC selection and broadcast destination. |
-| `tecuEnabled` | `bool` | `true` | If `true`, the TC also impersonates a Tractor ECU on the CAN bus (claims address 240, broadcasts Speed Messages/NMEA2000, announces Class 1 BasicTractorECUServer). Set `false` when the tractor already has a TECU. |
-| `nmeaSendEnabled` | `bool` | `true` | Enable cyclic NMEA2000 COG/SOG transmission. Requires `tecuEnabled`; the VT disables this control when no TECU interface exists. |
+| `tecuEnabled` | `bool` | `true` | `true`: the TC is the tractor's Tractor ECU, the primary at address 240 (Speed Messages, NMEA2000, Class 1 BasicTractorECUServer), stepping down if the tractor has one after all. `false`: for tractors with their own TECU; the TC's TECU is a secondary that only adds what the tractor's lacks, and everything when there is none. See §5.7. |
+| `nmeaSendEnabled` | `bool` | `true` | Enable cyclic NMEA2000 COG/SOG transmission (not while another Tractor ECU sends it, §5.7). The VT disables this control when no TECU interface exists. |
 | `aogHeartbeatEnabled` | `bool` | `true` | Send `0xF0` heartbeat to AgIO/AgValonia every 100 ms even with no implement. Disable for AOG < v6.8.2 beta 5. |
 | `vtEnabled` | `bool` | `true` | Register the Virtual Terminal client and display the TC UI when a VT is present. |
 | `tcVersion` | `integer` | `3` | Task Controller version code (`0`=DIS, `1`=FDIS.1, `2`=First Edition, `3`=Second Edition Draft, `4`=Second Published Edition). |
@@ -257,7 +257,7 @@ Two control functions, both claiming addresses via standard J1939-81 address cla
 | CF | NAME function | Address | Notes |
 |---|---|---|---|
 | Task Controller | `TaskController` (function code 61) | Preferred `247` (ISO 11783-10 MappingComputer). Walks if claimed. | Always present. |
-| Tractor ECU | `TractorECU` (function code 134) | `240` as the primary; an arbitrary address (preferred `128`) as a secondary, see §5.7. | Only present if `tecuEnabled: true`. |
+| Tractor ECU | `TractorECU` (function code 134) | `240` as the primary; an arbitrary address (preferred `128`) as a secondary, see §5.7. | Primary with `tecuEnabled: true`, secondary with `false`. |
 
 Common NAME fields: Industry Group `2` (Agricultural), Device Class `0`, Manufacturer Code `1407`, Identity `20`. Override these in `app.cpp` if you fork.
 
@@ -339,9 +339,9 @@ When the TECU is enabled, the TC responds to PGN 65033 requests (ISO 11783-7 B.2
 
 ISO 11783-9:2012 §4.4.2.1 allows several Tractor ECUs on the implement bus. The one with function instance 0 is the primary; one with a higher instance "shall not provide any messages which are provided by a Tractor ECU with a lower function instance", requests PGN 65033 from those, and sets only the facility bits they lack (the standard's example is a display adding ground-based speed from GNSS to a tractor without radar).
 
-- **At startup** the TC's own address claim makes every control function on the bus announce itself. If no other Tractor ECU (function code 134) is there, our TECU claims `240` as the primary (function instance 0) and sends everything in §5.2. If one is there, it claims an arbitrary address as a secondary, with the next function instance.
+- **`tecuEnabled` picks the role.** `true`: AOG is the tractor's TECU. At startup the TC's own address claim makes every control function on the bus announce itself; if no other Tractor ECU (function code 134) is there, our TECU claims `240` as the primary (function instance 0) and sends everything in §5.2, otherwise it starts as a secondary. `false` ("the tractor has its own TECU"): always a secondary at an arbitrary address, with a function instance above every Tractor ECU on the bus. With no other Tractor ECU there, every message is a gap and it sends them all; once the tractor's appears, it cuts back to what that one lacks.
 - **Never taking `240` from a tractor:** our TECU NAME is arbitrary-address-capable in both roles. That is the most significant NAME bit, so in an address claim contest for `240` our primary loses to a fixed-address Tractor ECU and moves elsewhere, instead of knocking the tractor's ECU off the bus.
-- **Stepping down at runtime:** once a second the TC checks for other Tractor ECUs. If another one with function instance 0 appears while ours is the primary, or ours lost `240`, our TECU is rebuilt as a secondary above every Tractor ECU's function instance. Another secondary appearing is no reason to step down. The operator sees a hardware message ("Tractor ECU found: AOG adds only missing data").
+- **Stepping down at runtime** (`tecuEnabled: true`): once a second the TC checks for other Tractor ECUs. If another one with function instance 0 appears while ours is the primary, or ours lost `240`, our TECU is rebuilt as a secondary above every Tractor ECU's function instance. Another secondary appearing is no reason to step down. The operator sees a hardware message ("Tractor ECU found: AOG adds only missing data").
 - **What a secondary sends:** nothing until the other Tractor ECUs have answered PGN 65033 (and at least 1 s has passed) or 2.5 s have passed. Then each of ground-based speed, wheel-based speed, machine selected speed, J1939 vehicle direction/speed and NMEA 2000 COG/SOG is sent only if no Tractor ECU with a lower function instance advertises it in PGN 65033 *and* none has sent it in the last 3 s. Only lower instances count, so two secondaries never wait on each other. Its PGN 65033 advertises exactly what it sends, and is re-sent when that changes.
 - A secondary does not step back up to primary if the tractor's Tractor ECU leaves; it then sends everything, still as a secondary.
 

@@ -343,27 +343,35 @@ bool Application::setup_control_functions()
 
 	// Create TECU control function. By now the TC's own address claim made every CF on the bus
 	// announce itself, so a tractor's Tractor ECU is already known (ISO 11783-9 4.4.2.1).
-	if (tcCF && settings->is_tecu_enabled())
-	{ // Only create TECU if TC was created and ECU is enabled
+	// tecuEnabled on: AOG is the tractor's TECU (primary at 0xF0), stepping down if one turns up anyway.
+	// tecuEnabled off ("the tractor has its own TECU"): a secondary that fills the gaps, never at 0xF0;
+	// with no other Tractor ECU on the bus, every message is a gap.
+	if (tcCF)
+	{ // Only create TECU if TC was created
 		otherTecus.initialize();
 		isobus::CANHardwareInterface::get_can_frame_received_event_dispatcher().add_listener([this](const isobus::CANMessageFrame &frame) {
 			otherTecus.on_frame(frame); // CAN thread: notes what the other TECUs send
 		});
 
 		const auto others = otherTecus.refresh(ALL_FUNCTION_INSTANCES);
-		if (others.empty())
+		for (const auto &other : others)
+		{
+			knownOtherTecuAddresses.insert(other.address);
+			log("Init") << "Tractor ECU already on the bus at " << format_hex_address(other.address) << " (function instance "
+			            << static_cast<int>(other.functionInstance) << ", manufacturer " << other.manufacturerCode << ")" << std::endl;
+		}
+		if (settings->is_tecu_enabled() && others.empty())
 		{
 			start_tecu_claim(TecuRole::Primary, 0);
 		}
 		else
 		{
-			for (const auto &other : others)
+			if (!settings->is_tecu_enabled())
 			{
-				knownOtherTecuAddresses.insert(other.address);
-				log("Init") << "Tractor ECU already on the bus at " << format_hex_address(other.address) << " (function instance "
-				            << static_cast<int>(other.functionInstance) << ", manufacturer " << other.manufacturerCode << ")" << std::endl;
+				log("Init") << "tecuEnabled is off: the TECU only fills in what the tractor's Tractor ECU does not provide" << std::endl;
 			}
-			start_tecu_claim(TecuRole::Secondary, static_cast<std::uint8_t>(std::min<int>(others.back().functionInstance + 1, ALL_FUNCTION_INSTANCES)));
+			const int instance = others.empty() ? 1 : std::min<int>(others.back().functionInstance + 1, ALL_FUNCTION_INSTANCES);
+			start_tecu_claim(TecuRole::Secondary, static_cast<std::uint8_t>(instance));
 		}
 
 		// Wait for the claim here at startup, as before, so the TECU interfaces exist once setup is done.
@@ -519,14 +527,7 @@ void Application::setup_tecu_interfaces()
 	}
 	else
 	{
-		if (!settings->is_tecu_enabled())
-		{
-			log("Info") << "Tractor ECU disabled in settings, skipping ECU initialization." << std::endl;
-		}
-		else
-		{
-			log("Warning") << "TECU Control Function not available, Speed/NMEA interfaces not created" << std::endl;
-		}
+		log("Warning") << "TECU Control Function not available, Speed/NMEA interfaces not created" << std::endl;
 	}
 }
 
@@ -1835,8 +1836,8 @@ void Application::update_vt_status_strings(bool aogConnected)
 	  ConfigNmeaSendLabel, // pool length 14
 	  nmea2000MessageInterface ? (std::string("NMEA Send: ") + (settings->is_nmea_send_enabled() ? "ON" : "OFF")) : "NMEA Send: N/A");
 	send_vt_string_if_changed(
-	  ConfigTecuLabel,
-	  std::string("TECU: ") + (settings->is_tecu_enabled() ? "ON" : "OFF") + " (restart req)");
+	  ConfigTecuLabel, // pool length 23. Off: the tractor's TECU leads and ours only fills its gaps
+	  settings->is_tecu_enabled() ? "TECU: AOG (restart req)" : "TECU: tractor (restart)");
 
 	std::ostringstream networkRows;
 	std::uint8_t displayedCFs = 0;
