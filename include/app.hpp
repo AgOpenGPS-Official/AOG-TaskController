@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -25,6 +26,7 @@
 #include "logging_utils.hpp"
 #include "settings.hpp"
 #include "task_controller.hpp"
+#include "tecu_coexistence.hpp"
 #include "tractor_facilities.hpp"
 #include "udp_connections.hpp"
 
@@ -72,6 +74,24 @@ private:
 	bool setup_control_functions();
 	void setup_task_controller_server();
 	void setup_tecu_interfaces();
+
+	/// Our TECU's place among the Tractor ECUs on the bus (ISO 11783-9 4.4.2.1)
+	enum class TecuRole
+	{
+		None, ///< No TECU (disabled, or it could not claim an address)
+		Primary, ///< Function instance 0 at address 0xF0: sends everything
+		Secondary ///< Another Tractor ECU is on the bus: we only add what it lacks
+	};
+	/// @brief Create the TECU control function and start its address claim (does not wait for it)
+	void start_tecu_claim(TecuRole role, std::uint8_t functionInstance);
+	/// @brief Finishes a pending claim, and once a second checks for other Tractor ECUs:
+	/// steps down from primary when one appears, and as a secondary sends only what they lack.
+	void update_tecu();
+	/// @brief Destroy the TECU interfaces and control function, so it can be claimed again with another NAME
+	void teardown_tecu();
+	/// @brief Start or stop our TECU messages to match the plan, and advertise them in PGN 65033
+	void apply_tecu_plan(const TecuMessagePlan &plan);
+	void create_speed_messages_interface(const TecuMessagePlan &plan);
 	void setup_udp_connections();
 
 	void setup_vt_client();
@@ -123,6 +143,27 @@ private:
 	std::uint32_t lastAogPacketMs = 0;
 
 	bool tractorFacilitiesSentOnPowerUp = false;
+
+	static constexpr std::uint32_t TECU_CLAIM_TIMEOUT_MS = 5000;
+	static constexpr std::uint32_t TECU_CHECK_INTERVAL_MS = 1000;
+	/// As a secondary, send nothing until the other TECUs answered PGN 65033, or this long has passed
+	static constexpr std::uint32_t TECU_PLAN_SETTLE_MS = 2500;
+	/// ...but always watch the bus at least this long, for messages they send without advertising
+	static constexpr std::uint32_t TECU_PLAN_MIN_SETTLE_MS = 1000;
+	static constexpr std::uint8_t SECONDARY_TECU_PREFERRED_ADDRESS = 0x80; ///< Arbitrary range; never 0xF0
+	static constexpr std::uint8_t ALL_FUNCTION_INSTANCES = 31; ///< Highest NAME function instance (5 bits)
+	isobus::NAME tecuNameTemplate{ 0 }; ///< Our NAME fields, set in setup_control_functions()
+	OtherTecuMonitor otherTecus;
+	TecuRole tecuRole = TecuRole::None;
+	std::uint8_t tecuFunctionInstance = 0;
+	std::uint32_t tecuClaimStartedMs = 0;
+	std::uint32_t tecuClaimedMs = 0; ///< 0 while the claim is pending
+	bool tecuInterfacesReady = false;
+	std::uint32_t tecuInterfacesReadyMs = 0;
+	std::uint32_t lastTecuCheckMs = 0;
+	bool tecuPlanSettled = false;
+	TecuMessagePlan tecuPlan; ///< What our TECU sends now
+	std::set<std::uint8_t> knownOtherTecuAddresses; ///< To log other TECUs appearing and leaving
 
 	static constexpr std::uint32_t SECTION_DEMAND_LOG_INTERVAL_MS = 200;
 	static constexpr std::uint32_t SECTION_DEMAND_TIMEOUT_MS = 2000; ///< AOG sends PGN 229 every frame while a field is open

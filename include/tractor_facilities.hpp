@@ -21,6 +21,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <set>
 
 class Settings;
@@ -104,6 +105,12 @@ public:
 	TractorFacilities(std::shared_ptr<isobus::InternalControlFunction> tecuCF,
 	                  std::shared_ptr<Settings> settings);
 
+	/// @brief Removes the callbacks registered by initialize(), so the TECU can be rebuilt at runtime
+	~TractorFacilities();
+
+	TractorFacilities(const TractorFacilities &) = delete;
+	TractorFacilities &operator=(const TractorFacilities &) = delete;
+
 	/// @brief Register the PGN 65033 request callback and the PGN 65032
 	///        global receive listener.  Must be called after the TECU
 	///        address claim has completed.
@@ -125,6 +132,11 @@ public:
 	/// @brief Set whether time/date (PGN 65254 / FEE6) is being broadcast.
 	/// When true, the time/date facility bit is advertised in PGN 65033.
 	void set_time_date_active(bool active);
+
+	/// @brief Advertise exactly these facilities (the time/date bit still follows set_time_date_active()).
+	/// Used when our TECU shares the bus with other Tractor ECUs and only provides what they lack
+	/// (ISO 11783-9 4.4.2.1). Until this is called, the facilities follow the speed interface.
+	void set_provided_facilities(const Facilities &facilities);
 
 	/// @brief Build the 8-byte payload from the current runtime state.
 	std::array<std::uint8_t, 8> build_payload() const;
@@ -151,6 +163,12 @@ private:
 	/// isobus callback contexts (see docs/CONCURRENCY.md) that can run
 	/// concurrently on different threads.
 	std::atomic<bool> timeDateActive{ false };
+
+	/// Set by set_provided_facilities() on the main thread, read by build_payload() from PGN request callbacks
+	mutable std::mutex providedFacilitiesMutex;
+	bool hasProvidedFacilities = false;
+	Facilities providedFacilities;
+	bool initialized = false;
 
 	/// Source addresses for which we have already logged an info-level
 	/// "request received" line, to avoid per-message spam.
