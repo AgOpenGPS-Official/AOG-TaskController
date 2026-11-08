@@ -25,6 +25,7 @@
 #include "logging_utils.hpp"
 #include "settings.hpp"
 #include "task_controller.hpp"
+#include "tractor_facilities.hpp"
 #include "udp_connections.hpp"
 
 class Application
@@ -105,6 +106,7 @@ private:
 	std::shared_ptr<isobus::InternalControlFunction> tecuCF = nullptr;
 	std::unique_ptr<isobus::SpeedMessagesInterface> speedMessagesInterface;
 	std::unique_ptr<isobus::NMEA2000MessageInterface> nmea2000MessageInterface;
+	std::unique_ptr<TractorFacilities> tractorFacilities;
 	std::unique_ptr<isobus::ControlFunctionFunctionalities> tecuFunctionalities;
 	std::unique_ptr<isobus::ControlFunctionFunctionalities> tcFunctionalities;
 	std::shared_ptr<isobus::VirtualTerminalClient> vtClient;
@@ -142,6 +144,8 @@ private:
 	/// The field name (PGN 0xF3) and PGN 229 resuming both report one field opening; act on it once
 	static constexpr std::uint32_t FIELD_OPEN_DEDUPLICATE_MS = 5000;
 	std::uint32_t lastFieldOpenAppliedMs = 0; ///< When on_aog_field_opened() last switched section control on, 0 = never
+
+	bool tractorFacilitiesSentOnPowerUp = false;
 
 	static constexpr std::uint32_t SECTION_DEMAND_LOG_INTERVAL_MS = 200;
 	static constexpr std::uint32_t SECTION_DEMAND_TIMEOUT_MS = 2000; ///< AOG sends PGN 229 every frame while a field is open
