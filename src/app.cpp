@@ -485,7 +485,7 @@ void Application::setup_tecu_interfaces()
 
 		// The primary sends everything. A secondary sends nothing until it knows what the other
 		// Tractor ECUs provide (update_tecu()), so it never doubles one of their messages.
-		const TecuMessagePlan plan = plan_tecu_messages(TecuRole::Primary == tecuRole, Facilities{}, {});
+		const TecuMessagePlan plan = (TecuRole::Primary == tecuRole) ? plan_tecu_messages(true, Facilities{}, {}) : TecuMessagePlan{};
 
 		log("Init") << "Creating Speed Messages Interface on TECU..." << std::endl;
 		create_speed_messages_interface(plan);
