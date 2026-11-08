@@ -27,6 +27,7 @@
 #include "logging_utils.hpp"
 
 #include <algorithm>
+#include <array>
 #include <iomanip>
 #include <iostream>
 #include <span>
@@ -152,8 +153,40 @@ static bool check_tc_address_conflict(const std::shared_ptr<isobus::InternalCont
 	return conflictActive;
 }
 
-Application::Application(std::shared_ptr<isobus::CANHardwarePlugin> canDriver) :
-  canDriver(canDriver)
+// Lowest function instance not used by a TC seen on the bus, if there is one.
+static std::optional<std::uint8_t> find_free_tc_function_instance()
+{
+	// The NAME's function instance field is 5 bits wide, the same 32 values as the tcNumber setting
+	std::array<bool, 32> used{};
+	for (const auto &controlFunction : isobus::CANNetworkManager::CANNetwork.get_control_functions(false))
+	{
+		if ((nullptr == controlFunction) || !controlFunction->get_address_valid())
+		{
+			continue;
+		}
+
+		const auto name = controlFunction->get_NAME();
+		if ((static_cast<std::uint8_t>(isobus::NAME::Function::TaskController) == name.get_function_code()) && (name.get_function_instance() < used.size()))
+		{
+			used[name.get_function_instance()] = true;
+			log("TC Discovery") << "Existing Task Controller: address " << static_cast<int>(controlFunction->get_address())
+			                    << ", function instance " << static_cast<int>(name.get_function_instance()) << std::endl;
+		}
+	}
+
+	for (std::uint8_t instance = 0; instance < used.size(); instance++)
+	{
+		if (!used[instance])
+		{
+			return instance;
+		}
+	}
+	return std::nullopt;
+}
+
+Application::Application(std::shared_ptr<isobus::CANHardwarePlugin> canDriver, TcInstanceSelection tcInstanceSelection) :
+  canDriver(canDriver),
+  tcInstanceSelection(tcInstanceSelection)
 {
 }
 
@@ -204,9 +237,16 @@ bool Application::setup_can_hardware()
 
 	isobus::CANNetworkManager::CANNetwork.get_configuration().set_number_of_packets_per_cts_message(255);
 
+	// A TC that claimed its address before we started says nothing about its NAME unless asked
+	if (tcInstanceSelection.automatic && !isobus::CANNetworkManager::CANNetwork.send_request_for_address_claim(0))
+	{
+		log("TC Discovery") << "Could not request address claims, TCs already on the bus may be missed" << std::endl;
+	}
+
 	// Start CAN network and allow a brief update window to observe bus CFs
+	const std::uint32_t busDiscoveryWindowMs = tcInstanceSelection.automatic ? 1500 : 100;
 	auto busDiscoveryWindowStart = isobus::SystemTiming::get_timestamp_ms();
-	while (isobus::SystemTiming::get_time_elapsed_ms(busDiscoveryWindowStart) < 100)
+	while (isobus::SystemTiming::get_time_elapsed_ms(busDiscoveryWindowStart) < busDiscoveryWindowMs)
 	{
 		isobus::CANNetworkManager::CANNetwork.update();
 		std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -235,14 +275,26 @@ bool Application::setup_control_functions()
 	isobus::NAME tcNAME = ourNAME;
 	tcNAME.set_function_code(static_cast<std::uint8_t>(isobus::NAME::Function::TaskController));
 	// ISO 11783-10: the TC number is the TC's NAME function instance + 1 (TC #1 = instance 0)
-	tcNAME.set_function_instance(static_cast<std::uint8_t>(settings->get_tc_number() - 1));
+	std::uint8_t tcFunctionInstance = tcInstanceSelection.manualInstance.value_or(static_cast<std::uint8_t>(settings->get_tc_number() - 1));
+	if (tcInstanceSelection.automatic)
+	{
+		const auto freeInstance = find_free_tc_function_instance();
+		if (!freeInstance)
+		{
+			log("TC Config") << "No free TC function instance available" << std::endl;
+			return false;
+		}
+		tcFunctionInstance = *freeInstance;
+	}
+	log("TC Config") << (tcInstanceSelection.automatic ? "Automatically selected" : "Using") << " function instance " << static_cast<int>(tcFunctionInstance) << std::endl;
+	tcNAME.set_function_instance(tcFunctionInstance);
 
 	isobus::NAME tecuNAME = ourNAME;
 	tecuNAME.set_function_code(static_cast<std::uint8_t>(isobus::NAME::Function::TractorECU));
 	tecuNAME.set_arbitrary_address_capable(false); // TECU address is fixed
 	tecuNAME.set_ecu_instance(0);
 
-	log("Init") << "Creating Task Controller control function (TC number " << static_cast<int>(settings->get_tc_number()) << ")..." << std::endl;
+	log("Init") << "Creating Task Controller control function (TC number " << (static_cast<int>(tcFunctionInstance) + 1) << ")..." << std::endl;
 	tcCF = isobus::CANNetworkManager::CANNetwork.create_internal_control_function(tcNAME, 0, isobus::preferred_addresses::IndustryGroup2::TaskController_MappingComputer); // The preferred address for a TC is defined in ISO 11783
 
 	// Wait for TC address claim with bounded wait loop (no async to avoid blocking on destruction)

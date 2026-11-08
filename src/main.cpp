@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -123,7 +124,7 @@ public:
 			parse_option(arg);
 			parse_parameter(arg);
 		}
-		return true;
+		return !invalidTcArgument;
 	}
 
 	CANAdapter get_can_adapter() const
@@ -134,6 +135,11 @@ public:
 	std::string get_can_channel() const
 	{
 		return canChannel;
+	}
+
+	TcInstanceSelection get_tc_instance_selection() const
+	{
+		return tcInstanceSelection;
 	}
 
 	bool is_file_logging() const
@@ -154,6 +160,8 @@ private:
 			std::cout << "  --can_channel=<channel>\tSelect the CAN channel (numeric, or interface name e.g. can0 for socketcan)\n";
 			std::cout << "  --log_level=<level>\tSet the log level (debug, info, warning, error, critical)\n";
 			std::cout << "  --log2file\t\tLog to file\n";
+			std::cout << "  --tc_number_mode=<auto|manual>\tauto uses the first function instance no other TC has (default: manual)\n";
+			std::cout << "  --tc_function_instance=<0..31>\tTC function instance for manual mode (default: tcNumber setting - 1)\n";
 			std::exit(0);
 		}
 		else if ("--version" == option)
@@ -206,6 +214,36 @@ private:
 		{
 			canChannel = value;
 		}
+		else if ("--tc_number_mode" == key)
+		{
+			if ("auto" == value)
+			{
+				tcInstanceSelection.automatic = true;
+			}
+			else if ("manual" == value)
+			{
+				tcInstanceSelection.automatic = false;
+			}
+			else
+			{
+				std::cout << "Invalid TC number mode: " << value << " (expected auto or manual)" << std::endl;
+				invalidTcArgument = true;
+			}
+		}
+		else if ("--tc_function_instance" == key)
+		{
+			const bool allDigits = !value.empty() && (value.size() <= 2) && std::all_of(value.begin(), value.end(), [](unsigned char c) { return std::isdigit(c); });
+			const int instance = allDigits ? std::stoi(value) : -1;
+			if ((instance < 0) || (instance > 31))
+			{
+				std::cout << "Invalid TC function instance: " << value << " (expected 0 to 31)" << std::endl;
+				invalidTcArgument = true;
+			}
+			else
+			{
+				tcInstanceSelection.manualInstance = static_cast<std::uint8_t>(instance);
+			}
+		}
 		else if ("--log_level" == key)
 		{
 			if ("debug" == value)
@@ -245,6 +283,8 @@ private:
 	CANAdapter canAdapter = CANAdapter::NONE;
 	std::string canChannel;
 	bool fileLogging = false;
+	TcInstanceSelection tcInstanceSelection;
+	bool invalidTcArgument = false; // A typo must not silently start the TC with another number
 };
 
 static std::shared_ptr<isobus::CANHardwarePlugin> create_can_driver(const ArgumentProcessor &args)
@@ -292,7 +332,7 @@ static std::shared_ptr<isobus::CANHardwarePlugin> create_can_driver(const Argume
 // Process command-line arguments, set up logging, and create the CAN driver.
 // Returns nullptr on argument-error or driver-creation failure. Note that
 // --help / --version cause the process to exit() inside argument parsing.
-static std::shared_ptr<isobus::CANHardwarePlugin> prepare_application(const std::vector<std::string> &arguments)
+static std::shared_ptr<isobus::CANHardwarePlugin> prepare_application(const std::vector<std::string> &arguments, TcInstanceSelection &tcInstanceSelection)
 {
 	ArgumentProcessor argumentProcessor(arguments);
 	bool argumentsProcessed = argumentProcessor.process();
@@ -318,12 +358,13 @@ static std::shared_ptr<isobus::CANHardwarePlugin> prepare_application(const std:
 		return nullptr;
 	}
 
+	tcInstanceSelection = argumentProcessor.get_tc_instance_selection();
 	return create_can_driver(argumentProcessor);
 }
 
-static int run_application_loop(std::shared_ptr<isobus::CANHardwarePlugin> canDriver)
+static int run_application_loop(std::shared_ptr<isobus::CANHardwarePlugin> canDriver, TcInstanceSelection tcInstanceSelection)
 {
-	Application app(canDriver);
+	Application app(canDriver, tcInstanceSelection);
 	try
 	{
 		if (!app.initialize())
@@ -399,7 +440,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	}
 
 	auto arguments = ParseCommandLine(lpCmdLine);
-	auto canDriver = prepare_application(arguments);
+	TcInstanceSelection tcInstanceSelection;
+	auto canDriver = prepare_application(arguments, tcInstanceSelection);
 	if (!canDriver)
 	{
 		return -1;
@@ -420,7 +462,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	}
 	ShowWindow(hwnd, SW_SHOWMINNOACTIVE); // Little hack: Keep the window hidden, but still allows AOG (or other applications) to gracefully close it
 
-	return run_application_loop(canDriver);
+	return run_application_loop(canDriver, tcInstanceSelection);
 }
 #else
 int main(int argc, char **argv)
@@ -432,11 +474,12 @@ int main(int argc, char **argv)
 	std::signal(SIGPIPE, SIG_IGN);
 
 	auto arguments = ParseCommandLine(argc, argv);
-	auto canDriver = prepare_application(arguments);
+	TcInstanceSelection tcInstanceSelection;
+	auto canDriver = prepare_application(arguments, tcInstanceSelection);
 	if (!canDriver)
 	{
 		return -1;
 	}
-	return run_application_loop(canDriver);
+	return run_application_loop(canDriver, tcInstanceSelection);
 }
 #endif

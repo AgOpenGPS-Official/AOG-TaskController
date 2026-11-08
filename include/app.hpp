@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -27,10 +28,17 @@
 #include "task_controller.hpp"
 #include "udp_connections.hpp"
 
+/// How the TC's NAME function instance is chosen. By default it comes from the tcNumber setting.
+struct TcInstanceSelection
+{
+	bool automatic = false; ///< Use the first function instance no other TC on the bus has
+	std::optional<std::uint8_t> manualInstance; ///< When set, used instead of the tcNumber setting
+};
+
 class Application
 {
 public:
-	Application(std::shared_ptr<isobus::CANHardwarePlugin> canDriver);
+	Application(std::shared_ptr<isobus::CANHardwarePlugin> canDriver, TcInstanceSelection tcInstanceSelection = {});
 
 	bool initialize();
 	bool update();
@@ -94,6 +102,7 @@ private:
 	std::shared_ptr<UdpConnections> udpConnections = std::make_shared<UdpConnections>(settings, ioContext);
 
 	std::shared_ptr<isobus::CANHardwarePlugin> canDriver;
+	TcInstanceSelection tcInstanceSelection;
 	std::shared_ptr<MyTCServer> tcServer;
 	std::shared_ptr<isobus::InternalControlFunction> tcCF = nullptr;
 	std::shared_ptr<isobus::InternalControlFunction> tecuCF = nullptr;

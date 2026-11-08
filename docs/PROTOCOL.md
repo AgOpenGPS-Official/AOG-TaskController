@@ -245,6 +245,8 @@ AOG-TaskController [options]
 | `--can_channel=<id>` | — | Driver-specific channel. Numeric (`1`, `2`, ...) for Windows USB adapters; interface name (`can0`, `vcan0`) for SocketCAN. |
 | `--log_level=<lvl>` | — | One of `debug`, `info`, `warning`, `error`, `critical`. Filters AgIsoStack log output. |
 | `--log2file` | off | Also write all output to `<config>/logs/AOG-TaskController_YYYY-M-D_H-M.log`. |
+| `--tc_number_mode=<auto\|manual>` | `manual` | `auto` asks the bus who is there and uses the first function instance no other TC has. It adds about 1.4 s to startup. |
+| `--tc_function_instance=<0..31>` | `tcNumber` − 1 | TC function instance in manual mode, instead of the `tcNumber` setting. Function instance 1 is TC number 2. |
 
 ---
 
