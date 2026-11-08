@@ -331,10 +331,9 @@ bool Application::setup_control_functions()
 	// ISO 11783-10: the TC number is the TC's NAME function instance + 1 (TC #1 = instance 0)
 	tcNAME.set_function_instance(static_cast<std::uint8_t>(settings->get_tc_number() - 1));
 
-	isobus::NAME tecuNAME = ourNAME;
-	tecuNAME.set_function_code(static_cast<std::uint8_t>(isobus::NAME::Function::TractorECU));
-	tecuNAME.set_arbitrary_address_capable(false); // TECU address is fixed
-	tecuNAME.set_ecu_instance(0);
+	tecuNameTemplate = ourNAME;
+	tecuNameTemplate.set_function_code(static_cast<std::uint8_t>(isobus::NAME::Function::TractorECU));
+	tecuNameTemplate.set_ecu_instance(0);
 
 	log("Init") << "Creating Task Controller control function (TC number " << static_cast<int>(settings->get_tc_number()) << ")..." << std::endl;
 	tcCF = isobus::CANNetworkManager::CANNetwork.create_internal_control_function(tcNAME, 0, isobus::preferred_addresses::IndustryGroup2::TaskController_MappingComputer); // The preferred address for a TC is defined in ISO 11783
@@ -383,62 +382,70 @@ bool Application::setup_control_functions()
 		}
 	}
 
-	// Create TECU control function
-	// TODO: Should we wait between this and TC?
-	// TODO: If there's already a TECU on the bus we should not create ours
-	if (tcCF && settings->is_tecu_enabled())
-	{ // Only create TECU if TC was created and ECU is enabled
-		log("Init") << "Creating Tractor ECU control function..." << std::endl;
-		tecuCF = isobus::CANNetworkManager::CANNetwork.create_internal_control_function(tecuNAME, 0, isobus::preferred_addresses::IndustryGroup2::TractorECU);
+	// Create TECU control function. By now the TC's own address claim made every CF on the bus
+	// announce itself, so a tractor's Tractor ECU is already known (ISO 11783-9 4.4.2.1).
+	// tecuEnabled on: AOG is the tractor's TECU (primary at 0xF0), stepping down if one turns up anyway.
+	// tecuEnabled off ("the tractor has its own TECU"): a secondary that fills the gaps, never at 0xF0;
+	// with no other Tractor ECU on the bus, every message is a gap.
+	if (tcCF)
+	{ // Only create TECU if TC was created
+		otherTecus.initialize();
+		isobus::CANHardwareInterface::get_can_frame_received_event_dispatcher().add_listener([this](const isobus::CANMessageFrame &frame) {
+			otherTecus.on_frame(frame); // CAN thread: notes what the other TECUs send
+		});
 
-		// Wait for TECU address claim with minimum 250ms delay per J1939-81 section 4.4.4.1
-		log("Init") << "Tractor ECU control function created, waiting for address claim..." << std::endl;
+		const auto others = otherTecus.refresh(ALL_FUNCTION_INSTANCES);
+		for (const auto &other : others)
+		{
+			knownOtherTecuAddresses.insert(other.address);
+			log("Init") << "Tractor ECU already on the bus at " << format_hex_address(other.address) << " (function instance "
+			            << static_cast<int>(other.functionInstance) << ", manufacturer " << other.manufacturerCode << ")" << std::endl;
+		}
+		if (settings->is_tecu_enabled() && others.empty())
+		{
+			start_tecu_claim(TecuRole::Primary, 0);
+		}
+		else
+		{
+			if (!settings->is_tecu_enabled())
+			{
+				log("Init") << "tecuEnabled is off: the TECU only fills in what the tractor's Tractor ECU does not provide" << std::endl;
+			}
+			const int instance = others.empty() ? 1 : std::min<int>(others.back().functionInstance + 1, ALL_FUNCTION_INSTANCES);
+			start_tecu_claim(TecuRole::Secondary, static_cast<std::uint8_t>(instance));
+		}
 
-		// Update the network manager to process TECU CF claiming
-		int tecuClaimAttempts = 0;
-		const int MAX_TECU_CLAIM_ATTEMPTS = 50; // 5 seconds max
-		while (!tecuCF->get_address_valid() && tecuClaimAttempts < MAX_TECU_CLAIM_ATTEMPTS)
+		// Wait for the claim here at startup, as before, so the TECU interfaces exist once setup is done.
+		// At runtime update_tecu() finishes claims without blocking.
+		while (!tecuCF->get_address_valid() && !isobus::SystemTiming::time_expired_ms(tecuClaimStartedMs, TECU_CLAIM_TIMEOUT_MS))
 		{
 			std::this_thread::sleep_for(std::chrono::milliseconds(100));
 			isobus::CANNetworkManager::CANNetwork.update();
-			tecuClaimAttempts++;
 		}
 
-		// TECU is non-arbitrary-address-capable: it must land on its preferred address or not at all
-		if (tecuCF->get_address_valid() && tecuCF->get_address() == isobus::preferred_addresses::IndustryGroup2::TractorECU)
+		if (tecuCF->get_address_valid())
 		{
 			// Record when the address was actually claimed for the 250ms delay calculation
-			auto tecuAddressClaimedTime = isobus::SystemTiming::get_timestamp_ms();
+			tecuClaimedMs = isobus::SystemTiming::get_timestamp_ms();
+			tecuClaimedMs = (0 == tecuClaimedMs) ? 1 : tecuClaimedMs;
 			log("Init") << "TECU claimed address " << static_cast<int>(tecuCF->get_address()) << std::endl;
 
 			// Ensure minimum 250ms delay after address claim per J1939-81
-			auto tecuClaimElapsedMs = isobus::SystemTiming::get_time_elapsed_ms(tecuAddressClaimedTime);
-			if (tecuClaimElapsedMs < MINIMUM_ADDRESS_CLAIM_DELAY_MS)
+			log("Init") << "Waiting " << MINIMUM_ADDRESS_CLAIM_DELAY_MS << "ms after TECU address claim (J1939-81 250ms rule)..." << std::endl;
+			auto delayStart = isobus::SystemTiming::get_timestamp_ms();
+			while (isobus::SystemTiming::get_time_elapsed_ms(delayStart) < MINIMUM_ADDRESS_CLAIM_DELAY_MS)
 			{
-				auto remainingDelay = MINIMUM_ADDRESS_CLAIM_DELAY_MS - tecuClaimElapsedMs;
-				log("Init") << "Waiting " << remainingDelay << "ms after TECU address claim (J1939-81 250ms rule)..." << std::endl;
-				// Process CAN messages during the delay to prevent timeouts
-				auto delayStart = isobus::SystemTiming::get_timestamp_ms();
-				while (isobus::SystemTiming::get_time_elapsed_ms(delayStart) < remainingDelay)
-				{
-					isobus::CANNetworkManager::CANNetwork.update();
-					std::this_thread::sleep_for(std::chrono::milliseconds(10));
-				}
+				isobus::CANNetworkManager::CANNetwork.update();
+				std::this_thread::sleep_for(std::chrono::milliseconds(10));
 			}
+			// A primary that did not get 0xF0 lost it to another device: update_tecu() steps it down
 		}
 		else
 		{
 			tecuAddressClaimFailed = true;
-			if (tecuCF->get_address_valid())
-			{
-				log("Warning") << "TECU claimed unexpected address " << static_cast<int>(tecuCF->get_address()) << " instead of " << static_cast<int>(isobus::preferred_addresses::IndustryGroup2::TractorECU) << "!" << std::endl;
-			}
-			else
-			{
-				log("Warning") << "TECU failed to claim address " << static_cast<int>(isobus::preferred_addresses::IndustryGroup2::TractorECU) << "! Another TECU may be on the bus." << std::endl;
-			}
-			log("Warning") << "TECU functionality will be disabled." << std::endl;
-			tecuCF.reset(); // Release the failed control function
+			log("Warning") << "TECU failed to claim an address. TECU functionality will be disabled." << std::endl;
+			teardown_tecu();
+			tecuRole = TecuRole::None;
 		}
 	}
 
@@ -511,8 +518,10 @@ void Application::setup_task_controller_server()
 
 void Application::setup_tecu_interfaces()
 {
-	// Initialize speed and distance messages
-	if (tecuCF && tecuCF->get_address_valid())
+	// Initialize speed and distance messages. A primary that did not get 0xF0 waits for update_tecu()
+	// to step it down instead of sending from another address.
+	if (tecuCF && tecuCF->get_address_valid() &&
+	    ((TecuRole::Primary != tecuRole) || (isobus::preferred_addresses::IndustryGroup2::TractorECU == tecuCF->get_address())))
 	{
 		log("Init") << "Creating TECU Control Function Functionalities..." << std::endl;
 		tecuFunctionalities = std::make_unique<isobus::ControlFunctionFunctionalities>(tecuCF);
@@ -526,17 +535,17 @@ void Application::setup_tecu_interfaces()
 		  true);
 		log("Init") << "TECU announced as Class 1 Tractor ECU (PGN 64654)" << std::endl;
 
+		// The primary sends everything. A secondary sends nothing until it knows what the other
+		// Tractor ECUs provide (update_tecu()), so it never doubles one of their messages.
+		const TecuMessagePlan plan = (TecuRole::Primary == tecuRole) ? plan_tecu_messages(true, Facilities{}, {}) : TecuMessagePlan{};
+
 		log("Init") << "Creating Speed Messages Interface on TECU..." << std::endl;
-		speedMessagesInterface = std::make_unique<isobus::SpeedMessagesInterface>(tecuCF, true, true, true, false); //TODO: make configurable whether to send these messages
-		speedMessagesInterface->initialize();
-		speedMessagesInterface->wheelBasedSpeedTransmitData.set_implement_start_stop_operations_state(isobus::WheelBasedMachineSpeedData::ImplementStartStopOperations::NotAvailable);
-		speedMessagesInterface->wheelBasedSpeedTransmitData.set_key_switch_state(isobus::WheelBasedMachineSpeedData::KeySwitchState::NotAvailable);
-		speedMessagesInterface->wheelBasedSpeedTransmitData.set_operator_direction_reversed_state(isobus::WheelBasedMachineSpeedData::OperatorDirectionReversed::NotAvailable);
-		speedMessagesInterface->machineSelectedSpeedTransmitData.set_speed_source(isobus::MachineSelectedSpeedData::SpeedSource::NavigationBasedSpeed);
+		create_speed_messages_interface(plan);
 		log("Init") << "Speed Messages Interface created and initialized." << std::endl;
 
 		log("Init") << "Creating NMEA2000 Message Interface on TECU..." << std::endl;
-		nmea2000MessageInterface = std::make_unique<isobus::NMEA2000MessageInterface>(tecuCF, settings->is_nmea_send_enabled(), false, false, false, false, false, false);
+		nmea2000MessageInterface = std::make_unique<isobus::NMEA2000MessageInterface>(
+		  tecuCF, settings->is_nmea_send_enabled() && plan.sends(TecuMessage::CogSogRapidUpdate), false, false, false, false, false, false);
 		nmea2000MessageInterface->initialize();
 		log("Init") << "NMEA2000 Message Interface created and initialized." << std::endl;
 
@@ -544,7 +553,12 @@ void Application::setup_tecu_interfaces()
 		tractorFacilities = std::make_unique<TractorFacilities>(tecuCF, settings);
 		tractorFacilities->set_speed_messages_interface(speedMessagesInterface.get());
 		tractorFacilities->set_nmea2000_message_interface(nmea2000MessageInterface.get());
+		tractorFacilities->set_provided_facilities(facilities_for_plan(plan));
+		tractorFacilities->set_time_date_active(plan.sends(TecuMessage::TimeDate));
 		tractorFacilities->initialize();
+		tecuPlan = plan;
+		tecuInterfacesReady = true;
+		tecuInterfacesReadyMs = isobus::SystemTiming::get_timestamp_ms();
 
 		// Register repetition-rate diagnostic on the TECU's PGN request protocol
 		auto tecuPgnReq = tecuCF->get_pgn_request_protocol().lock();
@@ -554,19 +568,132 @@ void Application::setup_tecu_interfaces()
 			  static_cast<std::uint32_t>(isobus::CANLibParameterGroupNumber::Any), &log_repetition_rate_request, nullptr);
 		}
 
-		// Also catch broadcast PGN 0xCC00 messages that AgIsoStack warns about
-		isobus::CANNetworkManager::CANNetwork.add_global_parameter_group_number_callback(
-		  0xCC00 /* RequestForRepetitionRate */, &log_broadcast_repetition_rate, nullptr);
+		// Also catch broadcast PGN 0xCC00 messages that AgIsoStack warns about.
+		// Once only: this runs again whenever the TECU is rebuilt (update_tecu()).
+		static bool broadcastRepetitionRateListenerAdded = false;
+		if (!broadcastRepetitionRateListenerAdded)
+		{
+			isobus::CANNetworkManager::CANNetwork.add_global_parameter_group_number_callback(
+			  0xCC00 /* RequestForRepetitionRate */, &log_broadcast_repetition_rate, nullptr);
+			broadcastRepetitionRateListenerAdded = true;
+		}
 	}
 	else
 	{
-		if (!settings->is_tecu_enabled())
+		log("Warning") << "TECU Control Function not available, Speed/NMEA interfaces not created" << std::endl;
+	}
+}
+
+void Application::start_tecu_claim(TecuRole role, std::uint8_t functionInstance)
+{
+	// Arbitrary-address-capable as either role. That bit is the most significant one of the NAME, so a
+	// primary always loses an address claim contest for 0xF0 against a tractor's fixed-address Tractor
+	// ECU, instead of taking the address from it, and then moves elsewhere until update_tecu() steps it down.
+	isobus::NAME name = tecuNameTemplate;
+	name.set_arbitrary_address_capable(true);
+	name.set_function_instance(functionInstance);
+	const std::uint8_t preferredAddress = (TecuRole::Primary == role) ? isobus::preferred_addresses::IndustryGroup2::TractorECU : SECONDARY_TECU_PREFERRED_ADDRESS;
+
+	log("TECU") << "Claiming an address as the " << ((TecuRole::Primary == role) ? "primary" : "secondary")
+	            << " Tractor ECU (function instance " << static_cast<int>(functionInstance) << ", preferred address "
+	            << format_hex_address(preferredAddress) << ")" << std::endl;
+	tecuCF = isobus::CANNetworkManager::CANNetwork.create_internal_control_function(name, 0, preferredAddress);
+	tecuRole = role;
+	tecuFunctionInstance = functionInstance;
+	tecuClaimStartedMs = isobus::SystemTiming::get_timestamp_ms();
+	tecuClaimedMs = 0;
+	tecuInterfacesReady = false;
+	tecuPlanSettled = (TecuRole::Primary == role); // The primary sends everything; nothing to settle
+	tecuPlan = TecuMessagePlan{};
+}
+
+void Application::teardown_tecu()
+{
+	// Interfaces first: their destructors unregister from the control function's PGN request protocol,
+	// which deactivate_control_function() releases
+	tractorFacilities.reset();
+	speedMessagesInterface.reset();
+	nmea2000MessageInterface.reset();
+	tecuFunctionalities.reset();
+	if (tecuCF)
+	{
+		isobus::CANNetworkManager::CANNetwork.deactivate_control_function(tecuCF);
+		tecuCF.reset();
+	}
+	tecuInterfacesReady = false;
+	tecuPlanSettled = false;
+	tecuPlan = TecuMessagePlan{};
+	tractorFacilitiesSentOnPowerUp = false;
+}
+
+void Application::create_speed_messages_interface(const TecuMessagePlan &plan)
+{
+	// The stack fixes which speed messages are sent when the interface is constructed, so a changed plan
+	// needs a new one. Carry the current values over so implements never see a zero speed in between.
+	auto previous = std::move(speedMessagesInterface);
+	speedMessagesInterface = std::make_unique<isobus::SpeedMessagesInterface>(tecuCF,
+	                                                                          plan.sends(TecuMessage::GroundBasedSpeed),
+	                                                                          plan.sends(TecuMessage::WheelBasedSpeed),
+	                                                                          plan.sends(TecuMessage::MachineSelectedSpeed),
+	                                                                          false);
+	speedMessagesInterface->initialize();
+	speedMessagesInterface->wheelBasedSpeedTransmitData.set_implement_start_stop_operations_state(isobus::WheelBasedMachineSpeedData::ImplementStartStopOperations::NotAvailable);
+	speedMessagesInterface->wheelBasedSpeedTransmitData.set_key_switch_state(isobus::WheelBasedMachineSpeedData::KeySwitchState::NotAvailable);
+	speedMessagesInterface->wheelBasedSpeedTransmitData.set_operator_direction_reversed_state(isobus::WheelBasedMachineSpeedData::OperatorDirectionReversed::NotAvailable);
+	speedMessagesInterface->machineSelectedSpeedTransmitData.set_speed_source(isobus::MachineSelectedSpeedData::SpeedSource::NavigationBasedSpeed);
+
+	if (previous)
+	{
+		auto &next = *speedMessagesInterface;
+		next.groundBasedSpeedTransmitData.set_machine_speed(previous->groundBasedSpeedTransmitData.get_machine_speed());
+		next.groundBasedSpeedTransmitData.set_machine_distance(previous->groundBasedSpeedTransmitData.get_machine_distance());
+		next.groundBasedSpeedTransmitData.set_machine_direction_of_travel(previous->groundBasedSpeedTransmitData.get_machine_direction_of_travel());
+		next.wheelBasedSpeedTransmitData.set_machine_speed(previous->wheelBasedSpeedTransmitData.get_machine_speed());
+		next.wheelBasedSpeedTransmitData.set_machine_distance(previous->wheelBasedSpeedTransmitData.get_machine_distance());
+		next.wheelBasedSpeedTransmitData.set_machine_direction_of_travel(previous->wheelBasedSpeedTransmitData.get_machine_direction_of_travel());
+		next.machineSelectedSpeedTransmitData.set_machine_speed(previous->machineSelectedSpeedTransmitData.get_machine_speed());
+		next.machineSelectedSpeedTransmitData.set_machine_distance(previous->machineSelectedSpeedTransmitData.get_machine_distance());
+		next.machineSelectedSpeedTransmitData.set_machine_direction_of_travel(previous->machineSelectedSpeedTransmitData.get_machine_direction_of_travel());
+	}
+	if (tractorFacilities)
+	{
+		tractorFacilities->set_speed_messages_interface(speedMessagesInterface.get());
+	}
+}
+
+void Application::apply_tecu_plan(const TecuMessagePlan &plan)
+{
+	for (std::size_t i = 0; i < TECU_MESSAGE_COUNT; i++)
+	{
+		if (plan.send[i] != tecuPlan.send[i])
 		{
-			log("Info") << "Tractor ECU disabled in settings, skipping ECU initialization." << std::endl;
+			const auto message = static_cast<TecuMessage>(i);
+			log("TECU") << (plan.send[i] ? "Sending " : "Not sending ") << tecu_message_name(message)
+			            << (plan.send[i] ? ": no other Tractor ECU provides it" : ": another Tractor ECU provides it") << std::endl;
 		}
-		else
+	}
+
+	const bool speedMessagesChanged = (plan.sends(TecuMessage::GroundBasedSpeed) != tecuPlan.sends(TecuMessage::GroundBasedSpeed)) ||
+	  (plan.sends(TecuMessage::WheelBasedSpeed) != tecuPlan.sends(TecuMessage::WheelBasedSpeed)) ||
+	  (plan.sends(TecuMessage::MachineSelectedSpeed) != tecuPlan.sends(TecuMessage::MachineSelectedSpeed));
+	if (speedMessagesChanged)
+	{
+		create_speed_messages_interface(plan);
+	}
+	if (nmea2000MessageInterface)
+	{
+		nmea2000MessageInterface->set_enable_sending_cog_sog_cyclically(settings->is_nmea_send_enabled() && plan.sends(TecuMessage::CogSogRapidUpdate));
+	}
+	tecuPlan = plan;
+
+	if (tractorFacilities)
+	{
+		tractorFacilities->set_provided_facilities(facilities_for_plan(plan));
+		tractorFacilities->set_time_date_active(plan.sends(TecuMessage::TimeDate));
+		if (tractorFacilitiesSentOnPowerUp)
 		{
-			log("Warning") << "TECU Control Function not available, Speed/NMEA interfaces not created" << std::endl;
+			// Implements that cached our earlier response learn what changed
+			tractorFacilities->send_facilities_response();
 		}
 	}
 }
@@ -590,6 +717,131 @@ void Application::on_aog_field_opened(const std::string &how)
 	// Saves pressing AOG's SC button after every field change; same effect as PGN 241 "enabled"
 	log("TC") << "AOG " << how << ": switching section control on, as if AOG's SC button was pressed" << std::endl;
 	tcServer->update_section_control_enabled(true);
+}
+
+void Application::update_tecu()
+{
+	if (TecuRole::None == tecuRole)
+	{
+		return;
+	}
+
+	auto step_down = [this](const std::string &reason) {
+		// ISO 11783-9 4.4.2.1: the tractor's own Tractor ECU is the primary; we become a secondary,
+		// with a function instance above every Tractor ECU on the bus
+		log("TECU") << reason << ": stepping down to a secondary Tractor ECU that only adds what it lacks" << std::endl;
+		send_hardware_message("Tractor ECU found: AOG adds only missing data", 10, HW_MSG_INFO);
+		const auto all = otherTecus.refresh(ALL_FUNCTION_INSTANCES);
+		const int instance = all.empty() ? 1 : std::min<int>(all.back().functionInstance + 1, ALL_FUNCTION_INSTANCES);
+		teardown_tecu();
+		start_tecu_claim(TecuRole::Secondary, static_cast<std::uint8_t>(instance));
+	};
+
+	// A primary claim that did not end on 0xF0 lost it to another device: do not start sending from there
+	if ((TecuRole::Primary == tecuRole) && tecuCF && tecuCF->get_address_valid() &&
+	    (isobus::preferred_addresses::IndustryGroup2::TractorECU != tecuCF->get_address()))
+	{
+		step_down("Address 0xF0 is taken");
+		return;
+	}
+
+	// A claim started at runtime: finish it without blocking the main loop
+	if (!tecuInterfacesReady)
+	{
+		if (tecuCF && tecuCF->get_address_valid())
+		{
+			if (0 == tecuClaimedMs)
+			{
+				tecuClaimedMs = isobus::SystemTiming::get_timestamp_ms();
+				tecuClaimedMs = (0 == tecuClaimedMs) ? 1 : tecuClaimedMs;
+				log("TECU") << "Claimed address " << format_hex_address(tecuCF->get_address()) << std::endl;
+			}
+			if (isobus::SystemTiming::time_expired_ms(tecuClaimedMs, 250)) // J1939-81 250 ms rule
+			{
+				setup_tecu_interfaces();
+			}
+		}
+		else if (isobus::SystemTiming::time_expired_ms(tecuClaimStartedMs, TECU_CLAIM_TIMEOUT_MS))
+		{
+			log("Warning") << "TECU failed to claim an address. TECU functionality will be disabled." << std::endl;
+			tecuAddressClaimFailed = true;
+			teardown_tecu();
+			tecuRole = TecuRole::None;
+		}
+		return;
+	}
+
+	if (!isobus::SystemTiming::time_expired_ms(lastTecuCheckMs, TECU_CHECK_INTERVAL_MS))
+	{
+		return;
+	}
+	lastTecuCheckMs = isobus::SystemTiming::get_timestamp_ms();
+
+	// Only Tractor ECUs with a lower function instance count (ISO 11783-9 4.4.2.1 c). For the primary
+	// (instance 0) that is another instance 0: the tractor's own; a secondary appearing is no reason to step down.
+	const std::uint8_t deferTo = (TecuRole::Primary == tecuRole) ? 0 : static_cast<std::uint8_t>(tecuFunctionInstance - 1);
+	const auto others = otherTecus.refresh(deferTo);
+	std::set<std::uint8_t> addresses;
+	for (const auto &other : others)
+	{
+		addresses.insert(other.address);
+		if (0 == knownOtherTecuAddresses.count(other.address))
+		{
+			log("TECU") << "Another Tractor ECU appeared at " << format_hex_address(other.address) << " (function instance "
+			            << static_cast<int>(other.functionInstance) << ", manufacturer " << other.manufacturerCode << ")" << std::endl;
+		}
+	}
+	for (const auto address : knownOtherTecuAddresses)
+	{
+		if (0 == addresses.count(address))
+		{
+			log("TECU") << "The Tractor ECU at " << format_hex_address(address) << " left the bus" << std::endl;
+		}
+	}
+	knownOtherTecuAddresses = addresses;
+
+	if (TecuRole::Primary == tecuRole)
+	{
+		if (!others.empty())
+		{
+			step_down("A Tractor ECU is on the bus");
+		}
+		else if (!tecuCF->get_address_valid())
+		{
+			step_down("Lost address 0xF0");
+		}
+		return;
+	}
+
+	// Secondary: ask each other TECU what it provides (ISO 11783-9 4.4.2.1 d)
+	for (const auto &other : others)
+	{
+		if (!otherTecus.facilities_requested(other.address) &&
+		    isobus::ParameterGroupNumberRequestProtocol::request_parameter_group_number(TractorFacilities::PGN_TRACTOR_FACILITIES, tecuCF, other.controlFunction))
+		{
+			otherTecus.mark_facilities_requested(other.address);
+			log("TECU") << "Requested tractor facilities (PGN 65033) from " << format_hex_address(other.address) << std::endl;
+		}
+	}
+
+	if (!tecuPlanSettled)
+	{
+		const std::uint32_t elapsed = isobus::SystemTiming::get_time_elapsed_ms(tecuInterfacesReadyMs);
+		const bool answered = otherTecus.all_facilities_received() && (elapsed >= TECU_PLAN_MIN_SETTLE_MS);
+		if (!answered && (elapsed < TECU_PLAN_SETTLE_MS))
+		{
+			return;
+		}
+		tecuPlanSettled = true;
+		log("TECU") << (answered ? "The other Tractor ECUs reported their facilities" : "Not every Tractor ECU answered PGN 65033; going by what they send")
+		            << std::endl;
+	}
+
+	const TecuMessagePlan plan = plan_tecu_messages(false, otherTecus.advertised_facilities(), otherTecus.sent_by_others());
+	if (plan != tecuPlan)
+	{
+		apply_tecu_plan(plan);
+	}
 }
 
 void Application::setup_udp_connections()
@@ -862,6 +1114,7 @@ bool Application::update()
 
 	udpConnections->handle_address_detection();
 	udpConnections->handle_incoming_packets();
+	update_tecu();
 
 	if (is_tc_quiet())
 	{
@@ -893,7 +1146,8 @@ bool Application::update()
 	// The send fails until the TECU has claimed an address (or if the transmit queue rejects it),
 	// so only stop once it went out and retry once a second until then.
 	static std::uint32_t lastFacilitiesAttemptMs = 0;
-	if (!tractorFacilitiesSentOnPowerUp && tractorFacilities &&
+	// A secondary TECU waits until it knows what the other Tractor ECUs provide.
+	if (!tractorFacilitiesSentOnPowerUp && tractorFacilities && tecuPlanSettled &&
 	    isobus::SystemTiming::time_expired_ms(lastFacilitiesAttemptMs, 1000))
 	{
 		lastFacilitiesAttemptMs = isobus::SystemTiming::get_timestamp_ms();
@@ -980,7 +1234,7 @@ bool Application::update()
 	// This is deferred from setup_control_functions() until UDP is ready.
 	if (tecuAddressClaimFailed)
 	{
-		send_hardware_message("TECU failed to claim address " + std::to_string(static_cast<int>(isobus::preferred_addresses::IndustryGroup2::TractorECU)), 10, HW_MSG_ALERT);
+		send_hardware_message("TECU failed to claim an address", 10, HW_MSG_ALERT);
 		tecuAddressClaimFailed = false;
 	}
 
@@ -1030,7 +1284,8 @@ bool Application::update()
 	}
 
 	// Send J1939 PGN 65256 every 100ms (0.1 seconds)
-	if (isobus::SystemTiming::time_expired_ms(lastJ1939SpeedTransmit, 100) && tecuCF && tecuCF->get_address_valid())
+	if (isobus::SystemTiming::time_expired_ms(lastJ1939SpeedTransmit, 100) && tecuCF && tecuCF->get_address_valid() &&
+	    tecuPlan.sends(TecuMessage::VehicleDirectionSpeed))
 	{
 		std::uint16_t speed_j1939 = (static_cast<std::uint32_t>(std::abs(lastSpeedValue)) * 576u + 312u) / 625u; // mm/s -> (km/h)*256
 		std::array<std::uint8_t, 8> j1939_speed_data = {
@@ -1551,7 +1806,7 @@ void Application::setup_vt_client()
 					saved = settings->set_nmea_send_enabled(enabled);
 					if (saved)
 					{
-						nmea2000MessageInterface->set_enable_sending_cog_sog_cyclically(enabled);
+						nmea2000MessageInterface->set_enable_sending_cog_sog_cyclically(enabled && tecuPlan.sends(TecuMessage::CogSogRapidUpdate));
 					}
 				}
 				else
@@ -1889,8 +2144,8 @@ void Application::update_vt_status_strings(bool aogConnected)
 	  ConfigNmeaSendLabel, // pool length 14
 	  nmea2000MessageInterface ? (std::string("NMEA Send: ") + (settings->is_nmea_send_enabled() ? "ON" : "OFF")) : "NMEA Send: N/A");
 	send_vt_string_if_changed(
-	  ConfigTecuLabel,
-	  std::string("TECU: ") + (settings->is_tecu_enabled() ? "ON" : "OFF") + " (restart req)");
+	  ConfigTecuLabel, // pool length 23. Off: the tractor's TECU leads and ours only fills its gaps
+	  settings->is_tecu_enabled() ? "TECU: AOG (restart req)" : "TECU: tractor (restart)");
 
 	std::ostringstream networkRows;
 	std::uint8_t displayedCFs = 0;

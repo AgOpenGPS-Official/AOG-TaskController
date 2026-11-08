@@ -60,8 +60,8 @@ AOG-TaskController reads its configuration from a `settings.json` file located i
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `subnet` | `int[3]` | `[192, 168, 5]` | LAN prefix used to select the AOG-facing NIC and broadcast address. |
-| `tecuEnabled` | `bool` | `true` | Enables the internal Tractor ECU. Disable it when the tractor already has a TECU. A change made from the VT takes effect after restart. |
-| `nmeaSendEnabled` | `bool` | `true` | Enables cyclic NMEA2000 COG/SOG transmission. Requires `tecuEnabled`. |
+| `tecuEnabled` | `bool` | `true` | `true`: AOG is the tractor's Tractor ECU (address 240), and steps back if the tractor turns out to have one. `false`: use when the tractor already has a TECU; AOG then only adds what it lacks, such as ground-based speed from GNSS (ISO 11783-9 §4.4.2.1). A change made from the VT takes effect after restart. |
+| `nmeaSendEnabled` | `bool` | `true` | Enables cyclic NMEA2000 COG/SOG transmission (not while the tractor's TECU sends it). |
 | `aogHeartbeatEnabled` | `bool` | `true` | Sends the 100 ms zero-section heartbeat when no implement is connected. Disable for AgOpenGPS versions before v6.8.2 beta 5. |
 | `vtEnabled` | `bool` | `true` | Enables the ISOBUS Virtual Terminal UI. |
 | `sectionControlOnConnect` | `bool` | `true` | Switches section control on 2 s after an implement connects, as if AOG's SC button was pressed. |

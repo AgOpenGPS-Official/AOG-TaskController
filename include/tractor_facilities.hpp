@@ -20,7 +20,9 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <ctime>
 #include <memory>
+#include <mutex>
 #include <set>
 
 class Settings;
@@ -93,6 +95,14 @@ std::array<std::uint8_t, 8> encode_facilities(const Facilities &f);
 /// @brief Decode an 8-byte PGN 65033 payload into a Facilities struct.
 Facilities decode_facilities(const std::array<std::uint8_t, 8> &payload);
 
+/// @brief The minutes to add to UTC to get local time, positive east of Greenwich.
+/// Compares the two broken-down clocks, so it includes daylight saving time and needs no time zone lookup.
+int utc_offset_minutes(const std::tm &utc, const std::tm &local);
+
+/// @brief Encode the Time/Date payload (PGN 65254, ISO 11783-7 B.1) from the same instant as UTC and local time.
+/// @param milliseconds Milliseconds into the current second; the message has a resolution of 250 ms.
+std::array<std::uint8_t, 8> encode_time_date(const std::tm &utc, const std::tm &local, int milliseconds);
+
 /// @brief Implements ISO 11783-7 Tractor Facilities response (PGN 65033)
 /// and Required Tractor Facilities diagnostic logging (PGN 65032).
 class TractorFacilities
@@ -100,9 +110,16 @@ class TractorFacilities
 public:
 	static constexpr std::uint32_t PGN_TRACTOR_FACILITIES = 65033; ///< 0xFE09
 	static constexpr std::uint32_t PGN_REQUIRED_TRACTOR_FACILITIES = 65032; ///< 0xFE08
+	static constexpr std::uint32_t PGN_TIME_DATE = 65254; ///< 0xFEE6
 
 	TractorFacilities(std::shared_ptr<isobus::InternalControlFunction> tecuCF,
 	                  std::shared_ptr<Settings> settings);
+
+	/// @brief Removes the callbacks registered by initialize(), so the TECU can be rebuilt at runtime
+	~TractorFacilities();
+
+	TractorFacilities(const TractorFacilities &) = delete;
+	TractorFacilities &operator=(const TractorFacilities &) = delete;
 
 	/// @brief Register the PGN 65033 request callback and the PGN 65032
 	///        global receive listener.  Must be called after the TECU
@@ -122,9 +139,15 @@ public:
 	/// @brief Provide a pointer to the NMEA 2000 message interface.
 	void set_nmea2000_message_interface(isobus::NMEA2000MessageInterface *iface);
 
-	/// @brief Set whether time/date (PGN 65254 / FEE6) is being broadcast.
-	/// When true, the time/date facility bit is advertised in PGN 65033.
+	/// @brief Set whether our TECU provides time/date (PGN 65254 / FEE6).
+	/// When true, it answers requests for that PGN and advertises the time/date facility bit in PGN 65033.
+	/// When false, it leaves requests to the other Tractor ECU. It is never sent unrequested (ISO 11783-7 B.1).
 	void set_time_date_active(bool active);
+
+	/// @brief Advertise exactly these facilities (the time/date bit still follows set_time_date_active()).
+	/// Used when our TECU shares the bus with other Tractor ECUs and only provides what they lack
+	/// (ISO 11783-9 4.4.2.1). Until this is called, the facilities follow the speed interface.
+	void set_provided_facilities(const Facilities &facilities);
 
 	/// @brief Build the 8-byte payload from the current runtime state.
 	std::array<std::uint8_t, 8> build_payload() const;
@@ -137,6 +160,13 @@ private:
 	                           isobus::AcknowledgementType &acknowledgeType,
 	                           void *parentPointer);
 
+	/// @brief Static PGN-request callback registered for PGN 65254 (Time/Date).
+	static bool on_time_date_request(std::uint32_t parameterGroupNumber,
+	                                 std::shared_ptr<isobus::ControlFunction> requestingControlFunction,
+	                                 bool &acknowledge,
+	                                 isobus::AcknowledgementType &acknowledgeType,
+	                                 void *parentPointer);
+
 	/// @brief Static global-PGN callback for PGN 65032 (Required Tractor
 	///        Facilities). Diagnostic only — logs the request unconditionally
 	///        (not gated by log level) and never changes our response.
@@ -146,11 +176,17 @@ private:
 	std::shared_ptr<Settings> settings;
 	isobus::SpeedMessagesInterface *speedMessagesInterface = nullptr;
 	isobus::NMEA2000MessageInterface *nmea2000MessageInterface = nullptr;
-	/// Whether we are broadcasting PGN 65254 (FEE6). Atomic because
-	/// set_time_date_active() and build_payload() are called from different
-	/// isobus callback contexts (see docs/CONCURRENCY.md) that can run
-	/// concurrently on different threads.
+	/// Whether we provide PGN 65254 (FEE6). Atomic because set_time_date_active()
+	/// runs on the main thread, while the PGN request callbacks that read it run
+	/// on the CAN stack's thread (see docs/CONCURRENCY.md).
 	std::atomic<bool> timeDateActive{ false };
+	std::atomic<bool> timeDateRequestLogged{ false }; ///< To log only the first request answered
+
+	/// Set by set_provided_facilities() on the main thread, read by build_payload() from PGN request callbacks
+	mutable std::mutex providedFacilitiesMutex;
+	bool hasProvidedFacilities = false;
+	Facilities providedFacilities;
+	bool initialized = false;
 
 	/// Source addresses for which we have already logged an info-level
 	/// "request received" line, to avoid per-message spam.
