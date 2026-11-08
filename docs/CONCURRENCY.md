@@ -71,6 +71,8 @@ registration point itself defers to an `update()` call, or invokes the listener/
   object. `TractorFacilities`' PGN 65032 callback may still run once after removal, which is harmless: it only
   logs and never touches the object. `TractorFacilities::providedFacilities` is under its own mutex
   (set on the main thread, read when answering a PGN 65033 request).
+- **`TractorFacilities::timeDateActive`** — atomic: set on the main thread from the TECU plan, read on the
+  background thread when answering a request for PGN 65033 or PGN 65254.
 
 ## What's *not* protected yet — known gap
 

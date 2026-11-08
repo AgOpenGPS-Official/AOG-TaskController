@@ -14,6 +14,8 @@
 #include "logging_utils.hpp"
 #include "settings.hpp"
 
+#include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <iostream>
 #include <sstream>
@@ -243,6 +245,63 @@ Facilities decode_facilities(const std::array<std::uint8_t, 8> &p)
 }
 
 // ---------------------------------------------------------------------------
+// Time/Date
+// ---------------------------------------------------------------------------
+
+int utc_offset_minutes(const std::tm &utc, const std::tm &local)
+{
+	// The two clocks are at most a day apart. Across New Year tm_yday jumps, so compare the years first.
+	int dayDifference = local.tm_yday - utc.tm_yday;
+	if (local.tm_year != utc.tm_year)
+	{
+		dayDifference = (local.tm_year > utc.tm_year) ? 1 : -1;
+	}
+	return (dayDifference * 24 * 60) + ((local.tm_hour - utc.tm_hour) * 60) + (local.tm_min - utc.tm_min);
+}
+
+std::array<std::uint8_t, 8> encode_time_date(const std::tm &utc, const std::tm &local, int milliseconds)
+{
+	const int offsetMinutes = utc_offset_minutes(utc, local);
+	const int seconds = std::min(utc.tm_sec, 59); // tm_sec is 60 during a leap second
+	const int quarterOfDay = utc.tm_hour / 6;
+
+	std::array<std::uint8_t, 8> p{};
+	p[0] = static_cast<std::uint8_t>((seconds * 4) + (milliseconds / 250)); // 0.25 s/bit
+	p[1] = static_cast<std::uint8_t>(utc.tm_min);
+	p[2] = static_cast<std::uint8_t>(utc.tm_hour);
+	p[3] = static_cast<std::uint8_t>(utc.tm_mon + 1);
+	p[4] = static_cast<std::uint8_t>(((utc.tm_mday - 1) * 4) + quarterOfDay + 1); // 0.25 day/bit, 0 = not a day
+	p[5] = static_cast<std::uint8_t>(utc.tm_year + 1900 - 1985);
+	// Both offsets carry the sign: -3:30 is -3 h and -30 min
+	p[6] = static_cast<std::uint8_t>((offsetMinutes % 60) + 125);
+	p[7] = static_cast<std::uint8_t>((offsetMinutes / 60) + 125);
+	return p;
+}
+
+/// Read the PC clock. False if it is outside what the message can carry, e.g. a clock that was never set.
+static bool read_system_time_date(std::array<std::uint8_t, 8> &payload)
+{
+	const auto now = std::chrono::system_clock::now();
+	const std::time_t seconds = std::chrono::system_clock::to_time_t(now);
+	const auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() % 1000;
+
+	std::tm utc{};
+	std::tm local{};
+#if defined(_WIN32)
+	const bool converted = (0 == gmtime_s(&utc, &seconds)) && (0 == localtime_s(&local, &seconds));
+#else
+	const bool converted = (nullptr != gmtime_r(&seconds, &utc)) && (nullptr != localtime_r(&seconds, &local));
+#endif
+	const int year = utc.tm_year + 1900;
+	if (!converted || (year < 1985) || (year > 2235))
+	{
+		return false;
+	}
+	payload = encode_time_date(utc, local, static_cast<int>(milliseconds));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
 // TractorFacilities
 // ---------------------------------------------------------------------------
 
@@ -269,6 +328,10 @@ TractorFacilities::~TractorFacilities()
 	}
 	isobus::CANNetworkManager::CANNetwork.remove_global_parameter_group_number_callback(
 	  PGN_REQUIRED_TRACTOR_FACILITIES, &TractorFacilities::on_required_facilities, this);
+	if (auto pgnRequestProtocol = tecuCF ? tecuCF->get_pgn_request_protocol().lock() : nullptr)
+	{
+		pgnRequestProtocol->remove_pgn_request_callback(PGN_TIME_DATE, &TractorFacilities::on_time_date_request, this);
+	}
 }
 
 void TractorFacilities::set_provided_facilities(const Facilities &facilities)
@@ -322,9 +385,8 @@ std::array<std::uint8_t, 8> TractorFacilities::build_payload() const
 	f.wheelBasedDistance = wheelSpeedActive;
 	f.wheelBasedDirection = wheelSpeedActive;
 
-	// Time/date (PGN 65254 / FEE6) – set by the application layer when
-	// the TECU is actively broadcasting FEE6 and no duplicate provider
-	// exists on the bus.
+	// Time/date (PGN 65254 / FEE6) – set by the application layer while
+	// the TECU answers requests for it.
 	f.timeDate = timeDateActive;
 
 	// Everything else stays 0: we have no engine data, hitch feedback,
@@ -367,6 +429,11 @@ bool TractorFacilities::initialize()
 	  PGN_REQUIRED_TRACTOR_FACILITIES, &TractorFacilities::on_required_facilities, this);
 	std::cout << "[" << get_timestamp() << "] [TractorFacilities] Registered PGN 65032 diagnostic listener." << std::endl;
 
+	if (!pgnRequestProtocol->register_pgn_request_callback(PGN_TIME_DATE, &TractorFacilities::on_time_date_request, this))
+	{
+		std::cout << "[" << get_timestamp() << "] [TractorFacilities] Failed to register PGN 65254 request callback." << std::endl;
+	}
+
 	initialized = true;
 	return true;
 }
@@ -405,6 +472,31 @@ bool TractorFacilities::send_facilities_response(bool isPowerUp)
 // ---------------------------------------------------------------------------
 // Static callbacks
 // ---------------------------------------------------------------------------
+
+bool TractorFacilities::on_time_date_request(
+  std::uint32_t parameterGroupNumber,
+  std::shared_ptr<isobus::ControlFunction> /*requestingControlFunction*/,
+  bool &acknowledge,
+  isobus::AcknowledgementType & /*acknowledgeType*/,
+  void *parentPointer)
+{
+	auto *self = static_cast<TractorFacilities *>(parentPointer);
+	std::array<std::uint8_t, 8> payload{};
+	// Returning false leaves it to the Tractor ECU that does provide it: the stack ignores a global
+	// request and NACKs one addressed to us
+	if ((PGN_TIME_DATE != parameterGroupNumber) || (nullptr == self) || !self->timeDateActive || !read_system_time_date(payload))
+	{
+		return false;
+	}
+
+	acknowledge = false; // Sending the requested PGN is the response
+	const bool sent = isobus::CANNetworkManager::CANNetwork.send_can_message(PGN_TIME_DATE, payload.data(), payload.size(), self->tecuCF);
+	if (sent && !self->timeDateRequestLogged.exchange(true))
+	{
+		std::cout << "[" << get_timestamp() << "] [TractorFacilities] Answering requests for PGN 65254 (Time/Date) from the PC clock." << std::endl;
+	}
+	return sent;
+}
 
 bool TractorFacilities::on_pgn_request(
   std::uint32_t parameterGroupNumber,

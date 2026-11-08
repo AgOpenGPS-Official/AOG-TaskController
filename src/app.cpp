@@ -502,6 +502,7 @@ void Application::setup_tecu_interfaces()
 		tractorFacilities->set_speed_messages_interface(speedMessagesInterface.get());
 		tractorFacilities->set_nmea2000_message_interface(nmea2000MessageInterface.get());
 		tractorFacilities->set_provided_facilities(facilities_for_plan(plan));
+		tractorFacilities->set_time_date_active(plan.sends(TecuMessage::TimeDate));
 		tractorFacilities->initialize();
 		tecuPlan = plan;
 		tecuInterfacesReady = true;
@@ -636,6 +637,7 @@ void Application::apply_tecu_plan(const TecuMessagePlan &plan)
 	if (tractorFacilities)
 	{
 		tractorFacilities->set_provided_facilities(facilities_for_plan(plan));
+		tractorFacilities->set_time_date_active(plan.sends(TecuMessage::TimeDate));
 		if (tractorFacilitiesSentOnPowerUp)
 		{
 			// Implements that cached our earlier response learn what changed

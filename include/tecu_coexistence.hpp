@@ -110,6 +110,8 @@ class OtherTecuMonitor
 public:
 	/// How long a message seen from another TECU counts as "sent by it"
 	static constexpr std::uint32_t SENT_BY_OTHERS_WINDOW_MS = 3000;
+	/// The same for time/date, which may only appear when something requests it
+	static constexpr std::uint32_t TIME_DATE_SENT_BY_OTHERS_WINDOW_MS = 30000;
 
 	/// @brief Register the PGN 65033 listener. Call once.
 	void initialize();
@@ -130,7 +132,7 @@ public:
 	/// @brief Whether every other TECU has answered with PGN 65033
 	bool all_facilities_received() const;
 
-	/// @brief Messages seen from another TECU within SENT_BY_OTHERS_WINDOW_MS
+	/// @brief Messages seen from another TECU within SENT_BY_OTHERS_WINDOW_MS (time/date: its own window)
 	std::array<bool, TECU_MESSAGE_COUNT> sent_by_others() const;
 
 	/// @brief Whether we already asked this address for PGN 65033 since it appeared

@@ -274,7 +274,8 @@ std::array<bool, TECU_MESSAGE_COUNT> OtherTecuMonitor::sent_by_others() const
 	for (std::size_t i = 0; i < TECU_MESSAGE_COUNT; i++)
 	{
 		const std::uint32_t last = lastSentByOthersMs[i];
-		sent[i] = (0 != last) && !isobus::SystemTiming::time_expired_ms(last, SENT_BY_OTHERS_WINDOW_MS);
+		const bool isTimeDate = (static_cast<std::size_t>(TecuMessage::TimeDate) == i);
+		sent[i] = (0 != last) && !isobus::SystemTiming::time_expired_ms(last, isTimeDate ? TIME_DATE_SENT_BY_OTHERS_WINDOW_MS : SENT_BY_OTHERS_WINDOW_MS);
 	}
 	return sent;
 }
