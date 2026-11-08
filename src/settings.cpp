@@ -97,6 +97,27 @@ bool Settings::load()
 		tcVersion = DEFAULT_TC_VERSION; // Key not found, use default
 	}
 
+	tcNumber = DEFAULT_TC_NUMBER;
+	if (data.contains("tcNumber"))
+	{
+		try
+		{
+			int number = data["tcNumber"].get<int>();
+			if (number >= 1 && number <= MAX_TC_NUMBER)
+			{
+				tcNumber = static_cast<std::uint8_t>(number);
+			}
+			else
+			{
+				std::cout << "[" << get_timestamp() << "] Invalid tcNumber " << number << " (1-" << static_cast<int>(MAX_TC_NUMBER) << "), using default " << static_cast<int>(DEFAULT_TC_NUMBER) << std::endl;
+			}
+		}
+		catch (const nlohmann::json::exception &e)
+		{
+			std::cout << "[" << get_timestamp() << "] Error parsing 'tcNumber': " << e.what() << std::endl;
+		}
+	}
+
 	if (data.contains("languageCode"))
 	{
 		try
@@ -144,6 +165,7 @@ bool Settings::save() const
 	data["aogHeartbeatEnabled"] = aogHeartbeatEnabled;
 	data["vtEnabled"] = vtEnabled;
 	data["tcVersion"] = tcVersion;
+	data["tcNumber"] = tcNumber;
 	data["languageCode"] = languageCode;
 	data["countryCode"] = countryCode;
 
@@ -289,6 +311,31 @@ bool Settings::set_tc_version(std::uint8_t version, bool save)
 	else
 	{
 		tcVersion = version;
+	}
+	if (save)
+	{
+		return this->save();
+	}
+	return true;
+}
+
+std::uint8_t Settings::get_tc_number() const
+{
+	std::scoped_lock lock(settingsMutex);
+	return tcNumber;
+}
+
+bool Settings::set_tc_number(std::uint8_t number, bool save)
+{
+	std::scoped_lock lock(settingsMutex);
+	if ((number < 1) || (number > MAX_TC_NUMBER))
+	{
+		std::cout << "[" << get_timestamp() << "] Invalid TC number " << static_cast<int>(number) << " (1-" << static_cast<int>(MAX_TC_NUMBER) << "), using default " << static_cast<int>(DEFAULT_TC_NUMBER) << std::endl;
+		tcNumber = DEFAULT_TC_NUMBER;
+	}
+	else
+	{
+		tcNumber = number;
 	}
 	if (save)
 	{

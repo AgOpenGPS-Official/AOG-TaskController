@@ -209,6 +209,7 @@ The TC reads `settings.json` from a per-user config directory:
     "aogHeartbeatEnabled": true,
     "vtEnabled": true,
     "tcVersion": 3,
+    "tcNumber": 1,
     "languageCode": "en",
     "countryCode": "US"
 }
@@ -222,6 +223,7 @@ The TC reads `settings.json` from a per-user config directory:
 | `aogHeartbeatEnabled` | `bool` | `true` | Send `0xF0` heartbeat to AgIO/AgValonia every 100 ms even with no implement. Disable for AOG < v6.8.2 beta 5. |
 | `vtEnabled` | `bool` | `true` | Register the Virtual Terminal client and display the TC UI when a VT is present. |
 | `tcVersion` | `integer` | `3` | Task Controller version code (`0`=DIS, `1`=FDIS.1, `2`=First Edition, `3`=Second Edition Draft, `4`=Second Published Edition). |
+| `tcNumber` | `integer` | `1` | Task Controller number, `1`–`32` (ISO 11783-10: the TC NAME's function instance + 1). Set `2` or higher when the tractor already has a TC, so implements can tell the two apart. Takes effect after restart. |
 | `languageCode` | `string` | `"en"` | Two-character language code advertised through the ISOBUS language interface. |
 | `countryCode` | `string` | `"US"` | Two-character country code advertised through the ISOBUS language interface. |
 
