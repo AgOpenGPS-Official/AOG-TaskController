@@ -99,6 +99,14 @@ The application logs the detected VT version, screen size, softkey dimensions, a
 - **Maximum Booms:** 1
 - **Maximum Sections:** 64 (supports both individual sections and zone-based control)
 - **Section Control:** Generation 1 (TC-SC) with support for DDI 160/161/290
+- **Track Control:** Level 1 — negotiates the level with the implement (DDI 505/506) and switches its track control on and off (DDI 515) together with AgOpenGPS's Auto command
+
+### Guidance data sent to implements
+
+Sent to any implement whose device description declares the DDI as settable.
+
+- **GNSS quality (DDI 514):** AgOpenGPS's GPS fix quality, every 250 ms.
+- **Guidance track (DDI 507-513):** the current track number, the tracks to its left and right, the track spacing, a reference line ID that is unique across fields, and the deviation from the guidance line, every 250 ms while AgOpenGPS has an active track.
 
 ### Guidance data sent to implements
 
