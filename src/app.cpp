@@ -661,20 +661,6 @@ void Application::setup_udp_connections()
 				on_aog_field_opened("started sending section states (PGN 229)");
 			}
 		}
-		else if (pgn == 0xF3) // 243 - Field name, empty when the field is closed
-		{
-			lastAogPacketMs = isobus::SystemTiming::get_timestamp_ms();
-			const std::string fieldName(data.begin(), data.end());
-			if (fieldName.empty())
-			{
-				log("Field") << "AOG closed the field" << std::endl;
-			}
-			else
-			{
-				log("Field") << "AOG opened field '" << fieldName << "'" << std::endl;
-				on_aog_field_opened("opened field '" + fieldName + "'");
-			}
-		}
 		else if (pgn == 0xF1 && !data.empty()) // 241 - Section Control
 		{
 			lastAogPacketMs = isobus::SystemTiming::get_timestamp_ms();
@@ -730,6 +716,7 @@ void Application::setup_udp_connections()
 					hasActiveField = true;
 					log("Field") << "Field opened: " << currentFieldName << " (index " << currentFieldIndex << ")" << std::endl;
 				}
+				on_aog_field_opened("opened field '" + fieldName + "'");
 			}
 		}
 		else if (pgn == 0xF4) // 244 - Guidance Track Context

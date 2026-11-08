@@ -1227,19 +1227,6 @@ void MyTCServer::send_gnss_quality(std::uint8_t quality)
 	}
 }
 
-void MyTCServer::send_gnss_quality(std::uint8_t quality)
-{
-	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
-	constexpr auto DDI = isobus::DataDescriptionIndex::GNSSQuality;
-	for (auto &client : clients)
-	{
-		if (client.second.has_element_number_for_ddi(DDI))
-		{
-			send_set_value(client.first, static_cast<std::uint16_t>(DDI), client.second.get_element_number_for_ddi(DDI), static_cast<std::int32_t>(quality));
-		}
-	}
-}
-
 void MyTCServer::send_guidance_track_data(const GuidanceTrackContext &ctx, std::int32_t lineDeviationMm)
 {
 	if (!ctx.valid)
