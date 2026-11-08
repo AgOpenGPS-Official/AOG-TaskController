@@ -2,6 +2,10 @@
 
 This is an experimental project to control sections of an ISOBUS implement using AgOpenGPS. It is based on the [AgIsoStack++](https://github.com/Open-Agriculture/AgIsoStack-plus-plus) library.
 
+AOG-TaskController joins the ISOBUS as its own device and takes over the Task Controller role. You turn off the terminal's built-in TC (section control) in the terminal's own settings. The terminal stays on the bus as the VT, so the implement's operator screens keep working as before.
+
+![ISOBUS + AgOpenGPS: replacing the TC](resources/isobus_agopen_tc_en.svg)
+
 ## Documentation
 
 - [docs/LINUX_DAEMON.md](docs/LINUX_DAEMON.md) — running AOG-TaskController as a headless Linux service (Raspberry Pi, x86 SBCs, generic Linux). Install, systemd, CAN setup, troubleshooting.
@@ -11,11 +15,12 @@ This is an experimental project to control sections of an ISOBUS implement using
 
 After installing the desired release of AOG-TaskController, you can run it directly through AgOpenGPS itself:
 
-1. Open AgIO.
-2. Go to the `Settings` tab.
-3. Click on the `ISOBUS` tab.
-4. Select the CAN adapter and channel you want to use.
-5. Click on the `connect` button.
+1. Turn off the Task Controller (section control) on your ISOBUS terminal, so the implement connects to AOG-TaskController instead. Where this setting is depends on the terminal.
+2. Open AgIO.
+3. Go to the `Settings` tab.
+4. Click on the `ISOBUS` tab.
+5. Select the CAN adapter and channel you want to use.
+6. Click on the `connect` button.
 
 ![how-to](resources/agopengps-howto.png)
 
@@ -91,7 +96,18 @@ The application logs the detected VT version, screen size, softkey dimensions, a
 - **Maximum Sections:** 64 (supports both individual sections and zone-based control)
 - **Section Control:** Generation 1 (TC-SC) with support for DDI 160/161/290
 
+### Guidance data sent to implements
+
+Sent to any implement whose device description declares the DDI as settable.
+
+- **GNSS quality (DDI 514):** AgOpenGPS's GPS fix quality, every 250 ms.
+
 ## Contributing
+
+Please keep pull requests small and focused on one change. A PR that fixes one bug or adds one
+capability is much faster to review (and to revert, if needed) than one that bundles several
+unrelated changes together — if you find yourself fixing more than one thing, consider splitting
+the work into separate PRs instead.
 
 Before committing it's better to run these commands: (requires the LLVM project to be installed)
  ```powershell

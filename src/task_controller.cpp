@@ -13,10 +13,13 @@
 #include "isobus/isobus/isobus_device_descriptor_object_pool_helpers.hpp"
 #include "isobus/isobus/isobus_task_controller_server.hpp"
 
+#include <algorithm>
 #include <bitset>
+#include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
-#include <set>
+#include <sstream>
 
 // Sanitize a string for use as a filename by replacing invalid characters with underscores
 static std::string sanitize_filename(const std::string &input)
@@ -32,6 +35,77 @@ static std::string sanitize_filename(const std::string &input)
 		}
 	}
 	return result;
+}
+
+// Finds the number of the first device element that lists the process data object as a child.
+static bool find_owning_element_number(isobus::DeviceDescriptorObjectPool &pool,
+                                       const isobus::task_controller_object::DeviceProcessDataObject &processData,
+                                       std::uint16_t &elementNumber)
+{
+	for (std::uint32_t i = 0; i < pool.size(); i++)
+	{
+		auto object = pool.get_object_by_index(i);
+		if (!object || object->get_object_type() != isobus::task_controller_object::ObjectTypes::DeviceElement)
+		{
+			continue;
+		}
+
+		auto elementObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceElementObject>(object);
+		if (!elementObject)
+		{
+			continue;
+		}
+
+		for (std::uint16_t childId : elementObject->get_child_object_ids())
+		{
+			if (childId == processData.get_object_id())
+			{
+				elementNumber = elementObject->get_element_number();
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+// Logs and keeps the DDOP bytes exactly as received, so pools from different sessions can be compared byte for byte.
+// Files are named by hash, so each distinct pool is written once. Never affects activation.
+static void save_received_ddop(std::uint64_t clientName, const std::vector<std::uint8_t> &rawPool, const std::vector<std::size_t> &chunkSizes)
+{
+	// FNV-1a 64-bit
+	std::uint64_t hash = 0xcbf29ce484222325ULL;
+	for (auto byte : rawPool)
+	{
+		hash = (hash ^ byte) * 0x100000001b3ULL;
+	}
+	std::ostringstream hashText;
+	hashText << std::hex << std::setw(16) << std::setfill('0') << hash;
+
+	std::ostringstream chunks;
+	for (std::size_t i = 0; i < chunkSizes.size(); i++)
+	{
+		chunks << (i ? "/" : "") << chunkSizes[i];
+	}
+
+	auto fileName = std::to_string(clientName) + "/received/" + hashText.str() + ".ddop";
+	auto &out = log("TC Server") << "Client " << clientName << " received DDOP: " << rawPool.size() << " bytes in "
+	                             << chunkSizes.size() << " chunk(s) [" << chunks.str() << "], fnv1a64=" << hashText.str();
+	try
+	{
+		auto path = Settings::get_filename_path(fileName);
+		if (std::filesystem::exists(path))
+		{
+			out << " (already saved)" << std::endl;
+			return;
+		}
+		std::ofstream outFile(path, std::ios::binary);
+		outFile.write(reinterpret_cast<const char *>(rawPool.data()), static_cast<std::streamsize>(rawPool.size()));
+		out << (outFile ? ", saved to " + fileName : ", failed to save " + fileName) << std::endl;
+	}
+	catch (const std::exception &e)
+	{
+		out << ", failed to save: " << e.what() << std::endl;
+	}
 }
 
 void ClientState::set_number_of_sections(std::uint8_t number)
@@ -209,7 +283,7 @@ std::uint16_t ClientState::get_element_number_for_ddi(isobus::DataDescriptionInd
 	{
 		return it->second;
 	}
-	std::cout << "[" << get_timestamp() << "] Cached element number not found for DDI " << static_cast<int>(ddi) << std::endl;
+	log() << "Cached element number not found for DDI " << static_cast<int>(ddi) << std::endl;
 	return 0;
 }
 
@@ -225,87 +299,17 @@ bool ClientState::has_element_number_for_ddi(isobus::DataDescriptionIndex ddi) c
 
 bool ClientState::is_element_or_parent_off(std::uint16_t elementNumber) const
 {
-	std::set<std::uint16_t> visitedElements;
-	auto &nonConstPool = const_cast<isobus::DeviceDescriptorObjectPool &>(pool);
-
-	while (visitedElements.insert(elementNumber).second)
-	{
+	// Called per section from the heartbeat and the VT section map, so this only walks the cached
+	// parent map; searching the pool here cost milliseconds per call on large pools (#100).
+	return element_hierarchy::any_in_chain(elementParents, elementNumber, [this](std::uint16_t element) {
 		bool elementWorkState;
-		if (try_get_element_work_state(elementNumber, elementWorkState) && !elementWorkState)
-		{
-			return true;
-		}
+		return try_get_element_work_state(element, elementWorkState) && !elementWorkState;
+	});
+}
 
-		bool parentFound = false;
-		std::uint16_t parentElementNumber = 0;
-		for (std::uint32_t i = 0; (i < nonConstPool.size()) && !parentFound; i++)
-		{
-			auto object = nonConstPool.get_object_by_index(i);
-			if (!object || (object->get_object_type() != isobus::task_controller_object::ObjectTypes::DeviceElement))
-			{
-				continue;
-			}
-
-			auto elementObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceElementObject>(object);
-			if (!elementObject)
-			{
-				continue;
-			}
-
-			for (std::uint16_t childId : elementObject->get_child_object_ids())
-			{
-				for (std::uint32_t j = 0; j < nonConstPool.size(); j++)
-				{
-					auto childObject = nonConstPool.get_object_by_index(j);
-					if (!childObject || (childObject->get_object_id() != childId))
-					{
-						continue;
-					}
-
-					if (childObject->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceElement)
-					{
-						auto childElementObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceElementObject>(childObject);
-						if (childElementObject &&
-						    (childElementObject->get_element_number() == elementNumber) &&
-						    (elementObject->get_element_number() != elementNumber))
-						{
-							parentElementNumber = elementObject->get_element_number();
-							parentFound = true;
-						}
-					}
-					else if (childObject->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceProcessData)
-					{
-						auto processDataObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceProcessDataObject>(childObject);
-						if (processDataObject)
-						{
-							auto ddi = static_cast<isobus::DataDescriptionIndex>(processDataObject->get_ddi());
-							if (has_element_number_for_ddi(ddi) &&
-							    (get_element_number_for_ddi(ddi) == elementNumber) &&
-							    (elementObject->get_element_number() != elementNumber))
-							{
-								parentElementNumber = elementObject->get_element_number();
-								parentFound = true;
-							}
-						}
-					}
-
-					break;
-				}
-				if (parentFound)
-				{
-					break;
-				}
-			}
-		}
-
-		if (!parentFound)
-		{
-			return false;
-		}
-		elementNumber = parentElementNumber;
-	}
-
-	return false; // A cycle was found without an OFF element.
+void ClientState::build_element_hierarchy()
+{
+	elementParents = element_hierarchy::build_parent_map(pool);
 }
 
 void ClientState::set_element_work_state(std::uint16_t elementNumber, bool isWorking)
@@ -365,15 +369,21 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 	state.get_pool().set_task_controller_compatibility_level(static_cast<std::uint8_t>(TaskControllerVersion::SecondEditionDraft));
 
 	bool deserialized = false;
+	std::vector<std::uint8_t> receivedPool;
+	std::vector<std::size_t> receivedChunkSizes;
 	while (!uploadedPools[partnerCF].empty())
 	{
 		auto binaryPool = uploadedPools[partnerCF].front();
 		uploadedPools[partnerCF].pop();
+		receivedPool.insert(receivedPool.end(), binaryPool.begin(), binaryPool.end());
+		receivedChunkSizes.push_back(binaryPool.size());
 		deserialized = state.get_pool().deserialize_binary_object_pool(binaryPool.data(), static_cast<std::uint32_t>(binaryPool.size()), partnerCF->get_NAME());
 	}
+	save_received_ddop(partnerCF->get_NAME().get_full_name(), receivedPool, receivedChunkSizes);
 	if (deserialized)
 	{
 		log() << "Successfully deserialized device descriptor object pool." << std::endl;
+		state.build_element_hierarchy();
 
 		// Save to NVM
 		std::shared_ptr<isobus::task_controller_object::DeviceObject> deviceObject;
@@ -436,34 +446,52 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 		// Build a flat list of section element numbers in the same order as the geometry enumeration
 		std::vector<std::uint16_t> sectionElementNumbers;
 
-		std::cout << "Implement geometry: " << std::endl;
-		std::cout << "Number of booms=" << implement.booms.size() << std::endl;
+		// One row per section, in the same order as sectionElementNumbers (the row index is AOG's section index)
+		struct GeometryRow
+		{
+			std::uint16_t elementNumber;
+			std::uint16_t boomElement;
+			std::string subBoomElement; // "-" for sections attached directly to a boom
+			isobus::DeviceDescriptorObjectPoolHelper::Section section;
+		};
+		std::vector<GeometryRow> geometryRows;
+
 		for (const auto &boom : implement.booms)
 		{
-			std::cout << "Boom: id=" << static_cast<int>(boom.elementNumber) << std::endl;
 			for (const auto &subBoom : boom.subBooms)
 			{
-				std::cout << "SubBoom: id=" << static_cast<int>(subBoom.elementNumber) << std::endl;
 				for (const auto &section : subBoom.sections)
 				{
 					numberOfSections++;
 					sectionElementNumbers.push_back(section.elementNumber);
-					std::cout << "Section: id=" << static_cast<int>(section.elementNumber) << std::endl;
-					std::cout << "X Offset: " << section.xOffset_mm.get() << std::endl;
-					std::cout << "Y Offset: " << section.yOffset_mm.get() << std::endl;
-					std::cout << "Z Offset: " << section.zOffset_mm.get() << std::endl;
-					std::cout << "Width: " << section.width_mm.get() << std::endl;
+					geometryRows.push_back({ section.elementNumber, boom.elementNumber, std::to_string(subBoom.elementNumber), section });
 				}
 			}
 			for (const auto &section : boom.sections)
 			{
 				numberOfSections++;
 				sectionElementNumbers.push_back(section.elementNumber);
-				std::cout << "Section: id=" << static_cast<int>(section.elementNumber) << std::endl;
-				std::cout << "X Offset: " << section.xOffset_mm.get() << std::endl;
-				std::cout << "Y Offset: " << section.yOffset_mm.get() << std::endl;
-				std::cout << "Z Offset: " << section.zOffset_mm.get() << std::endl;
-				std::cout << "Width: " << section.width_mm.get() << std::endl;
+				geometryRows.push_back({ section.elementNumber, boom.elementNumber, "-", section });
+			}
+		}
+
+		// Values missing from the DDOP are shown as "-" rather than a misleading 0
+		auto mm = [](const isobus::DeviceDescriptorObjectPoolHelper::ObjectPoolValue &value) {
+			return value.exists() ? std::to_string(value.get()) : std::string("-");
+		};
+		log() << "Implement geometry: " << implement.booms.size() << " boom(s), " << static_cast<int>(numberOfSections) << " section(s)" << std::endl;
+		if (!geometryRows.empty())
+		{
+			auto printRow = [](const std::string &idx, const std::string &element, const std::string &boom, const std::string &subBoom, const std::string &x, const std::string &y, const std::string &z, const std::string &width) {
+				log() << std::right << std::setw(4) << idx << "  " << std::setw(7) << element << "  " << std::setw(4) << boom << "  " << std::setw(7) << subBoom
+				      << "  " << std::setw(7) << x << "  " << std::setw(7) << y << "  " << std::setw(7) << z << "  " << std::setw(10) << width << std::endl;
+			};
+			printRow("Idx", "Element", "Boom", "SubBoom", "X (mm)", "Y (mm)", "Z (mm)", "Width (mm)");
+			printRow("----", "-------", "----", "-------", "-------", "-------", "-------", "----------");
+			for (std::size_t i = 0; i < geometryRows.size(); i++)
+			{
+				const auto &row = geometryRows[i];
+				printRow(std::to_string(i), std::to_string(row.elementNumber), std::to_string(row.boomElement), row.subBoomElement, mm(row.section.xOffset_mm), mm(row.section.yOffset_mm), mm(row.section.zOffset_mm), mm(row.section.width_mm));
 			}
 		}
 		state.set_number_of_sections(numberOfSections);
@@ -528,7 +556,7 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 			                 << " for " << static_cast<int>(numberOfSections) << " sections." << std::endl;
 			for (std::uint8_t i = 0; i < numberOfSections; i++)
 			{
-				std::cout << "  Section " << static_cast<int>(i) << " -> element " << sectionElementNumbers[i] << std::endl;
+				log() << "  Section " << static_cast<int>(i) << " -> element " << sectionElementNumbers[i] << std::endl;
 			}
 		}
 		else
@@ -595,24 +623,23 @@ void MyTCServer::identify_task_controller(std::uint8_t tcNumber)
 	//
 	// Since this is a console application without GUI, we log to console
 	// In a GUI application, this would display the TC number visually
-	auto timestamp = get_timestamp();
-	std::cout << "[" << timestamp << "] ========================================" << std::endl;
-	std::cout << "[" << timestamp << "] === TC NUMBER " << static_cast<int>(tcNumber) << " IDENTIFIED ===" << std::endl;
-	std::cout << "[" << timestamp << "] ========================================" << std::endl;
+	log() << "========================================" << std::endl;
+	log() << "=== TC NUMBER " << static_cast<int>(tcNumber) << " IDENTIFIED ===" << std::endl;
+	log() << "========================================" << std::endl;
 }
 
 void MyTCServer::on_client_timeout(std::shared_ptr<isobus::ControlFunction> partner)
 {
 	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
 	// Cleanup the client state
-	std::cout << "[" << get_timestamp() << "] [TC Server] Client " << partner->get_NAME().get_full_name() << " has timed out!" << std::endl;
+	log("TC Server") << "Client " << partner->get_NAME().get_full_name() << " has timed out!" << std::endl;
 	clients.erase(partner);
 }
 
 void MyTCServer::on_client_version_received(std::shared_ptr<isobus::ControlFunction> clientControlFunction, std::uint8_t version)
 {
-	std::cout << "[" << get_timestamp() << "] [TC Server] Client " << clientControlFunction->get_NAME().get_full_name()
-	          << " reported TC version " << static_cast<int>(version) << std::endl;
+	log("TC Server") << "Client " << clientControlFunction->get_NAME().get_full_name()
+	                 << " reported TC version " << static_cast<int>(version) << std::endl;
 }
 
 void MyTCServer::on_process_data_acknowledge(std::shared_ptr<isobus::ControlFunction> partner,
@@ -622,7 +649,7 @@ void MyTCServer::on_process_data_acknowledge(std::shared_ptr<isobus::ControlFunc
                                              ProcessDataCommands processDataCommand)
 {
 	// This callback lets you know when a client sends a process data acknowledge (PDACK) message to you
-	std::cout << "[" << get_timestamp() << "] Received process data acknowledge from client " << int(partner->get_address()) << " for DDI " << dataDescriptionIndex << " element " << elementNumber << " with error codes " << std::bitset<8>(errorCodesFromClient) << " and command " << static_cast<int>(processDataCommand) << std::endl;
+	log() << "Received process data acknowledge from client " << int(partner->get_address()) << " for DDI " << dataDescriptionIndex << " element " << elementNumber << " with error codes " << std::bitset<8>(errorCodesFromClient) << " and command " << static_cast<int>(processDataCommand) << std::endl;
 }
 
 bool MyTCServer::on_value_command(std::shared_ptr<isobus::ControlFunction> partner,
@@ -695,7 +722,7 @@ bool MyTCServer::on_value_command(std::shared_ptr<isobus::ControlFunction> partn
 bool MyTCServer::store_device_descriptor_object_pool(std::shared_ptr<isobus::ControlFunction> partnerCF, const std::vector<std::uint8_t> &binaryPool, bool appendToPool)
 {
 	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
-	std::cout << "[" << get_timestamp() << "] [TC Server] Client " << partnerCF->get_NAME().get_full_name() << " requesting object pool transfer of " << binaryPool.size() << " bytes" << std::endl;
+	log("TC Server") << "Client " << partnerCF->get_NAME().get_full_name() << " requesting object pool transfer of " << binaryPool.size() << " bytes" << std::endl;
 	if (uploadedPools.find(partnerCF) == uploadedPools.end())
 	{
 		uploadedPools[partnerCF] = std::queue<std::vector<std::uint8_t>>();
@@ -745,14 +772,14 @@ void MyTCServer::request_measurement_commands()
 										// TODO: This is a bit of a hack, but it works for now
 										client.second.set_element_number_for_ddi(static_cast<isobus::DataDescriptionIndex>(processDataObject->get_ddi()), elementObject->get_element_number());
 										const auto &entryB = isobus::DataDictionary::get_entry(processDataObject->get_ddi());
-										std::cout << "Mapped DDI " << processDataObject->get_ddi() << " (" << entryB.to_string() << ") to element "
-										          << elementObject->get_element_number() << std::endl;
+										log() << "Mapped DDI " << processDataObject->get_ddi() << " (" << entryB.to_string() << ") to element "
+										      << elementObject->get_element_number() << std::endl;
 
 										if (processDataObject->has_trigger_method(isobus::task_controller_object::DeviceProcessDataObject::AvailableTriggerMethods::OnChange))
 										{
 											send_change_threshold_measurement_command(client.first, processDataObject->get_ddi(), elementObject->get_element_number(), 1);
-											std::cout << "Subscribed (OnChange) to DDI " << processDataObject->get_ddi() << " (" << entryB.to_string() << ") for element "
-											          << elementObject->get_element_number() << std::endl;
+											log() << "Subscribed (OnChange) to DDI " << processDataObject->get_ddi() << " (" << entryB.to_string() << ") for element "
+											      << elementObject->get_element_number() << std::endl;
 										}
 										if (processDataObject->has_trigger_method(isobus::task_controller_object::DeviceProcessDataObject::AvailableTriggerMethods::TimeInterval))
 										{
@@ -796,13 +823,13 @@ void MyTCServer::request_measurement_commands()
 										if (processDataObject->has_trigger_method(isobus::task_controller_object::DeviceProcessDataObject::AvailableTriggerMethods::OnChange))
 										{
 											send_change_threshold_measurement_command(client.first, processDataObject->get_ddi(), elementObject->get_element_number(), 1);
-											std::cout << "Subscribed (OnChange) to DDI " << processDataObject->get_ddi() << " (" << entryB.to_string() << ") for element "
-											          << elementObject->get_element_number() << std::endl;
+											log() << "Subscribed (OnChange) to DDI " << processDataObject->get_ddi() << " (" << entryB.to_string() << ") for element "
+											      << elementObject->get_element_number() << std::endl;
 										}
 										else
 										{
-											std::cout << "Mapped (no OnChange) DDI " << processDataObject->get_ddi() << " (" << entryB.to_string() << ") to element "
-											          << elementObject->get_element_number() << std::endl;
+											log() << "Mapped (no OnChange) DDI " << processDataObject->get_ddi() << " (" << entryB.to_string() << ") to element "
+											      << elementObject->get_element_number() << std::endl;
 										}
 									}
 								}
@@ -812,7 +839,38 @@ void MyTCServer::request_measurement_commands()
 				}
 			}
 
-			std::cout << "[" << get_timestamp() << "] Measurement commands sent." << std::endl;
+			// Map GNSS quality (DDI 514) so send_gnss_quality() knows which element to address.
+			// Mapping only: this is a value the TC pushes to the implement, not one to subscribe to.
+			for (std::uint32_t i = 0; i < client.second.get_pool().size(); i++)
+			{
+				auto object = client.second.get_pool().get_object_by_index(i);
+				if (!object || object->get_object_type() != isobus::task_controller_object::ObjectTypes::DeviceProcessData)
+				{
+					continue;
+				}
+
+				auto processDataObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceProcessDataObject>(object);
+				if (!processDataObject || processDataObject->get_ddi() != static_cast<std::uint16_t>(isobus::DataDescriptionIndex::GNSSQuality))
+				{
+					continue;
+				}
+
+				if (!processDataObject->has_property(isobus::task_controller_object::DeviceProcessDataObject::PropertiesBit::Settable))
+				{
+					log() << "DDI " << processDataObject->get_ddi() << " (GNSS Quality) is declared but not settable, so it is not sent" << std::endl;
+					continue;
+				}
+
+				std::uint16_t elementNumber = 0;
+				if (find_owning_element_number(client.second.get_pool(), *processDataObject, elementNumber))
+				{
+					client.second.set_element_number_for_ddi(isobus::DataDescriptionIndex::GNSSQuality, elementNumber);
+					log() << "Mapped DDI " << processDataObject->get_ddi() << " (GNSS Quality) to element "
+					      << elementNumber << std::endl;
+				}
+			}
+
+			log() << "Measurement commands sent." << std::endl;
 			client.second.mark_measurement_commands_sent();
 		}
 	}
@@ -884,6 +942,19 @@ void MyTCServer::update_section_control_enabled(bool enabled)
 	}
 }
 
+void MyTCServer::send_gnss_quality(std::uint8_t quality)
+{
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
+	constexpr auto DDI = isobus::DataDescriptionIndex::GNSSQuality;
+	for (auto &client : clients)
+	{
+		if (client.second.has_element_number_for_ddi(DDI))
+		{
+			send_set_value(client.first, static_cast<std::uint16_t>(DDI), client.second.get_element_number_for_ddi(DDI), static_cast<std::int32_t>(quality));
+		}
+	}
+}
+
 void MyTCServer::send_section_setpoint_states(std::shared_ptr<isobus::ControlFunction> client, std::uint8_t ddiOffset)
 {
 	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
@@ -911,7 +982,7 @@ void MyTCServer::send_section_setpoint_states(std::shared_ptr<isobus::ControlFun
 		}
 		else if (!clients[client].has_element_number_for_ddi(isobus::DataDescriptionIndex::SetpointWorkState))
 		{
-			std::cout << "[" << get_timestamp() << "] [TC Server] DDI 289 (SetpointWorkState) not available!" << std::endl;
+			log("TC Server") << "DDI 289 (SetpointWorkState) not available!" << std::endl;
 		}
 		return; // Modern condensed path complete
 	}
@@ -923,7 +994,7 @@ void MyTCServer::send_section_setpoint_states(std::shared_ptr<isobus::ControlFun
 		}
 		else
 		{
-			std::cout << "[" << get_timestamp() << "] [TC Server] Legacy DDI " << ddiTargetLegacy << " (ActualCondensedWorkState) is not settable!" << std::endl;
+			log("TC Server") << "Legacy DDI " << ddiTargetLegacy << " (ActualCondensedWorkState) is not settable!" << std::endl;
 		}
 		return; // Legacy condensed path complete
 	}
@@ -963,8 +1034,8 @@ void MyTCServer::send_section_setpoint_states(std::shared_ptr<isobus::ControlFun
 	}
 	else
 	{
-		std::cout << "[" << get_timestamp() << "] [TC Server] No supported method to send section setpoint states! "
-		          << "Device has no DDI 290, 161 (settable), or 141 (settable)." << std::endl;
+		log("TC Server") << "No supported method to send section setpoint states! "
+		                 << "Device has no DDI 290, 161 (settable), or 141 (settable)." << std::endl;
 	}
 }
 

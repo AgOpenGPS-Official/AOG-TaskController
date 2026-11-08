@@ -102,7 +102,7 @@ static void log_broadcast_repetition_rate(
 // Enumerate and log all Control Functions on the bus
 static void enumerate_bus_control_functions(const std::string &context)
 {
-	std::cout << "\n";
+	async_log::stream() << "\n";
 	log("Bus CFs") << context << std::endl;
 	log("Bus CFs") << "==================================================" << std::endl;
 	log("Bus CFs") << "Control Functions on ISOBUS:" << std::endl;
@@ -144,7 +144,7 @@ static void enumerate_bus_control_functions(const std::string &context)
 
 	log("Bus CFs") << "==================================================" << std::endl;
 	log("Bus CFs") << "Total CFs found: " << cfCount << std::endl;
-	std::cout << "\n";
+	async_log::stream() << "\n";
 }
 
 // Check for TC address conflicts and log warning if we couldn't claim preferred address
@@ -172,7 +172,7 @@ static bool check_tc_address_conflict(const std::shared_ptr<isobus::InternalCont
 					// Periodic warning every 30 seconds. Conflict detection itself is not throttled.
 					if (isobus::SystemTiming::time_expired_ms(lastWarnTime, 30000))
 					{
-						std::cout << "\n";
+						async_log::stream() << "\n";
 						log("WARN") << "==================================================" << std::endl;
 						log("WARN") << "TC ADDRESS CONFLICT - Another TC at preferred address " << static_cast<int>(PREFERRED_TC_ADDRESS) << std::endl;
 						log("WARN") << "Conflicting TC: Mfg=" << otherName.get_manufacturer_code()
@@ -182,7 +182,7 @@ static bool check_tc_address_conflict(const std::shared_ptr<isobus::InternalCont
 						            << ", Func Inst=" << static_cast<int>(otherName.get_function_instance()) << std::endl;
 						log("WARN") << "Our TC using address: " << static_cast<int>(ourTC->get_address()) << std::endl;
 						log("WARN") << "==================================================" << std::endl;
-						std::cout << "\n";
+						async_log::stream() << "\n";
 						lastWarnTime = isobus::SystemTiming::get_timestamp_ms();
 					}
 					break;
@@ -252,7 +252,8 @@ bool Application::setup_can_hardware()
 
 	if ((!isobus::CANHardwareInterface::start()) || (!canDriver->get_is_valid()))
 	{
-		log() << "Failed to start CAN hardware interface." << std::endl;
+		const std::string reason = canDriver->get_last_error();
+		log() << "Failed to start CAN hardware interface." << (reason.empty() ? "" : " " + reason) << std::endl;
 		return false;
 	}
 
@@ -524,6 +525,39 @@ void Application::setup_udp_connections()
 	static std::uint32_t lastXteTransmit = 0;
 
 	auto packetHandler = [this](std::uint8_t src, std::uint8_t pgn, std::span<std::uint8_t> data) {
+		// PGN 0xD6 (214) — GPS/IMU data from AOG (src=0x7C, frame [0x80,0x81,0x7C,0xD6,...]).
+		// Only the fix-quality byte is consumed today; the rest of the frame (position,
+		// heading, speed, etc.) is not yet parsed by this TC.
+		static constexpr std::size_t GNSS_FIX_QUALITY_OFFSET = 38; // frame byte 43
+		static constexpr std::size_t MIN_0xD6_PAYLOAD_SIZE = GNSS_FIX_QUALITY_OFFSET + 1;
+		static constexpr std::uint8_t GNSS_QUALITY_MAX = 8; // SimulateMode
+		if (src == 0x7C && pgn == 0xD6)
+		{
+			static std::uint8_t lastLoggedQuality = 0xFF;
+			if (data.size() < MIN_0xD6_PAYLOAD_SIZE)
+			{
+				log("AOG") << "PGN 0xD6 received but too short for fix quality (len="
+				           << data.size() << ")" << std::endl;
+				return;
+			}
+
+			std::uint8_t quality = data[GNSS_FIX_QUALITY_OFFSET];
+			// AOG fix values follow the NMEA 2000 GNSS Method enumeration that DDI 514 uses: 0=invalid, 1=GPS,
+			// 2=DGPS, 3=PPS, 4=RTK Fix, 5=Float, 6=Estimated, 7=Manual, 8=Simulated. Forward 0-8 unchanged so
+			// the implement sees the real source; anything above 8 is not a defined value, so map it to the
+			// weakest real fix (1=GNSS) rather than 0=No GPS, which would falsely claim there is no position.
+			gnssFixQuality = (quality <= GNSS_QUALITY_MAX) ? quality : 1;
+			lastGnssQualityMs = isobus::SystemTiming::get_timestamp_ms();
+
+			if (quality != lastLoggedQuality)
+			{
+				log("GNSS") << "fix quality byte=" << static_cast<int>(quality)
+				            << " -> DDI514=" << static_cast<int>(gnssFixQuality) << std::endl;
+				lastLoggedQuality = quality;
+			}
+			return;
+		}
+
 		if (src != 0x7F)
 		{
 			return;
@@ -539,6 +573,12 @@ void Application::setup_udp_connections()
 				{
 					sectionStates.push_back(data[j] & (1 << i));
 				}
+			}
+			lastSectionDemandMs = lastAogPacketMs;
+			if (sectionStates != sectionDemand)
+			{
+				sectionDemand = sectionStates;
+				sectionDemandChangesSinceLog++;
 			}
 			tcServer->update_section_states(sectionStates);
 		}
@@ -629,21 +669,54 @@ void Application::setup_udp_connections()
 	log() << "UDP connections opened." << std::endl;
 }
 
+namespace
+{
+	// The main loop calls Application::update() as fast as it can (see main.cpp), and every
+	// periodic transmit in this function — TECU speed, TC status, FEE6, ... — depends on that
+	// happening often enough. There's no dedicated timer for any of them; they're all paced by
+	// however quickly this one function keeps getting called. If something upstream in this same
+	// call chain (or the logging it does) ever blocks, everything downstream of it here falls
+	// behind together, silently, with nothing in the CAN traces to explain why. This just makes
+	// that visible: warn once an iteration gap exceeds a threshold, rather than only ever finding
+	// out from a field report months later.
+	void warn_if_late(const char *label, std::uint32_t &lastCallMs, std::uint32_t thresholdMs)
+	{
+		std::uint32_t now = isobus::SystemTiming::get_timestamp_ms();
+		if ((0 != lastCallMs) && isobus::SystemTiming::time_expired_ms(lastCallMs, thresholdMs))
+		{
+			log("Timing") << label << " was late by " << (now - lastCallMs - thresholdMs)
+			              << " ms (gap " << (now - lastCallMs) << " ms, threshold " << thresholdMs << " ms)" << std::endl;
+		}
+		lastCallMs = now;
+	}
+}
+
 bool Application::update()
 {
 	static std::uint32_t lastHeartbeatTransmit = 0;
+	static std::uint32_t lastUpdateCallMs = 0;
+	static std::uint32_t lastSpeedUpdateCallMs = 0;
+	static std::uint32_t lastTcServerUpdateCallMs = 0;
+
+	// A gap here means Application::update() itself wasn't called often enough — the
+	// whole chain below (TC server, TECU, speed messages, NMEA2000) shares this one call.
+	warn_if_late("Application::update()", lastUpdateCallMs, 200);
 
 	udpConnections->handle_address_detection();
 	udpConnections->handle_incoming_packets();
 
 	tcServer->request_measurement_commands();
+	warn_if_late("tcServer->update()", lastTcServerUpdateCallMs, 200);
 	tcServer->update();
 	if (tcFunctionalities)
 		tcFunctionalities->update();
 	if (tecuFunctionalities)
 		tecuFunctionalities->update();
 	if (speedMessagesInterface)
+	{
+		warn_if_late("speedMessagesInterface->update()", lastSpeedUpdateCallMs, 200);
 		speedMessagesInterface->update();
+	}
 	if (nmea2000MessageInterface)
 		nmea2000MessageInterface->update();
 
@@ -661,6 +734,14 @@ bool Application::update()
 
 	if (vtClient)
 		update_vt_client();
+
+	log_section_demand();
+	static std::uint32_t lastSectionDemandCheckMs = 0;
+	if (isobus::SystemTiming::time_expired_ms(lastSectionDemandCheckMs, 1000))
+	{
+		check_section_demand();
+		lastSectionDemandCheckMs = isobus::SystemTiming::get_timestamp_ms();
+	}
 
 	// Check for TC address conflicts every 15 seconds
 	static std::uint32_t lastConflictCheck = 0;
@@ -794,6 +875,20 @@ bool Application::update()
 	}
 
 	// Send Task Controller Status message every 2 seconds (ISO 11783-10 B.8.1)
+	{
+		static std::uint32_t lastLateWarningMs = 0;
+		if ((0 != lastTCStatusTransmit) && tcCF && tcCF->get_address_valid() &&
+		    isobus::SystemTiming::time_expired_ms(lastTCStatusTransmit, 2500) &&
+		    isobus::SystemTiming::time_expired_ms(lastLateWarningMs, 2500))
+		{
+			// The 2000ms trigger below already fired late — Application::update() (or something
+			// ahead of it in that call chain) wasn't reached often enough to catch it on time.
+			// Re-warn at most every 2.5s while this persists, rather than once per ~1ms tick.
+			log("Timing") << "TC Status transmit is late by "
+			              << (isobus::SystemTiming::get_timestamp_ms() - lastTCStatusTransmit - 2000) << " ms" << std::endl;
+			lastLateWarningMs = isobus::SystemTiming::get_timestamp_ms();
+		}
+	}
 	if (isobus::SystemTiming::time_expired_ms(lastTCStatusTransmit, 2000) && tcCF && tcCF->get_address_valid())
 	{
 		static bool firstStatusSent = false;
@@ -803,6 +898,26 @@ bool Application::update()
 			log("TC Status") << "First TC Status message sent (PGN 0xCB00)" << std::endl;
 			firstStatusSent = true;
 		}
+	}
+
+	// Send GNSS quality (DDI 514) to implements every 250 ms
+	static std::uint32_t lastGnssSendMs = 0;
+	if (tcServer && isobus::SystemTiming::time_expired_ms(lastGnssSendMs, 250))
+	{
+		// PGN 0xD6 is an independently-timed stream, so the two ways of not having a fresh value mean different things.
+		// Never received: AgIO isn't forwarding it to 8888, or AOG runs in Simulator mode, which doesn't produce it.
+		// Fall back to 1 (weakest real GNSS fix), not 0 (No GNSS): some implements gate TRACK/section control on GNSS
+		// quality being non-zero. Received and then stale: the NMEA stream itself stopped (e.g. the receiver cable came
+		// loose), so send 0 rather than claim a fix the tractor no longer has. This also applies when switching from a
+		// real receiver to Simulator mid-session, until the TC is restarted.
+		std::uint8_t quality = 1;
+		if (lastGnssQualityMs != 0)
+		{
+			const bool gnssQualityFresh = !isobus::SystemTiming::time_expired_ms(lastGnssQualityMs, GNSS_QUALITY_TIMEOUT_MS);
+			quality = gnssQualityFresh ? gnssFixQuality : 0;
+		}
+		tcServer->send_gnss_quality(quality);
+		lastGnssSendMs = isobus::SystemTiming::get_timestamp_ms();
 	}
 
 	return true;
@@ -916,6 +1031,126 @@ Application::ImplementDetails Application::derive_implement_details(ClientState 
 	}
 
 	return details;
+}
+
+std::string Application::describe_section_demand(const std::vector<bool> &demand, std::uint8_t numberOfSections)
+{
+	// Sections that are on, as ranges: "4 on: 3-6"
+	std::ostringstream ranges;
+	std::size_t onCount = 0;
+	std::size_t count = (0 == numberOfSections) ? demand.size() : std::min<std::size_t>(numberOfSections, demand.size());
+	for (std::size_t i = 0; i < count; i++)
+	{
+		if (!demand[i] || ((i > 0) && demand[i - 1]))
+		{
+			onCount += demand[i] ? 1 : 0;
+			continue;
+		}
+		std::size_t last = i;
+		while ((last + 1 < count) && demand[last + 1])
+		{
+			last++;
+		}
+		ranges << ((0 == onCount) ? "" : ",") << (i + 1);
+		if (last > i)
+		{
+			ranges << "-" << (last + 1);
+		}
+		onCount++;
+	}
+	if (0 == onCount)
+	{
+		return "all off";
+	}
+	return std::to_string(onCount) + " on: " + ranges.str();
+}
+
+void Application::log_section_demand()
+{
+	if ((0 == sectionDemandChangesSinceLog) ||
+	    !isobus::SystemTiming::time_expired_ms(lastSectionDemandLogMs, SECTION_DEMAND_LOG_INTERVAL_MS))
+	{
+		return;
+	}
+
+	if (sectionDemand != loggedSectionDemand)
+	{
+		std::uint8_t numberOfSections = 0;
+		for (auto &client : tcServer->get_clients())
+		{
+			numberOfSections = std::max(numberOfSections, client.second.get_number_of_sections());
+		}
+
+		std::ostream &line = log("AOG");
+		line << "Section demand (PGN 229): " << describe_section_demand(sectionDemand, numberOfSections);
+		if (sectionDemandChangesSinceLog > 1)
+		{
+			line << " (" << (sectionDemandChangesSinceLog - 1) << " intermediate changes not logged)";
+		}
+		line << std::endl;
+		loggedSectionDemand = sectionDemand;
+	}
+	sectionDemandChangesSinceLog = 0;
+	lastSectionDemandLogMs = isobus::SystemTiming::get_timestamp_ms();
+}
+
+void Application::check_section_demand()
+{
+	const bool arriving = (0 != lastSectionDemandMs) && !isobus::SystemTiming::time_expired_ms(lastSectionDemandMs, SECTION_DEMAND_TIMEOUT_MS);
+	if (arriving != sectionDemandArriving)
+	{
+		sectionDemandArriving = arriving;
+		log("AOG") << (arriving ? "Section demand (PGN 229) started arriving"
+		                        : "Section demand (PGN 229) stopped arriving (AOG sends it only while a field is open)")
+		           << std::endl;
+	}
+
+	const std::uint32_t nowMs = isobus::SystemTiming::get_timestamp_ms();
+	for (auto &client : tcServer->get_clients())
+	{
+		auto &state = client.second;
+		const std::uint64_t name = client.first->get_NAME().get_full_name();
+		std::vector<bool> actual;
+		bool demanded = false;
+		for (std::uint8_t i = 0; i < state.get_number_of_sections(); i++)
+		{
+			actual.push_back(SectionState::ON == state.get_section_actual_state(i));
+			demanded = demanded || (arriving && (i < sectionDemand.size()) && sectionDemand[i]);
+		}
+		const bool working = (actual.end() != std::find(actual.begin(), actual.end(), true));
+
+		const std::string clientText = format_hex_address(client.first->get_address());
+
+		if (!state.is_section_control_enabled() || !working || demanded)
+		{
+			auto tracked = workingWithoutDemand.find(name);
+			if (workingWithoutDemand.end() != tracked)
+			{
+				if (tracked->second.warned)
+				{
+					log("AOG") << "Client " << clientText << " sections follow AOG's section control again" << std::endl;
+				}
+				workingWithoutDemand.erase(tracked);
+			}
+			continue;
+		}
+
+		auto &tracked = workingWithoutDemand.try_emplace(name, WorkingWithoutDemand{ nowMs, false }).first->second;
+		if (!tracked.warned && ((nowMs - tracked.sinceMs) >= WORKING_WITHOUT_DEMAND_WARNING_MS))
+		{
+			tracked.warned = true;
+			log("AOG") << "WARNING: client " << clientText << " has been in automatic and working for "
+			           << (WORKING_WITHOUT_DEMAND_WARNING_MS / 1000) << " s (actual: "
+			           << describe_section_demand(actual, state.get_number_of_sections()) << ") but AOG "
+			           << (arriving ? "asks for no sections. Is AOG's section Auto button on?"
+			                        : "sends no section states. Is a field open in AOG?")
+			           << std::endl;
+			send_hardware_message(arriving ? "Implement working, AOG sections off: turn on section Auto"
+			                               : "Implement working but no field is open in AOG",
+			                      20,
+			                      HW_MSG_ALERT);
+		}
+	}
 }
 
 void Application::send_task_controller_status_message()
@@ -1267,7 +1502,10 @@ void Application::update_vt_status_strings(bool aogConnected)
 {
 	lastVtStatusUpdateMs = isobus::SystemTiming::get_timestamp_ms();
 
-	send_vt_string_if_changed(VTWorkingSetStatusLabel, "AOG TC IP");
+	// Change String Value must not exceed the length declared for the object in the pool
+	// (AOG_TC.iop); the VT rejects longer strings with "Invalid string length". Keep every
+	// literal below within its object's declared length.
+	send_vt_string_if_changed(VTWorkingSetStatusLabel, "AOG IP"); // pool length 6
 	send_vt_string_if_changed(VTAogIPStr, udpConnections->get_bound_ip_address());
 	const std::string packetAge = (lastAogPacketMs == 0) ? "never" : (std::to_string(isobus::SystemTiming::get_time_elapsed_ms(lastAogPacketMs) / 1000) + " s");
 	const bool taskRunning = tcServer->get_task_totals_active();
@@ -1340,10 +1578,10 @@ void Application::update_vt_status_strings(bool aogConnected)
 	                 << "AOG packet age   " << packetAge;
 	send_vt_string_if_changed(VTControlFunctionsStr, mainSystemStatus.str());
 	send_vt_string_if_changed(ConfigHydliftLabel, "Hydlift: not impl.");
-	send_vt_string_if_changed(ConfigNmeaReadLabel, "NMEA Read: not impl.");
+	send_vt_string_if_changed(ConfigNmeaReadLabel, "NMEA Read: N/A"); // pool length 14
 	send_vt_string_if_changed(
-	  ConfigNmeaSendLabel,
-	  nmea2000MessageInterface ? (std::string("NMEA Send: ") + (settings->is_nmea_send_enabled() ? "ON" : "OFF")) : "NMEA Send: TECU req");
+	  ConfigNmeaSendLabel, // pool length 14
+	  nmea2000MessageInterface ? (std::string("NMEA Send: ") + (settings->is_nmea_send_enabled() ? "ON" : "OFF")) : "NMEA Send: N/A");
 	send_vt_string_if_changed(
 	  ConfigTecuLabel,
 	  std::string("TECU: ") + (settings->is_tecu_enabled() ? "ON" : "OFF") + " (restart req)");
@@ -1426,6 +1664,14 @@ void Application::stop()
 	{
 		vtClient->terminate();
 	}
-	tcServer->terminate();
-	isobus::CANHardwareInterface::stop();
+	if (tcServer)
+	{
+		tcServer->terminate();
+	}
+	// start() also starts the update thread when the driver fails to open, so check is_running()
+	// rather than whether start() succeeded.
+	if (isobus::CANHardwareInterface::is_running())
+	{
+		isobus::CANHardwareInterface::stop();
+	}
 }

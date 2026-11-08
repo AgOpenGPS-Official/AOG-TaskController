@@ -10,6 +10,7 @@
 #include "udp_connections.hpp"
 #include <cassert>
 #include <iostream>
+#include "logging_utils.hpp"
 
 #if !defined(_WIN32)
 #include <arpa/inet.h>
@@ -199,7 +200,7 @@ void UdpConnections::handle_incoming_packets()
 			else
 			{
 				// Unknown start of message, reset buffer
-				std::cout << "Unknown start of message: 0x" << std::hex << start << std::dec << std::endl;
+				log() << "Unknown start of message: 0x" << std::hex << start << std::dec << std::endl;
 				rxIndex = 0;
 			}
 
@@ -217,7 +218,7 @@ void UdpConnections::handle_incoming_packets()
 	}
 	else
 	{
-		std::cout << "Error while receiving data: " << error_code.message() << std::endl;
+		log() << "Error while receiving data: " << error_code.message() << std::endl;
 	}
 }
 
@@ -287,7 +288,7 @@ void UdpConnections::handle_address_detection()
 			else
 			{
 				// Unknown start of message, reset buffer
-				std::cout << "Unknown start of message: 0x" << std::hex << start << std::dec << std::endl;
+				log() << "Unknown start of message: 0x" << std::hex << start << std::dec << std::endl;
 				rxIndex = 0;
 			}
 
@@ -305,7 +306,7 @@ void UdpConnections::handle_address_detection()
 	}
 	else
 	{
-		std::cout << "Error while receiving data: " << error_code.message() << std::endl;
+		log() << "Error while receiving data: " << error_code.message() << std::endl;
 	}
 }
 
