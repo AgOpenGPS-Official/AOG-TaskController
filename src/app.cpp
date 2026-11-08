@@ -537,6 +537,13 @@ void Application::setup_udp_connections()
 				on_aog_field_opened("started sending section states (PGN 229)");
 			}
 		}
+		else if (pgn == 0xF1 && !data.empty()) // 241 - Section Control
+		{
+			lastAogPacketMs = isobus::SystemTiming::get_timestamp_ms();
+			std::uint8_t sectionControlState = data[0];
+			log() << "Received request from AOG to change section control state to " << (sectionControlState == 1 ? "enabled" : "disabled") << std::endl;
+			tcServer->update_section_control_enabled(sectionControlState == 1);
+		}
 		else if (pgn == 0xF3) // 243 - Field name, empty when the field is closed
 		{
 			lastAogPacketMs = isobus::SystemTiming::get_timestamp_ms();
@@ -550,13 +557,6 @@ void Application::setup_udp_connections()
 				log("Field") << "AOG opened field '" << fieldName << "'" << std::endl;
 				on_aog_field_opened("opened field '" + fieldName + "'");
 			}
-		}
-		else if (pgn == 0xF1 && !data.empty()) // 241 - Section Control
-		{
-			lastAogPacketMs = isobus::SystemTiming::get_timestamp_ms();
-			std::uint8_t sectionControlState = data[0];
-			log() << "Received request from AOG to change section control state to " << (sectionControlState == 1 ? "enabled" : "disabled") << std::endl;
-			tcServer->update_section_control_enabled(sectionControlState == 1);
 		}
 		else if (pgn == 0xF2 && data.size() >= 6) // Process Data
 		{
