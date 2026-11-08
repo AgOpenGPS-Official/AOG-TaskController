@@ -322,19 +322,21 @@ bool Application::setup_control_functions()
 	ourNAME.set_device_class(0);
 	ourNAME.set_identity_number(20);
 	ourNAME.set_ecu_instance(0);
-	ourNAME.set_function_instance(0); // TC #1. If you want to change the TC number, change this.
+	ourNAME.set_function_instance(0);
 	ourNAME.set_device_class_instance(0);
 	ourNAME.set_manufacturer_code(1407);
 
 	isobus::NAME tcNAME = ourNAME;
 	tcNAME.set_function_code(static_cast<std::uint8_t>(isobus::NAME::Function::TaskController));
+	// ISO 11783-10: the TC number is the TC's NAME function instance + 1 (TC #1 = instance 0)
+	tcNAME.set_function_instance(static_cast<std::uint8_t>(settings->get_tc_number() - 1));
 
 	isobus::NAME tecuNAME = ourNAME;
 	tecuNAME.set_function_code(static_cast<std::uint8_t>(isobus::NAME::Function::TractorECU));
 	tecuNAME.set_arbitrary_address_capable(false); // TECU address is fixed
 	tecuNAME.set_ecu_instance(0);
 
-	log("Init") << "Creating Task Controller control function..." << std::endl;
+	log("Init") << "Creating Task Controller control function (TC number " << static_cast<int>(settings->get_tc_number()) << ")..." << std::endl;
 	tcCF = isobus::CANNetworkManager::CANNetwork.create_internal_control_function(tcNAME, 0, isobus::preferred_addresses::IndustryGroup2::TaskController_MappingComputer); // The preferred address for a TC is defined in ISO 11783
 
 	// Wait for TC address claim with bounded wait loop (no async to avoid blocking on destruction)

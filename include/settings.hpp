@@ -125,6 +125,20 @@ public:
 	bool set_tc_version(std::uint8_t version, bool save = true);
 
 	/**
+	 * @brief Get the configured TC number (ISO 11783-10: function instance + 1)
+	 * @return The TC number (1-32, default 1)
+	 */
+	std::uint8_t get_tc_number() const;
+
+	/**
+	 * @brief Set the TC number. Takes effect after a restart, since it is part of the TC's NAME.
+	 * @param number The TC number (1-32); out of range sets the default
+	 * @param save Whether or not to save the settings to file
+	 * @return True if the setting was set successfully, false otherwise
+	 */
+	bool set_tc_number(std::uint8_t number, bool save = true);
+
+	/**
 	 * @brief Get the configured language code
 	 * @return The language code (default "en")
 	 */
@@ -176,6 +190,8 @@ private:
 	constexpr static bool DEFAULT_SECTION_CONTROL_ON_CONNECT = true;
 	constexpr static bool DEFAULT_SECTION_CONTROL_ON_FIELD_OPEN = true;
 	constexpr static std::uint8_t DEFAULT_TC_VERSION = 3; ///< SecondEditionDraft (V3 default for maximum implement compatibility)
+	constexpr static std::uint8_t DEFAULT_TC_NUMBER = 1; ///< TC #1 = function instance 0
+	constexpr static std::uint8_t MAX_TC_NUMBER = 32; ///< The NAME function instance has 5 bits (0-31)
 	static const std::string DEFAULT_LANGUAGE_CODE;
 	static const std::string DEFAULT_COUNTRY_CODE;
 	std::array<std::uint8_t, 3> configuredSubnet = DEFAULT_SUBNET;
@@ -186,6 +202,7 @@ private:
 	bool sectionControlOnConnect = DEFAULT_SECTION_CONTROL_ON_CONNECT;
 	bool sectionControlOnFieldOpen = DEFAULT_SECTION_CONTROL_ON_FIELD_OPEN;
 	std::uint8_t tcVersion = DEFAULT_TC_VERSION;
+	std::uint8_t tcNumber = DEFAULT_TC_NUMBER;
 	std::string languageCode = DEFAULT_LANGUAGE_CODE;
 	std::string countryCode = DEFAULT_COUNTRY_CODE;
 };
