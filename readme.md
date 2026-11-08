@@ -60,14 +60,11 @@ AOG-TaskController reads its configuration from a `settings.json` file located i
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `subnet` | `int[3]` | `[192, 168, 5]` | LAN prefix used to select the AOG-facing NIC and broadcast address. |
-| `tecuEnabled` | `bool` | `true` | `true`: AOG is the tractor's Tractor ECU (address 240), and steps back if the tractor turns out to have one. `false`: use when the tractor already has a TECU; AOG then only adds what it lacks, such as ground-based speed from GNSS (ISO 11783-9 §4.4.2.1). A change made from the VT takes effect after restart. |
-| `nmeaSendEnabled` | `bool` | `true` | Enables cyclic NMEA2000 COG/SOG transmission (not while the tractor's TECU sends it). |
+| `tecuEnabled` | `bool` | `true` | Enables the internal Tractor ECU. Disable it when the tractor already has a TECU. A change made from the VT takes effect after restart. |
+| `nmeaSendEnabled` | `bool` | `true` | Enables cyclic NMEA2000 COG/SOG transmission. Requires `tecuEnabled`. |
 | `aogHeartbeatEnabled` | `bool` | `true` | Sends the 100 ms zero-section heartbeat when no implement is connected. Disable for AgOpenGPS versions before v6.8.2 beta 5. |
 | `vtEnabled` | `bool` | `true` | Enables the ISOBUS Virtual Terminal UI. |
-| `sectionControlOnConnect` | `bool` | `true` | Switches section control on 2 s after an implement connects, as if AOG's SC button was pressed. |
-| `sectionControlOnFieldOpen` | `bool` | `true` | Switches section control on when AOG opens a field (field name, PGN 0xF3, or section states, PGN 229, starting after a gap), as if AOG's SC button was pressed. |
 | `tcVersion` | `integer` | `3` | Task Controller version code, from `0` through `4`; `3` is Second Edition Draft. |
-| `tcNumber` | `integer` | `1` | Task Controller number, `1`–`32` (ISO 11783-10: the TC NAME's function instance + 1). Set `2` or higher when the tractor already has a TC, so implements can tell the two apart. Takes effect after restart. |
 | `languageCode` | `string` | `"en"` | Two-character language code advertised on ISOBUS. |
 | `countryCode` | `string` | `"US"` | Two-character country code advertised on ISOBUS. |
 
@@ -81,7 +78,6 @@ AOG-TaskController reads its configuration from a `settings.json` file located i
   "aogHeartbeatEnabled": true,
   "vtEnabled": true,
   "tcVersion": 3,
-  "tcNumber": 1,
   "languageCode": "en",
   "countryCode": "US"
 }
@@ -99,14 +95,6 @@ The application logs the detected VT version, screen size, softkey dimensions, a
 - **Maximum Booms:** 1
 - **Maximum Sections:** 64 (supports both individual sections and zone-based control)
 - **Section Control:** Generation 1 (TC-SC) with support for DDI 160/161/290
-- **Track Control:** Level 1 — negotiates the level with the implement (DDI 505/506) and switches its track control on and off (DDI 515) together with AgOpenGPS's Auto command
-
-### Guidance data sent to implements
-
-Sent to any implement whose device description declares the DDI as settable.
-
-- **GNSS quality (DDI 514):** AgOpenGPS's GPS fix quality, every 250 ms.
-- **Guidance track (DDI 507-513):** the current track number, the tracks to its left and right, the track spacing, a reference line ID that is unique across fields, and the deviation from the guidance line, every 250 ms while AgOpenGPS has an active track.
 
 ### Guidance data sent to implements
 

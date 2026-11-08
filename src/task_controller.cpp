@@ -10,10 +10,8 @@
 #include "logging_utils.hpp"
 #include "settings.hpp"
 
-#include "isobus/isobus/can_network_manager.hpp"
 #include "isobus/isobus/isobus_device_descriptor_object_pool_helpers.hpp"
 #include "isobus/isobus/isobus_task_controller_server.hpp"
-#include "isobus/utility/system_timing.hpp"
 
 #include <algorithm>
 #include <bitset>
@@ -22,10 +20,6 @@
 #include <iomanip>
 #include <iostream>
 #include <sstream>
-
-/// Delay between pool activation and applying the initial section control state, so the implement
-/// has settled and answered the measurement commands before it is switched to automatic.
-static constexpr std::uint32_t INITIAL_SECTION_CONTROL_DELAY_MS = 2000;
 
 // Sanitize a string for use as a filename by replacing invalid characters with underscores
 static std::string sanitize_filename(const std::string &input)
@@ -111,39 +105,6 @@ static void save_received_ddop(std::uint64_t clientName, const std::vector<std::
 	catch (const std::exception &e)
 	{
 		out << ", failed to save: " << e.what() << std::endl;
-	}
-}
-
-// The DDIs the TC pushes to implements as guidance data.
-static bool is_guidance_data_ddi(std::uint16_t ddi)
-{
-	switch (static_cast<isobus::DataDescriptionIndex>(ddi))
-	{
-		case isobus::DataDescriptionIndex::GNSSQuality:
-		case isobus::DataDescriptionIndex::GuidanceTrackSequenceNumber:
-		case isobus::DataDescriptionIndex::UniqueGuidanceReferenceLineID:
-		case isobus::DataDescriptionIndex::ActualGuidanceTrackNumber:
-		case isobus::DataDescriptionIndex::GuidanceTrackNumberToTheRight:
-		case isobus::DataDescriptionIndex::GuidanceTrackNumberToTheLeft:
-		case isobus::DataDescriptionIndex::GuidanceLineSwathWidth:
-		case isobus::DataDescriptionIndex::GuidanceLineDeviation:
-			return true;
-		default:
-			return false;
-	}
-}
-
-// The DDIs used to negotiate a track control level and report the control state.
-static bool is_track_control_ddi(std::uint16_t ddi)
-{
-	switch (static_cast<isobus::DataDescriptionIndex>(ddi))
-	{
-		case isobus::DataDescriptionIndex::SupportedTrackControlLevels:
-		case isobus::DataDescriptionIndex::SetpointTrackControlLevel:
-		case isobus::DataDescriptionIndex::TrackControlState:
-			return true;
-		default:
-			return false;
 	}
 }
 
@@ -280,22 +241,6 @@ void ClientState::set_section_control_enabled(bool state)
 	isSectionControlEnabled = state;
 }
 
-void ClientState::schedule_initial_section_control(std::uint32_t dueMs)
-{
-	initialSectionControlDueMs = dueMs;
-}
-
-bool ClientState::take_due_initial_section_control(std::uint32_t nowMs)
-{
-	// Signed difference so the comparison survives timestamp wrap-around
-	if (!initialSectionControlDueMs || static_cast<std::int32_t>(nowMs - *initialSectionControlDueMs) < 0)
-	{
-		return false;
-	}
-	initialSectionControlDueMs.reset();
-	return true;
-}
-
 bool ClientState::uses_per_element_control() const
 {
 	return usesPerElementControl;
@@ -383,48 +328,6 @@ bool ClientState::try_get_element_work_state(std::uint16_t elementNumber, bool &
 	return false;
 }
 
-std::uint32_t ClientState::update_guidance_track_sequence(std::int32_t trackNumber, std::uint32_t referenceLineId)
-{
-	// A line switch can land on the same track index, so compare the reference line too.
-	if ((trackNumber != lastSentTrackNumber) || (referenceLineId != lastSentReferenceLineId))
-	{
-		guidanceTrackSequenceNumber++;
-		lastSentTrackNumber = trackNumber;
-		lastSentReferenceLineId = referenceLineId;
-	}
-	return guidanceTrackSequenceNumber;
-}
-
-int ClientState::get_supported_track_control_levels() const
-{
-	return supportedTrackControlLevels;
-}
-
-void ClientState::set_supported_track_control_levels(int levels)
-{
-	supportedTrackControlLevels = levels;
-}
-
-bool ClientState::is_track_control_level_sent() const
-{
-	return trackControlLevelSent;
-}
-
-void ClientState::set_track_control_level_sent(bool sent)
-{
-	trackControlLevelSent = sent;
-}
-
-bool ClientState::is_track_negotiation_complete() const
-{
-	return trackNegotiationComplete;
-}
-
-void ClientState::set_track_negotiation_complete(bool complete)
-{
-	trackNegotiationComplete = complete;
-}
-
 MyTCServer::MyTCServer(std::shared_ptr<isobus::InternalControlFunction> internalControlFunction,
                        isobus::TaskControllerServer::TaskControllerVersion version) :
   TaskControllerServer(internalControlFunction,
@@ -435,77 +338,6 @@ MyTCServer::MyTCServer(std::shared_ptr<isobus::InternalControlFunction> internal
                          .with_implement_section_control(), // We support section control
                        version)
 {
-}
-
-MyTCServer::~MyTCServer()
-{
-	if (staleClientDetectionStarted)
-	{
-		isobus::CANNetworkManager::CANNetwork.remove_any_control_function_parameter_group_number_callback(
-		  static_cast<std::uint32_t>(isobus::CANLibParameterGroupNumber::ProcessData), on_process_data_for_stale_check, this);
-	}
-}
-
-void MyTCServer::start_stale_client_detection()
-{
-	if (!staleClientDetectionStarted)
-	{
-		isobus::CANNetworkManager::CANNetwork.add_any_control_function_parameter_group_number_callback(
-		  static_cast<std::uint32_t>(isobus::CANLibParameterGroupNumber::ProcessData), on_process_data_for_stale_check, this);
-		staleClientDetectionStarted = true;
-	}
-}
-
-void MyTCServer::on_process_data_for_stale_check(const isobus::CANMessage &message, void *parentPointer)
-{
-	// Runs on the CAN thread: only collect here, the active client list is checked on the update() thread
-	auto server = static_cast<MyTCServer *>(parentPointer);
-	if ((nullptr == server) ||
-	    (isobus::CAN_DATA_LENGTH != message.get_data_length()) ||
-	    (nullptr == message.get_source_control_function()) ||
-	    (server->serverControlFunction != message.get_destination_control_function()))
-	{
-		return;
-	}
-
-	// A client sends these only once it considers itself connected
-	const auto command = static_cast<ProcessDataCommands>(message.get_data()[0] & 0x0F);
-	if ((ProcessDataCommands::ClientTask == command) ||
-	    (ProcessDataCommands::Value == command) ||
-	    (ProcessDataCommands::SetValueAndAcknowledge == command))
-	{
-		std::lock_guard<std::mutex> lock(server->staleCandidatesMutex);
-		if (server->staleCandidates.end() == std::find(server->staleCandidates.begin(), server->staleCandidates.end(), message.get_source_control_function()))
-		{
-			server->staleCandidates.push_back(message.get_source_control_function());
-		}
-	}
-}
-
-std::vector<std::shared_ptr<isobus::ControlFunction>> MyTCServer::take_stale_clients()
-{
-	std::vector<std::shared_ptr<isobus::ControlFunction>> candidates;
-	{
-		std::lock_guard<std::mutex> lock(staleCandidatesMutex);
-		candidates.swap(staleCandidates);
-	}
-
-	// update() has processed the stack's queue by now, so a client that just connected is already active
-	std::vector<std::shared_ptr<isobus::ControlFunction>> staleClients;
-	for (const auto &candidate : candidates)
-	{
-		if (candidate->get_address_valid() && (nullptr == get_active_client(candidate)))
-		{
-			staleClients.push_back(candidate);
-		}
-	}
-	return staleClients;
-}
-
-void MyTCServer::clear_stale_clients()
-{
-	std::lock_guard<std::mutex> lock(staleCandidatesMutex);
-	staleCandidates.clear();
 }
 
 bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> partnerCF, ObjectPoolActivationError &activationError, ObjectPoolErrorCodes &objectPoolError, std::uint16_t &parentObjectIDOfFaultyObject, std::uint16_t &faultyObjectID)
@@ -727,11 +559,6 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 				log() << "  Section " << static_cast<int>(i) << " -> element " << sectionElementNumbers[i] << std::endl;
 			}
 		}
-		else if (0 == numberOfSections)
-		{
-			// e.g. a tractor ECU describing hitch or GNSS geometry: nothing to control, nothing wrong
-			log("TC Server") << "Non-section client: the DDOP has no section elements, section control not applicable." << std::endl;
-		}
 		else
 		{
 			log("TC Server") << "WARNING: No supported section control method detected! "
@@ -887,51 +714,6 @@ bool MyTCServer::on_value_command(std::shared_ptr<isobus::ControlFunction> partn
 				}
 			}
 		}
-		break;
-
-		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SupportedTrackControlLevels):
-		{
-			// DDI 505 is a BITMASK: bit 0 = Level 1, bit 1 = Level 2, bit 2 = Level 3, so a value
-			// of 3 means Level 1 and 2 are supported (not "Level 3"). DDI 506, which the TC writes
-			// in answer, is an ENUM instead: 0 = no common level, 1 = Level 1, 2 = Level 2, 3 = Level 3.
-			log("TC") << "Implement reports supported track control levels=" << processDataValue
-			          << " (L1=" << ((processDataValue & static_cast<int>(TrackControlLevel::Level1)) ? "yes" : "no")
-			          << " L2=" << ((processDataValue & static_cast<int>(TrackControlLevel::Level2)) ? "yes" : "no")
-			          << " L3=" << ((processDataValue & static_cast<int>(TrackControlLevel::Level3)) ? "yes" : "no") << ")" << std::endl;
-			auto &state = clients[partner];
-			state.set_supported_track_control_levels(processDataValue);
-
-			// Only Level 1 is implemented, so ask for it whenever the implement supports it, even if it
-			// also advertises Level 2 or 3.
-			if (!state.is_track_control_level_sent() &&
-			    state.has_element_number_for_ddi(isobus::DataDescriptionIndex::SetpointTrackControlLevel))
-			{
-				const std::int32_t requestedLevel = (processDataValue & static_cast<int>(TrackControlLevel::Level1)) ? 1 : 0;
-				send_set_value(partner,
-				               static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SetpointTrackControlLevel),
-				               state.get_element_number_for_ddi(isobus::DataDescriptionIndex::SetpointTrackControlLevel),
-				               requestedLevel);
-				state.set_track_control_level_sent(true);
-				log("TC") << "Wrote track control level " << requestedLevel << std::endl;
-			}
-		}
-		break;
-
-		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SetpointTrackControlLevel):
-		{
-			// The implement's echo of the level we wrote completes the negotiation.
-			const bool agreed = (processDataValue == 1);
-			log("TC") << "Implement confirmed track control level " << processDataValue
-			          << (agreed ? " — negotiation complete" : " — no common level") << std::endl;
-			clients[partner].set_track_negotiation_complete(agreed);
-		}
-		break;
-
-		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::TrackControlState):
-		{
-			log("TC") << "Implement reports track control state=" << processDataValue << std::endl;
-		}
-		break;
 	}
 
 	return true;
@@ -1057,8 +839,8 @@ void MyTCServer::request_measurement_commands()
 				}
 			}
 
-			// Map the guidance DDIs so the send_* methods know which element to address.
-			// Mapping only: these are values the TC pushes to the implement, not ones to subscribe to.
+			// Map GNSS quality (DDI 514) so send_gnss_quality() knows which element to address.
+			// Mapping only: this is a value the TC pushes to the implement, not one to subscribe to.
 			for (std::uint32_t i = 0; i < client.second.get_pool().size(); i++)
 			{
 				auto object = client.second.get_pool().get_object_by_index(i);
@@ -1068,73 +850,28 @@ void MyTCServer::request_measurement_commands()
 				}
 
 				auto processDataObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceProcessDataObject>(object);
-				if (!processDataObject || !is_guidance_data_ddi(processDataObject->get_ddi()))
+				if (!processDataObject || processDataObject->get_ddi() != static_cast<std::uint16_t>(isobus::DataDescriptionIndex::GNSSQuality))
 				{
 					continue;
 				}
 
 				if (!processDataObject->has_property(isobus::task_controller_object::DeviceProcessDataObject::PropertiesBit::Settable))
 				{
-					log() << "DDI " << processDataObject->get_ddi() << " (" << isobus::DataDictionary::get_entry(processDataObject->get_ddi()).to_string() << ") is declared but not settable, so it is not sent" << std::endl;
+					log() << "DDI " << processDataObject->get_ddi() << " (GNSS Quality) is declared but not settable, so it is not sent" << std::endl;
 					continue;
 				}
 
 				std::uint16_t elementNumber = 0;
 				if (find_owning_element_number(client.second.get_pool(), *processDataObject, elementNumber))
 				{
-					client.second.set_element_number_for_ddi(static_cast<isobus::DataDescriptionIndex>(processDataObject->get_ddi()), elementNumber);
-					log() << "Mapped DDI " << processDataObject->get_ddi() << " (" << isobus::DataDictionary::get_entry(processDataObject->get_ddi()).to_string() << ") to element "
+					client.second.set_element_number_for_ddi(isobus::DataDescriptionIndex::GNSSQuality, elementNumber);
+					log() << "Mapped DDI " << processDataObject->get_ddi() << " (GNSS Quality) to element "
 					      << elementNumber << std::endl;
-				}
-			}
-
-			// Map the track control DDIs. Unlike the guidance data above, the implement reports these
-			// (supported levels, the echo of the level we write, its control state), so subscribe to them.
-			for (std::uint32_t i = 0; i < client.second.get_pool().size(); i++)
-			{
-				auto object = client.second.get_pool().get_object_by_index(i);
-				if (!object || object->get_object_type() != isobus::task_controller_object::ObjectTypes::DeviceProcessData)
-				{
-					continue;
-				}
-
-				auto processDataObject = std::dynamic_pointer_cast<isobus::task_controller_object::DeviceProcessDataObject>(object);
-				if (!processDataObject || !is_track_control_ddi(processDataObject->get_ddi()))
-				{
-					continue;
-				}
-
-				std::uint16_t elementNumber = 0;
-				if (!find_owning_element_number(client.second.get_pool(), *processDataObject, elementNumber))
-				{
-					continue;
-				}
-
-				const auto ddi = processDataObject->get_ddi();
-				const auto &entry = isobus::DataDictionary::get_entry(ddi);
-				client.second.set_element_number_for_ddi(static_cast<isobus::DataDescriptionIndex>(ddi), elementNumber);
-				if (processDataObject->has_trigger_method(isobus::task_controller_object::DeviceProcessDataObject::AvailableTriggerMethods::OnChange))
-				{
-					send_change_threshold_measurement_command(client.first, ddi, elementNumber, 1);
-					log() << "Subscribed (OnChange) to DDI " << ddi << " (" << entry.to_string() << ") for element " << elementNumber << std::endl;
-				}
-				else
-				{
-					log() << "Mapped (no OnChange) DDI " << ddi << " (" << entry.to_string() << ") to element " << elementNumber << std::endl;
 				}
 			}
 
 			log() << "Measurement commands sent." << std::endl;
 			client.second.mark_measurement_commands_sent();
-
-			// Switch the implement to automatic shortly after it connects, so AOG's SC button
-			// does not need pressing on every connect.
-			client.second.schedule_initial_section_control(isobus::SystemTiming::get_timestamp_ms() + INITIAL_SECTION_CONTROL_DELAY_MS);
-		}
-		if (client.second.take_due_initial_section_control(isobus::SystemTiming::get_timestamp_ms()))
-		{
-			log("TC") << "Applying initial section control state: " << (desiredSectionControlEnabled ? "enabled" : "disabled") << std::endl;
-			apply_section_control_state(client.first, client.second, desiredSectionControlEnabled);
 		}
 	}
 }
@@ -1188,29 +925,20 @@ void MyTCServer::update_section_states(std::vector<bool> &sectionStates)
 void MyTCServer::update_section_control_enabled(bool enabled)
 {
 	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
-	desiredSectionControlEnabled = enabled;
 	for (auto &client : clients)
 	{
-		apply_section_control_state(client.first, client.second, enabled);
-	}
-}
+		// Always update the local flag
+		if (client.second.is_section_control_enabled() != enabled)
+		{
+			client.second.set_section_control_enabled(enabled);
+		}
 
-void MyTCServer::set_initial_section_control_enabled(bool enabled)
-{
-	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
-	desiredSectionControlEnabled = enabled;
-}
-
-void MyTCServer::apply_section_control_state(std::shared_ptr<isobus::ControlFunction> client, ClientState &state, bool enabled)
-{
-	// Always update the local flag
-	state.set_section_control_enabled(enabled);
-
-	// Only send ISOBUS command to clients that support SectionControlState DDI and have sections
-	if (state.has_element_number_for_ddi(isobus::DataDescriptionIndex::SectionControlState) &&
-	    state.get_number_of_sections() > 0)
-	{
-		send_section_control_state(client, enabled);
+		// Only send ISOBUS command to clients that support SectionControlState DDI and have sections
+		if (client.second.has_element_number_for_ddi(isobus::DataDescriptionIndex::SectionControlState) &&
+		    client.second.get_number_of_sections() > 0)
+		{
+			send_section_control_state(client.first, enabled);
+		}
 	}
 }
 
@@ -1223,58 +951,6 @@ void MyTCServer::send_gnss_quality(std::uint8_t quality)
 		if (client.second.has_element_number_for_ddi(DDI))
 		{
 			send_set_value(client.first, static_cast<std::uint16_t>(DDI), client.second.get_element_number_for_ddi(DDI), static_cast<std::int32_t>(quality));
-		}
-	}
-}
-
-void MyTCServer::send_guidance_track_data(const GuidanceTrackContext &ctx, std::int32_t lineDeviationMm)
-{
-	if (!ctx.valid)
-	{
-		return;
-	}
-
-	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
-	for (auto &client : clients)
-	{
-		auto &state = client.second;
-
-		auto trySend = [&](isobus::DataDescriptionIndex ddi, std::int32_t value) {
-			if (state.has_element_number_for_ddi(ddi))
-			{
-				send_set_value(client.first, static_cast<std::uint16_t>(ddi), state.get_element_number_for_ddi(ddi), value);
-			}
-		};
-
-		const std::uint32_t sequenceNumber = state.update_guidance_track_sequence(ctx.actualTrackNumber, ctx.guidanceReferenceLineId);
-
-		// Coherent ordering per the TRACK guideline:
-		// 507 (sequence) -> 508 (ref line ID) -> 509 (actual track) -> 510 (right) -> 511 (left)
-		trySend(isobus::DataDescriptionIndex::GuidanceTrackSequenceNumber, static_cast<std::int32_t>(sequenceNumber));
-		trySend(isobus::DataDescriptionIndex::UniqueGuidanceReferenceLineID, static_cast<std::int32_t>(ctx.guidanceReferenceLineId));
-		trySend(isobus::DataDescriptionIndex::ActualGuidanceTrackNumber, ctx.actualTrackNumber);
-		trySend(isobus::DataDescriptionIndex::GuidanceTrackNumberToTheRight, ctx.trackNumberRight);
-		trySend(isobus::DataDescriptionIndex::GuidanceTrackNumberToTheLeft, ctx.trackNumberLeft);
-		if (ctx.swathWidthMm != 0)
-		{
-			trySend(isobus::DataDescriptionIndex::GuidanceLineSwathWidth, static_cast<std::int32_t>(ctx.swathWidthMm));
-		}
-		trySend(isobus::DataDescriptionIndex::GuidanceLineDeviation, lineDeviationMm);
-	}
-}
-
-void MyTCServer::update_track_control_enabled(bool enabled)
-{
-	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
-	constexpr auto DDI = isobus::DataDescriptionIndex::TrackControlState;
-	for (auto &client : clients)
-	{
-		// Only clients that agreed on a track control level get commanded.
-		if (client.second.is_track_negotiation_complete() && client.second.has_element_number_for_ddi(DDI))
-		{
-			// DDI 515 values: 0 = manual/off, 1 = automatic/on
-			send_set_value(client.first, static_cast<std::uint16_t>(DDI), client.second.get_element_number_for_ddi(DDI), enabled ? 1 : 0);
-			log("TC") << "Track control state=" << (enabled ? "On" : "Off") << std::endl;
 		}
 	}
 }

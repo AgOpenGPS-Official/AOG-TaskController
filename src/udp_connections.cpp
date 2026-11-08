@@ -8,12 +8,8 @@
  */
 
 #include "udp_connections.hpp"
-#include <algorithm>
 #include <cassert>
-#include <iomanip>
 #include <iostream>
-#include <sstream>
-#include "aog_packet_parser.hpp"
 #include "logging_utils.hpp"
 
 #if !defined(_WIN32)
@@ -157,80 +153,15 @@ std::uint8_t UdpConnections::calculate_crc(std::span<std::uint8_t> data)
 	return static_cast<std::uint8_t>(result & 0xFF);
 }
 
-namespace
-{
-	/// Bytes of a datagram shown in the log when it is not (only) AOG packets
-	constexpr std::size_t MAX_LOGGED_DATAGRAM_BYTES = 64;
-
-	/// @brief Hex dump with a "|" where parsing stopped, then the printable characters (others as ".")
-	std::string describe_datagram(std::span<std::uint8_t> datagram, std::size_t stopOffset)
-	{
-		const std::size_t count = std::min(datagram.size(), MAX_LOGGED_DATAGRAM_BYTES);
-		std::ostringstream hex;
-		std::string text;
-		hex << std::hex << std::setfill('0');
-		for (std::size_t i = 0; i < count; i++)
-		{
-			hex << ((i == stopOffset) ? ((0 == i) ? "| " : " | ") : ((0 == i) ? "" : " ")) << std::setw(2) << static_cast<int>(datagram[i]);
-			text += ((datagram[i] >= 0x20) && (datagram[i] < 0x7F)) ? static_cast<char>(datagram[i]) : '.';
-		}
-		if (count < datagram.size())
-		{
-			hex << " ...";
-		}
-		return hex.str() + "  \"" + text + "\"";
-	}
-
-	void log_parse_stop(const char *socketName, const udp::endpoint &sender, std::span<std::uint8_t> datagram, const aog_packet::ParseResult &result)
-	{
-		if (aog_packet::ParseStop::Complete == result.stop)
-		{
-			return;
-		}
-
-		const std::size_t dropped = datagram.size() - result.offset;
-		log() << ((aog_packet::ParseStop::UnknownStart == result.stop) ? "Unknown start of message" : "Truncated AOG packet")
-		      << " from " << sender.address().to_string() << ":" << sender.port()
-		      << " (" << socketName << ", dropped " << dropped << " of " << datagram.size() << " bytes): "
-		      << describe_datagram(datagram, result.offset) << std::endl;
-	}
-}
-
-void UdpConnections::log_unknown_start(const udp::endpoint &sender, std::span<const std::uint8_t> data)
-{
-	// Both sockets listen on port 8888 (one on the AOG subnet address, one on all interfaces), so a
-	// broadcast packet usually arrives on both. Only log it once.
-	static constexpr std::size_t MAX_LOGGED_BYTES = 16;
-	static constexpr auto DUPLICATE_WINDOW = std::chrono::milliseconds(50);
-
-	std::ostringstream signature;
-	signature << sender.address().to_string() << ":" << sender.port() << " " << std::hex << std::setfill('0');
-	for (std::size_t i = 0; i < std::min(data.size(), MAX_LOGGED_BYTES); i++)
-	{
-		signature << (i ? " " : "") << std::setw(2) << static_cast<int>(data[i]);
-	}
-	if (data.size() > MAX_LOGGED_BYTES)
-	{
-		signature << " ...";
-	}
-
-	const auto now = std::chrono::steady_clock::now();
-	if ((signature.str() == lastUnknownStartSignature) && (now - lastUnknownStartTime < DUPLICATE_WINDOW))
-	{
-		return;
-	}
-	lastUnknownStartSignature = signature.str();
-	lastUnknownStartTime = now;
-	log() << "Unknown start of message from " << lastUnknownStartSignature << " (" << std::dec << data.size() << " bytes)" << std::endl;
-}
-
 void UdpConnections::handle_incoming_packets()
 {
-	static std::array<std::uint8_t, MAX_PACKET_SIZE> rxBuffer;
+	static std::array<std::uint8_t, 512> rxBuffer;
+	static std::size_t rxIndex = 0;
 
+	// Peek to see if we have any data
 	boost::system::error_code error_code;
 	udp::endpoint sender_endpoint;
-	size_t bytesReceived = udpConnection.receive_from(boost::asio::buffer(rxBuffer), sender_endpoint, 0, error_code);
+	size_t bytesReceived = udpConnection.receive_from(boost::asio::buffer(rxBuffer.data() + rxIndex, sizeof(rxBuffer) - rxIndex), sender_endpoint, 0, error_code);
 
 	if (error_code == boost::asio::error::would_block)
 	{
@@ -238,21 +169,51 @@ void UdpConnections::handle_incoming_packets()
 	}
 	else if (!error_code)
 	{
-		std::span<std::uint8_t> datagram(rxBuffer.data(), bytesReceived);
-		auto result = aog_packet::parse_datagram(datagram, [this](std::uint8_t src, std::uint8_t pgn, std::span<std::uint8_t> data) {
-			if (packetCallback)
+		rxIndex += bytesReceived;
+		std::uint8_t index = 0;
+
+		while (rxIndex >= 8)
+		{
+			std::uint16_t start = (rxBuffer[index++] << 8) | rxBuffer[index++];
+			if (start == PACKET_START)
 			{
-				packetCallback(src, pgn, data);
+				std::uint8_t src = rxBuffer[index++];
+				std::uint8_t pgn = rxBuffer[index++];
+				std::uint8_t len = rxBuffer[index++];
+				std::uint8_t crc = rxBuffer[index + len];
+
+				// Check CRC (skip start of packet, but include source, PGN, length and data)
+				// std::uint8_t crcCalc = calculate_crc({ rxBuffer.data() + index - 3, static_cast<size_t>(len) + 3 });
+				// if (crc != crcCalc)
+				// {
+				//  std::cout << "CRC mismatch (for PGN " << static_cast<int>(pgn) << "?), expected " << static_cast<int>(crc) << " but got " << static_cast<int>(crcCalc) << std::endl;
+				// 	rxIndex = 0;
+				// 	break;
+				// }
+
+				if (packetCallback)
+				{
+					packetCallback(src, pgn, { rxBuffer.data() + index, len });
+				}
+				index += len + 1;
 			}
-		});
-		if (aog_packet::ParseStop::UnknownStart == result.stop)
-		{
-			// Both sockets get a broadcast: log_unknown_start() drops the second copy
-			log_unknown_start(sender_endpoint, datagram.subspan(result.offset));
-		}
-		else
-		{
-			log_parse_stop("AOG", sender_endpoint, datagram, result);
+			else
+			{
+				// Unknown start of message, reset buffer
+				log() << "Unknown start of message: 0x" << std::hex << start << std::dec << std::endl;
+				rxIndex = 0;
+			}
+
+			// Move any remaining data to the front of the buffer
+			if (index < rxIndex)
+			{
+				std::memmove(rxBuffer.data(), rxBuffer.data() + index, rxIndex - index);
+				rxIndex -= index;
+			}
+			else
+			{
+				rxIndex = 0;
+			}
 		}
 	}
 	else
@@ -263,11 +224,13 @@ void UdpConnections::handle_incoming_packets()
 
 void UdpConnections::handle_address_detection()
 {
-	static std::array<std::uint8_t, MAX_PACKET_SIZE> rxBuffer;
+	static std::array<std::uint8_t, 512> rxBuffer;
+	static std::size_t rxIndex = 0;
 
+	// Peek to see if we have any data
 	boost::system::error_code error_code;
 	udp::endpoint sender_endpoint;
-	size_t bytesReceived = udpConnectionAddressDetection.receive_from(boost::asio::buffer(rxBuffer), sender_endpoint, 0, error_code);
+	size_t bytesReceived = udpConnectionAddressDetection.receive_from(boost::asio::buffer(rxBuffer.data() + rxIndex, sizeof(rxBuffer) - rxIndex), sender_endpoint, 0, error_code);
 
 	if (error_code == boost::asio::error::would_block)
 	{
@@ -275,36 +238,70 @@ void UdpConnections::handle_address_detection()
 	}
 	else if (!error_code)
 	{
-		std::span<std::uint8_t> datagram(rxBuffer.data(), bytesReceived);
-		auto result = aog_packet::parse_datagram(datagram, [this](std::uint8_t src, std::uint8_t pgn, std::span<std::uint8_t> data) {
-			// 127 is source AgIO, 201 is subnet; data is 0xC9 0xC9 IP0 IP1 IP2
-			if ((0x7F != src) || (0xC9 != pgn) || (5 != data.size()) || (0xC9 != data[0]) || (0xC9 != data[1]))
+		rxIndex += bytesReceived;
+		std::uint8_t index = 0;
+
+		while (rxIndex >= 8)
+		{
+			std::uint16_t start = (rxBuffer[index++] << 8) | rxBuffer[index++];
+			if (start == PACKET_START)
 			{
-				return;
+				std::uint8_t src = rxBuffer[index++];
+				std::uint8_t pgn = rxBuffer[index++];
+				std::uint8_t len = rxBuffer[index++];
+				std::uint8_t crc = rxBuffer[index + len];
+
+				// Check CRC (skip start of packet, but include source, PGN, length and data)
+				// std::uint8_t crcCalc = calculate_crc({ rxBuffer.data() + index - 3, static_cast<size_t>(len) + 3 });
+				// if (crc != crcCalc)
+				// {
+				// 	std::cout << "CRC mismatch (for PGN " << static_cast<int>(pgn) << "?), expected " << static_cast<int>(crc) << " but got " << static_cast<int>(crcCalc) << std::endl;
+				// 	rxIndex = 0;
+				// 	break;
+				// }
+
+				if (src == 0x7F && pgn == 0xC9 && len == 5 // 127 is source, AGIO, 201 is subnet
+				    && rxBuffer[index++] == 0xC9 && rxBuffer[index++] == 0xC9)
+				{
+					// 7-8-9 is IP0,IP1,IP2
+					settings->set_subnet({ rxBuffer[index++], rxBuffer[index++], rxBuffer[index++] });
+
+					std::cout << "Subnet from AOG: ";
+					std::cout << int(settings->get_subnet()[0]) << ".";
+					std::cout << int(settings->get_subnet()[1]) << ".";
+					std::cout << int(settings->get_subnet()[2]);
+					std::cout << " rebinding UPD connection " << std::endl;
+					udpConnection.close();
+					udpConnection.open(udp::v4());
+					udpConnection.set_option(boost::asio::socket_base::broadcast(true));
+					udpConnection.set_option(boost::asio::socket_base::reuse_address(true));
+					udpConnection.non_blocking(true);
+					udpConnection.bind(get_local_endpoint());
+
+					index += len - 4;
+				}
+				else
+				{
+					index += len + 1;
+				}
+			}
+			else
+			{
+				// Unknown start of message, reset buffer
+				log() << "Unknown start of message: 0x" << std::hex << start << std::dec << std::endl;
+				rxIndex = 0;
 			}
 
-			settings->set_subnet({ data[2], data[3], data[4] });
-
-			std::cout << "Subnet from AOG: ";
-			std::cout << int(settings->get_subnet()[0]) << ".";
-			std::cout << int(settings->get_subnet()[1]) << ".";
-			std::cout << int(settings->get_subnet()[2]);
-			std::cout << " rebinding UPD connection " << std::endl;
-			udpConnection.close();
-			udpConnection.open(udp::v4());
-			udpConnection.set_option(boost::asio::socket_base::broadcast(true));
-			udpConnection.set_option(boost::asio::socket_base::reuse_address(true));
-			udpConnection.non_blocking(true);
-			udpConnection.bind(get_local_endpoint());
-		});
-		if (aog_packet::ParseStop::UnknownStart == result.stop)
-		{
-			// Both sockets get a broadcast: log_unknown_start() drops the second copy
-			log_unknown_start(sender_endpoint, datagram.subspan(result.offset));
-		}
-		else
-		{
-			log_parse_stop("address detection", sender_endpoint, datagram, result);
+			// Move any remaining data to the front of the buffer
+			if (index < rxIndex)
+			{
+				std::memmove(rxBuffer.data(), rxBuffer.data() + index, rxIndex - index);
+				rxIndex -= index;
+			}
+			else
+			{
+				rxIndex = 0;
+			}
 		}
 	}
 	else
