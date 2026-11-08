@@ -104,6 +104,7 @@ enum class CANAdapter
 	ADAPTER_INNOMAKER_USB2CAN,
 	ADAPTER_RUSOKU_TOUCAN,
 	ADAPTER_SYS_TEC_USB2CAN,
+	ADAPTER_CANDLELIGHT,
 	ADAPTER_SOCKETCAN,
 };
 
@@ -150,7 +151,7 @@ private:
 			std::cout << "Options:\n";
 			std::cout << "  --help\t\tShow this help message\n";
 			std::cout << "  --version\t\tShow the version of the application\n";
-			std::cout << "  --can_adapter=<driver>\tSelect the CAN driver (peak-pcan, innomaker-usb2can, rusoku-toucan, sys-tec-usb2can, socketcan)\n";
+			std::cout << "  --can_adapter=<driver>\tSelect the CAN driver (peak-pcan, innomaker-usb2can, rusoku-toucan, sys-tec-usb2can, candlelight, socketcan)\n";
 			std::cout << "  --can_channel=<channel>\tSelect the CAN channel (numeric, or interface name e.g. can0 for socketcan)\n";
 			std::cout << "  --log_level=<level>\tSet the log level (debug, info, warning, error, critical)\n";
 			std::cout << "  --log2file\t\tLog to file\n";
@@ -189,6 +190,8 @@ private:
 				{ "innomaker-usb2can", CANAdapter::ADAPTER_INNOMAKER_USB2CAN },
 				{ "rusoku-toucan", CANAdapter::ADAPTER_RUSOKU_TOUCAN },
 				{ "sys-tec-usb2can", CANAdapter::ADAPTER_SYS_TEC_USB2CAN },
+				{ "candlelight", CANAdapter::ADAPTER_CANDLELIGHT },
+				{ "gs_usb", CANAdapter::ADAPTER_CANDLELIGHT },
 				{ "socketcan", CANAdapter::ADAPTER_SOCKETCAN },
 			};
 
@@ -267,6 +270,15 @@ static std::shared_ptr<isobus::CANHardwarePlugin> create_can_driver(const Argume
 		case CANAdapter::ADAPTER_SYS_TEC_USB2CAN:
 		{
 			return std::make_shared<isobus::SysTecWindowsPlugin>(static_cast<std::uint8_t>(std::stoi(args.get_can_channel())));
+		}
+#endif
+#if defined(ISOBUS_WINDOWSCANDLELIGHT_AVAILABLE)
+		case CANAdapter::ADAPTER_CANDLELIGHT:
+		{
+			// candleLight/gs_usb firmware over WinUSB. The channel picks the adapter, 1 = first one found
+			const std::string channel = args.get_can_channel();
+			const int adapterNumber = channel.empty() ? 1 : std::stoi(channel);
+			return std::make_shared<isobus::CandleLightWindowsPlugin>(static_cast<std::uint8_t>(std::max(adapterNumber, 1) - 1));
 		}
 #endif
 #if defined(ISOBUS_SOCKETCAN_AVAILABLE)
