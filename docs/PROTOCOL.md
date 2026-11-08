@@ -95,11 +95,8 @@ All PGNs sent **by AgIO/AgValonia to the TC** use source `0x7F`, except `0xD6` (
 | `0xC9` (201) | Subnet detection | 5 | `[0xC9, 0xC9, IP0, IP1, IP2]` |
 | `0xD6` (214) | GPS/IMU data | variable (≥39 used) | Only byte 38 (fix quality) is parsed today; rest of frame is currently unused. Source `0x7C`. |
 | `0xE5` (229) | Section states (64 sections) | 8 | Bitfield: bit `8·j + i` of byte `j` is section `(8j + i)` ON/OFF |
-| `0xEF` (239) | Machine data | variable | Only used as an AOG-liveness signal; payload not parsed. |
 | `0xF1` (241) | Section control mode | 1 | `[mode]` where `1` = enabled, `0` = disabled |
 | `0xF2` (242) | Process data | 6 | `[DDI_lo, DDI_hi, val0, val1, val2, val3]` — DDI is little-endian `uint16`; value is little-endian `int32` |
-| `0xF3` (243) | Field name | variable | The open field's name as raw UTF-8; empty = field closed. |
-| `0xF4` (244) | Guidance track context | 10 or 12 | Real-time AB-line/track guidance state, announced to implements as DDI 507-513 — see §5.4.1. |
 
 #### `0xC9` — Subnet detection
 
@@ -139,33 +136,9 @@ Wraps a single ISO 11783 DDI/value pair. The TC currently dispatches on these DD
 |---|---|---|
 | `156` | Actual speed (mm/s) | Stored. If TECU enabled, broadcast as Ground/Wheel/Machine-selected speed (PGN 65256) + NMEA2000 SOG. Drives forward/reverse direction. Also produces J1939 PGN 65256 every 100 ms. |
 | `597` | Total distance (mm) | Stored and displayed on the VT Status page. If TECU is enabled, also populated into Speed Messages distance fields. |
-| Guidance line deviation | XTE (mm) | Converted to metres. Broadcast as NMEA2000 XTE (PGN 0x1F903) at 1 Hz. Also announced to implements as DDI 513 (GuidanceLineDeviation) — see §5.4.1. |
+| Guidance line deviation | XTE (mm) | Converted to metres. Broadcast as NMEA2000 XTE (PGN 0x1F903) at 1 Hz. |
 
 Unknown DDIs are silently ignored (PGN 0xF2 is the generic process-data channel — the TC will gain more DDIs over time).
-
-#### `0xF3` — Field name
-
-The whole payload is the open field's name as raw UTF-8 — no length prefix, no offset — up to 248 bytes (longer names are truncated). An empty payload means the field was closed, which also invalidates the current track context.
-
-The TC maps each field name to a persistent 16-bit index, stored one `index,name` line per field in `field_registry.csv` next to `settings.json`. The index is folded into the upper 16 bits of DDI 508 (see `0xF4`), so a track's reference line ID stays unique across fields.
-
-#### `0xF4` — Guidance track context
-
-AOG's real-time AB-line/track guidance state. 12-byte payload (a 10-byte payload without the last field is also accepted):
-
-```
- Byte 0    Sequence counter (0–255, wraps)
- Byte 1    Flags: bit0=valid, bit1=heading same way, bit2=curve mode
- Bytes 2-3 Guidance Reference Line ID (uint16 LE) — 0 = no active track
- Bytes 4-5 Actual Track Number (int16 LE, signed — can be negative and jump by more than 1)
- Bytes 6-7 Track Number Left (int16 LE, signed)
- Bytes 8-9 Track Number Right (int16 LE, signed)
- Bytes 10-11 Swath Width in mm (uint16 LE) — distance between adjacent tracks; 0 = not reported
-```
-
-AOG sends this **only when the guidance state actually changes** — there is no heartbeat. The TC rejects any packet whose sequence number isn't strictly ahead of the last accepted one (catches duplicates, freezes, and reordered/stale UDP delivery).
-
-**Track-number offset:** the TC adds `+1` to all three track numbers (current/left/right) before announcing them — confirmed by field testing, not documented anywhere on AOG's side. As sent raw by AOG, a tramline implement's own on-board phase (which pass of N is "on") was consistently one pass out of sync with AOG's own intended on/off state, for both left and right passes; a uniform `+1` (independent of sign) brought them into agreement. See `GuidanceTrackProvider::parse()` (`AOG_TRACK_NUMBER_OFFSET`).
 
 ### 2.6 PGNs outbound (TC → client)
 
@@ -236,7 +209,6 @@ The TC reads `settings.json` from a per-user config directory:
     "aogHeartbeatEnabled": true,
     "vtEnabled": true,
     "tcVersion": 3,
-    "tcNumber": 1,
     "languageCode": "en",
     "countryCode": "US"
 }
@@ -245,12 +217,11 @@ The TC reads `settings.json` from a per-user config directory:
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `subnet` | `int[3]` | `[192, 168, 5]` | First three octets of the LAN AgIO/AgValonia lives on. Used for NIC selection and broadcast destination. |
-| `tecuEnabled` | `bool` | `true` | `true`: the TC is the tractor's Tractor ECU, the primary at address 240 (Speed Messages, NMEA2000, Class 1 BasicTractorECUServer), stepping down if the tractor has one after all. `false`: for tractors with their own TECU; the TC's TECU is a secondary that only adds what the tractor's lacks, and everything when there is none. See §5.7. |
-| `nmeaSendEnabled` | `bool` | `true` | Enable cyclic NMEA2000 COG/SOG transmission (not while another Tractor ECU sends it, §5.7). The VT disables this control when no TECU interface exists. |
+| `tecuEnabled` | `bool` | `true` | If `true`, the TC also impersonates a Tractor ECU on the CAN bus (claims address 240, broadcasts Speed Messages/NMEA2000, announces Class 1 BasicTractorECUServer). Set `false` when the tractor already has a TECU. |
+| `nmeaSendEnabled` | `bool` | `true` | Enable cyclic NMEA2000 COG/SOG transmission. Requires `tecuEnabled`; the VT disables this control when no TECU interface exists. |
 | `aogHeartbeatEnabled` | `bool` | `true` | Send `0xF0` heartbeat to AgIO/AgValonia every 100 ms even with no implement. Disable for AOG < v6.8.2 beta 5. |
 | `vtEnabled` | `bool` | `true` | Register the Virtual Terminal client and display the TC UI when a VT is present. |
 | `tcVersion` | `integer` | `3` | Task Controller version code (`0`=DIS, `1`=FDIS.1, `2`=First Edition, `3`=Second Edition Draft, `4`=Second Published Edition). |
-| `tcNumber` | `integer` | `1` | Task Controller number, `1`–`32` (ISO 11783-10: the TC NAME's function instance + 1). Set `2` or higher when the tractor already has a TC, so implements can tell the two apart. Takes effect after restart. |
 | `languageCode` | `string` | `"en"` | Two-character language code advertised through the ISOBUS language interface. |
 | `countryCode` | `string` | `"US"` | Two-character country code advertised through the ISOBUS language interface. |
 
@@ -268,8 +239,8 @@ AOG-TaskController [options]
 |---|---|---|
 | `--help` | — | Print usage and exit. |
 | `--version` | — | Print git-describe version (with `-dirty` suffix on a dirty tree) and exit. |
-| `--can_adapter=<name>` | none | CAN driver. One of: `peak-pcan`, `innomaker-usb2can`, `rusoku-toucan`, `sys-tec-usb2can`, `candlelight` (alias `gs_usb`; candleLight/gs_usb firmware over WinUSB) (all Windows), `socketcan` (Linux). **Required** — the TC will not start without a driver. |
-| `--can_channel=<id>` | — | Driver-specific channel. Numeric (`1`, `2`, ...) for Windows USB adapters (for `candlelight`, which adapter when several are plugged in; empty = `1`); interface name (`can0`, `vcan0`) for SocketCAN. |
+| `--can_adapter=<name>` | none | CAN driver. One of: `peak-pcan`, `innomaker-usb2can`, `rusoku-toucan`, `sys-tec-usb2can` (all Windows), `socketcan` (Linux). **Required** — the TC will not start without a driver. |
+| `--can_channel=<id>` | — | Driver-specific channel. Numeric (`1`, `2`, ...) for Windows USB adapters; interface name (`can0`, `vcan0`) for SocketCAN. |
 | `--log_level=<lvl>` | — | One of `debug`, `info`, `warning`, `error`, `critical`. Filters AgIsoStack log output. |
 | `--log2file` | off | Also write all output to `<config>/logs/AOG-TaskController_YYYY-M-D_H-M.log`. |
 
@@ -286,7 +257,7 @@ Two control functions, both claiming addresses via standard J1939-81 address cla
 | CF | NAME function | Address | Notes |
 |---|---|---|---|
 | Task Controller | `TaskController` (function code 61) | Preferred `247` (ISO 11783-10 MappingComputer). Walks if claimed. | Always present. |
-| Tractor ECU | `TractorECU` (function code 134) | `240` as the primary; an arbitrary address (preferred `128`) as a secondary, see §5.7. | Primary with `tecuEnabled: true`, secondary with `false`. |
+| Tractor ECU | `TractorECU` (function code 132) | Fixed `240` (non-arbitrary-address-capable per ISO 11783-9). | Only present if `tecuEnabled: true`. |
 
 Common NAME fields: Industry Group `2` (Agricultural), Device Class `0`, Manufacturer Code `1407`, Identity `20`. Override these in `app.cpp` if you fork.
 
@@ -296,16 +267,10 @@ Common NAME fields: Industry Group `2` (Agricultural), Device Class `0`, Manufac
 |---|---|---|---|
 | `0xCB00` (Process Data) | 2 s | TC | ISO 11783-10 B.8.1 Task Controller Status. Status byte bit 1 = task totals active. |
 | `0x1F903` (NMEA2000 XTE) | 1 Hz | TC | Cross-track error, derived from AOG's guidance-line deviation PGN. |
-| `0xFEE8` (PGN 65256 Speed/Direction) | 100 ms | TECU | Ground/Wheel/Machine-selected speed + machine direction, J1939 format. Only when TECU enabled, and not while another Tractor ECU sends it (§5.7). |
-| `0xFC8E` (Control Function Functionalities) | At claim + periodic | TC | Announces TaskControllerBasicServer (v1), TaskControllerSectionControlServer (v1, 1 boom / 64 sections) and functionality 27, the Task Controller TRACK server (v1). See §5.4.2. |
+| `0xFEE8` (PGN 65256 Speed/Direction) | 100 ms | TECU | Ground/Wheel/Machine-selected speed + machine direction, J1939 format. Only when TECU enabled. |
 | `0xFC8E` (Control Function Functionalities) | At claim + periodic | TECU | Announces Class 1 BasicTractorECUServer (no options). |
-| `0xFE48`, `0xFE49`, `0xF022` (PGN 65096, 65097, 61474) | 100 ms | TECU | Wheel-based speed, ground-based speed, machine selected speed (with distance and direction). As a secondary, only those no other Tractor ECU provides (§5.7). |
-| `0xFE09` (PGN 65033 Tractor Facilities) | Power-up + on request, and when it changes | TECU | 8-byte facility bitmask advertising which PGNs the TECU actually broadcasts. See §5.6. |
-| `0xFEE6` (PGN 65254 Time/Date) | On request only (ISO 11783-7 B.1) | TECU | UTC from the PC clock plus the local offset, including daylight saving time. A secondary TECU leaves requests to a Tractor ECU that provides it. |
-| NMEA2000 COG/SOG | Periodic | TECU | Optional course/speed over ground. Not while another Tractor ECU sends it (§5.7). |
+| NMEA2000 COG/SOG | Periodic | TECU | Optional course/speed over ground. |
 | GNSS Quality (DDI 514, via `0xCB00` Process Data) | 250 ms | TC | GPS fix quality from AgIO (PGN `0xD6`, see §2.5), sent to each client whose DDOP declares DDI 514 as settable. Falls back to `1` if `0xD6` has never arrived, and to `0` once it stops arriving (see §2.5). |
-| Guidance track data (DDI 507-513, via `0xCB00` Process Data) | 250 ms, while AOG has a valid track | TC | Track number, adjacent tracks, reference line, swath width and line deviation from AOG's PGN `0xF4`/`0xF2`, sent to each client whose DDOP declares them as settable. See §5.4.1. |
-| Track control level and state (DDI 506, 515, via `0xCB00` Process Data) | Level once, state on each AOG section-control mode packet | TC | The track control level the TC picked, then the on/off state — only to clients that completed the negotiation. See §5.4.2. |
 
 The TC also receives all ISOBUS Process Data (PGN 0xCB00) and Section Control commands from connected implements.
 
@@ -314,47 +279,17 @@ The TC also receives all ISOBUS Process Data (PGN 0xCB00) and Section Control co
 - **Device Descriptor Object Pool (DDOP)** uploads from clients (stored per client).
 - **Condensed actual work-state DDIs** (160, 161, 290, plus the extended range 16001–16016 per the standard): mapped into the per-client section model and forwarded to AgIO/AgValonia as PGN `0xF0`.
 - **Section control state DDI**: tracked per client.
-- **Track control DDIs (505, 506, 515)**: negotiated and tracked per client — see §5.4.2.
 - **Process data acknowledges (PDACK)**: logged.
-- **PGN 65033 requests**: answered with the Tractor Facilities response (§5.6). An implement may also send PGN 65032 (Required Tractor Facilities) to advertise what it needs; the TC logs this at debug level but does not change its response.
 
 ### 5.4 ISOBUS feature scope
 
 | Capability | Value |
 |---|---|
 | ISO 11783-10 version | 2 (Second Edition) |
-| Generation | 1 (TC-SC), plus TRACK (Track Control) Level 1 |
+| Generation | 1 (TC-SC) |
 | Max booms | 1 |
 | Max sections | 64 |
-| Supported DDIs | 160 / 161 / 290 (condensed section setpoint and actual states); 505 / 506 / 515 (track control, see §5.4.2); 507-511 / 513 / 514 (guidance data, see §5.4.1); plus speed/distance/guidance DDIs from the tractor side |
-
-#### 5.4.1 Guidance data sent to implements
-
-The TC pushes guidance data to each client whose DDOP declares the DDI as settable. Clients can't request values from the TC, so a DDI a client doesn't declare, or declares as not settable, is never sent to it. Only clients with sections (implements, not tractors) are considered, as with the other DDI mappings.
-
-| DDI | Name | Sent when |
-|---|---|---|
-| 507 | GuidanceTrackSequenceNumber | Valid track. Increments whenever the actual track number or the reference line ID changes — not on section-control toggles. |
-| 508 | UniqueGuidanceReferenceLineID | Valid track. AOG's 16-bit reference line ID in the low 16 bits, the persistent field index (see `0xF3`) in the high 16 bits. |
-| 509 | ActualGuidanceTrackNumber | Valid track. Signed; can be negative and can jump by more than 1 in a single update (e.g. skipping several tracks on a headland turn). |
-| 510 / 511 | GuidanceTrackNumberToTheRight / ...ToTheLeft | Valid track. |
-| 512 | GuidanceLineSwathWidth | Valid track, and AOG reported a non-zero swath width in `0xF4`. AOG's track spacing (tool width minus overlap), the same spacing the track numbers are derived from. |
-| 513 | GuidanceLineDeviation | Valid track. AOG's XTE in mm (PGN `0xF2`, see §2.5). |
-| 514 | GNSSQuality | Always — see `0xD6`. |
-
-"Valid track" means the TC holds an accepted PGN `0xF4` payload with the valid flag set, a non-zero reference line ID, and an open field (PGN `0xF3`) to scope the ID to. Since AOG only sends `0xF4` on change, validity is *not* cleared just because no new `0xF4` has arrived; it is cleared only by an explicit "guidance off" packet, by the field closing, or by AOG disconnecting entirely (no packets of any kind for 3 s).
-
-#### 5.4.2 Track control level negotiation
-
-At TC control-function claim, PGN 64654 (Control Function Functionalities, source = the TC's own address — see §5.2) announces functionality 27, the Task Controller TRACK server, to tell implements this TC supports track control.
-
-For each client whose DDOP declares DDI 505 and 506 the TC negotiates a level:
-
-1. The implement reports DDI 505 (`SupportedTrackControlLevels`) as a **bitmask** (bit 0 = Level 1, bit 1 = Level 2, bit 2 = Level 3).
-2. The TC writes DDI 506 (`SetpointTrackControlLevel`) back as an **enum** (`0` = no common level, `1` = Level 1, `2` = Level 2, `3` = Level 3). Only Level 1 is implemented, so this is `1` whenever the implement supports Level 1, even if it also advertises Level 2 or 3.
-3. The implement's DDI 506 echo completes the negotiation, if it echoes `1`.
-
-Only DDI 515 (`TrackControlState`: `0` = manual/off, `1` = automatic/on) depends on the negotiation: it is written to clients that completed it, each time AOG's section control mode (PGN `0xF1`, see §2.5) arrives. The guidance data in §5.4.1 is sent whether or not a client negotiated a level.
+| Supported DDIs | 160 / 161 / 290 (condensed section setpoint and actual states), plus speed/distance/guidance DDIs from the tractor side |
 
 ### 5.5 Virtual Terminal UI
 
@@ -363,49 +298,6 @@ The roughly 12 KB VT object pool is embedded in the executable, so deployment do
 The pool was authored for a 480-pixel data mask and an 80-pixel softkey designator. The client asks AgIsoStack to scale both before initialization, and includes that scaling contract in the VT cache version so a terminal cannot reuse a pool cached by an older unscaled build. The UI defines five virtual navigation softkeys; terminals with fewer than five physical softkeys must support paging.
 
 At connection, the TC logs the VT version, screen dimensions, softkey dimensions, and virtual/physical softkey counts. It warns when fewer than five virtual softkeys are available. If a VT address is detected but the client has not connected after 30 seconds, it logs the reported capabilities and recovery guidance. Clear the terminal's stored/cached object pools first when diagnosing an upload failure, because stale pools and full non-volatile pool storage can prevent an otherwise compatible upload.
-
-### 5.6 Tractor Facilities (PGN 65033)
-
-When the TECU is enabled, the TC responds to PGN 65033 requests (ISO 11783-7 B.24.3) and broadcasts the response once on power-up. The 8-byte payload is a bitfield where each bit signals that the TECU actually transmits the corresponding PGN at its defined repetition rate.
-
-**Facilities advertised (bits set to 1):**
-
-| Byte | Bit(s) | Facility | Condition |
-|---|---|---|---|
-| 1 | 8,7 | TECU class | Always `00` (Class 1). |
-| 1 | 2 | Ground-based speed (PGN 65097) | The TECU sends it: always as the primary; as a secondary only if no other Tractor ECU provides it (§5.7). |
-| 1 | 3 | Wheel-based speed (PGN 65096) | Same rule. |
-| 3 | 8 | Time/date (PGN 65254) | Our TECU answers requests for it: as the primary always, as a secondary only when no lower Tractor ECU advertises or sends it. |
-| 3 | 7,6 | Ground-based distance + direction | Same as ground-based speed. |
-| 3 | 5,4 | Wheel-based distance + direction | Same as wheel-based speed. |
-| 5 | 3 | Selected speed (machine selected speed, PGN 61474) | Same rule. |
-
-**Facilities NOT advertised (bits always 0):**
-
-- Engine speed — no engine CAN access.
-- Power management — no key switch or power timer signals.
-- Hitch position / in-work / draft — the hydraulic lift output is a command we issue, not measured feedback; implements would trust it for work-state logic.
-- PTO shaft speed / engagement — no PTO sensor.
-- Lighting — no lighting controller.
-- Language command storage (PGN 65039) — not broadcast by the TECU.
-- Auxiliary valve commands / status — no valve interface.
-- Navigation position data / high-output position — NMEA 2000 position PGNs are not forwarded over Fast Packet.
-- Front hitch / PTO — no front hitch or PTO sensors.
-- All reserved bits (byte 2 bits 2–1, byte 4 bits 3–1, byte 5 bit 5, byte 7, byte 8 including the reserved-bit indicator at bit 1).
-
-**Default payload** (TECU enabled as the primary): `[0x06, 0x00, 0xF8, 0x00, 0x04, 0x00, 0x00, 0x00]`.
-
-**PGN 65032 (Required Tractor Facilities):** When an implement broadcasts what it needs, the TC logs the request at debug level. The response is not modified based on the implement's requirements — a facility bit is set to 1 only when backed by a live broadcast.
-
-### 5.7 Sharing the bus with a tractor's Tractor ECU
-
-ISO 11783-9:2012 §4.4.2.1 allows several Tractor ECUs on the implement bus. The one with function instance 0 is the primary; one with a higher instance "shall not provide any messages which are provided by a Tractor ECU with a lower function instance", requests PGN 65033 from those, and sets only the facility bits they lack (the standard's example is a display adding ground-based speed from GNSS to a tractor without radar).
-
-- **`tecuEnabled` picks the role.** `true`: AOG is the tractor's TECU. At startup the TC's own address claim makes every control function on the bus announce itself; if no other Tractor ECU (function code 134) is there, our TECU claims `240` as the primary (function instance 0) and sends everything in §5.2, otherwise it starts as a secondary. `false` ("the tractor has its own TECU"): always a secondary at an arbitrary address, with a function instance above every Tractor ECU on the bus. With no other Tractor ECU there, every message is a gap and it sends them all; once the tractor's appears, it cuts back to what that one lacks.
-- **Never taking `240` from a tractor:** our TECU NAME is arbitrary-address-capable in both roles. That is the most significant NAME bit, so in an address claim contest for `240` our primary loses to a fixed-address Tractor ECU and moves elsewhere, instead of knocking the tractor's ECU off the bus.
-- **Stepping down at runtime** (`tecuEnabled: true`): once a second the TC checks for other Tractor ECUs. If another one with function instance 0 appears while ours is the primary, or ours lost `240`, our TECU is rebuilt as a secondary above every Tractor ECU's function instance. Another secondary appearing is no reason to step down. The operator sees a hardware message ("Tractor ECU found: AOG adds only missing data").
-- **What a secondary sends:** nothing until the other Tractor ECUs have answered PGN 65033 (and at least 1 s has passed) or 2.5 s have passed. Then each of ground-based speed, wheel-based speed, machine selected speed, J1939 vehicle direction/speed and NMEA 2000 COG/SOG is sent only if no Tractor ECU with a lower function instance advertises it in PGN 65033 *and* none has sent it in the last 3 s. Answering requests for time/date follows the same rule with a 30 s window, because another Tractor ECU may only send it when asked. Only lower instances count, so two secondaries never wait on each other. Its PGN 65033 advertises exactly what it sends, and is re-sent when that changes.
-- A secondary does not step back up to primary if the tractor's Tractor ECU leaves; it then sends everything, still as a secondary.
 
 ---
 

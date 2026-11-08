@@ -98,18 +98,6 @@ public:
 	 */
 	bool set_vt_enabled(bool enabled, bool save = true);
 
-	/// @brief Check whether section control is switched on automatically when an implement connects.
-	bool is_section_control_on_connect() const;
-
-	/// @brief Set whether section control is switched on automatically when an implement connects.
-	bool set_section_control_on_connect(bool enabled, bool save = true);
-
-	/// @brief Check whether section control is switched on when AOG opens a field, as if AOG's SC button was pressed.
-	bool is_section_control_on_field_open() const;
-
-	/// @brief Set whether section control is switched on when AOG opens a field.
-	bool set_section_control_on_field_open(bool enabled, bool save = true);
-
 	/**
 	 * @brief Get the configured TC version
 	 * @return The configured version (0-4, default 3)
@@ -123,20 +111,6 @@ public:
 	 * @return True if the version was set successfully, false otherwise
 	 */
 	bool set_tc_version(std::uint8_t version, bool save = true);
-
-	/**
-	 * @brief Get the configured TC number (ISO 11783-10: function instance + 1)
-	 * @return The TC number (1-32, default 1)
-	 */
-	std::uint8_t get_tc_number() const;
-
-	/**
-	 * @brief Set the TC number. Takes effect after a restart, since it is part of the TC's NAME.
-	 * @param number The TC number (1-32); out of range sets the default
-	 * @param save Whether or not to save the settings to file
-	 * @return True if the setting was set successfully, false otherwise
-	 */
-	bool set_tc_number(std::uint8_t number, bool save = true);
 
 	/**
 	 * @brief Get the configured language code
@@ -187,11 +161,7 @@ private:
 	constexpr static bool DEFAULT_NMEA_SEND_ENABLED = true;
 	constexpr static bool DEFAULT_AOG_HEARTBEAT_ENABLED = true;
 	constexpr static bool DEFAULT_VT_ENABLED = true;
-	constexpr static bool DEFAULT_SECTION_CONTROL_ON_CONNECT = true;
-	constexpr static bool DEFAULT_SECTION_CONTROL_ON_FIELD_OPEN = true;
 	constexpr static std::uint8_t DEFAULT_TC_VERSION = 3; ///< SecondEditionDraft (V3 default for maximum implement compatibility)
-	constexpr static std::uint8_t DEFAULT_TC_NUMBER = 1; ///< TC #1 = function instance 0
-	constexpr static std::uint8_t MAX_TC_NUMBER = 32; ///< The NAME function instance has 5 bits (0-31)
 	static const std::string DEFAULT_LANGUAGE_CODE;
 	static const std::string DEFAULT_COUNTRY_CODE;
 	std::array<std::uint8_t, 3> configuredSubnet = DEFAULT_SUBNET;
@@ -199,10 +169,7 @@ private:
 	bool nmeaSendEnabled = DEFAULT_NMEA_SEND_ENABLED;
 	bool aogHeartbeatEnabled = DEFAULT_AOG_HEARTBEAT_ENABLED;
 	bool vtEnabled = DEFAULT_VT_ENABLED;
-	bool sectionControlOnConnect = DEFAULT_SECTION_CONTROL_ON_CONNECT;
-	bool sectionControlOnFieldOpen = DEFAULT_SECTION_CONTROL_ON_FIELD_OPEN;
 	std::uint8_t tcVersion = DEFAULT_TC_VERSION;
-	std::uint8_t tcNumber = DEFAULT_TC_NUMBER;
 	std::string languageCode = DEFAULT_LANGUAGE_CODE;
 	std::string countryCode = DEFAULT_COUNTRY_CODE;
 };

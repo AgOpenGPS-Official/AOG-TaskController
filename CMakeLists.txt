@@ -41,7 +41,6 @@ if(NOT DEFINED CAN_DRIVER)
     list(APPEND CAN_DRIVER "WindowsInnoMakerUSB2CAN")
     list(APPEND CAN_DRIVER "TouCAN")
     list(APPEND CAN_DRIVER "SYS_TEC")
-    list(APPEND CAN_DRIVER "WindowsCandleLight")
   elseif(APPLE)
     set(CAN_DRIVER "MacCANPCAN")
   else()
@@ -63,7 +62,7 @@ FetchContent_MakeAvailable(Boost)
 FetchContent_Declare(
   isobus
   GIT_REPOSITORY https://github.com/Open-Agriculture/AgIsoStack-plus-plus.git
-  GIT_TAG 02f3fe910de5fdc73e2014394c2e80900490b9cc
+  GIT_TAG 1d081d9a9df61e256015efda3683d15c8fa3d580
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(isobus)
 
@@ -160,22 +159,6 @@ if(AOG_TC_VALIDATE_IOP)
   add_test(NAME object_pool_attributes_in_range COMMAND iop_validator
                                                         "${AOG_TC_IOP_SOURCE}")
 
-  # GuidanceTrackProvider (AOG PGN 0xF4 parsing) unit tests. Made a dependency
-  # of iop_validator so the validation workflow, which builds only that target,
-  # also builds this test.
-  add_executable(
-    test_guidance_track
-    ${CMAKE_CURRENT_LIST_DIR}/tools/test_guidance_track.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/src/guidance_track_context.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/src/async_log.cpp)
-  target_compile_features(test_guidance_track PRIVATE cxx_std_20)
-  set_target_properties(test_guidance_track PROPERTIES CXX_EXTENSIONS OFF)
-  target_include_directories(test_guidance_track
-                             PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
-  target_link_libraries(test_guidance_track PRIVATE Threads::Threads)
-  add_dependencies(iop_validator test_guidance_track)
-  add_test(NAME guidance_track_parsing COMMAND test_guidance_track)
-
   # A deliberately broken pool, so the suite asserts more than "today's pool
   # passes". One case per message, since a shared exit code stays green as long
   # as any one check still fires.
@@ -211,16 +194,6 @@ if(AOG_TC_VALIDATE_IOP)
   add_dependencies(iop_validator test_async_log)
   add_test(NAME async_log COMMAND test_async_log)
 
-  # AOG UDP datagram parsing; the parser is header-only.
-  add_executable(test_aog_packet_parser
-                 ${CMAKE_CURRENT_LIST_DIR}/tools/test_aog_packet_parser.cpp)
-  target_compile_features(test_aog_packet_parser PRIVATE cxx_std_20)
-  set_target_properties(test_aog_packet_parser PROPERTIES CXX_EXTENSIONS OFF)
-  target_include_directories(test_aog_packet_parser
-                             PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
-  add_dependencies(iop_validator test_aog_packet_parser)
-  add_test(NAME aog_packet_parser COMMAND test_aog_packet_parser)
-
   # element_hierarchy (cached element parents for the section state lookup) unit
   # tests, built with the validation workflow for the same reason.
   add_executable(test_element_hierarchy
@@ -239,37 +212,6 @@ if(AOG_TC_VALIDATE_IOP)
   add_test(NAME malformed_pool_exit_status COMMAND iop_validator
                                                    "${AOG_TC_MALFORMED_IOP}")
   set_tests_properties(malformed_pool_exit_status PROPERTIES WILL_FAIL TRUE)
-
-  # Tractor Facilities (PGN 65033) encode/decode unit tests
-  add_executable(
-    test_tractor_facilities
-    ${CMAKE_CURRENT_LIST_DIR}/tools/test_tractor_facilities.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/src/tractor_facilities.cpp)
-  target_compile_features(test_tractor_facilities PRIVATE cxx_std_20)
-  set_target_properties(test_tractor_facilities PROPERTIES CXX_EXTENSIONS OFF)
-  target_include_directories(test_tractor_facilities
-                             PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
-  target_link_libraries(
-    test_tractor_facilities PRIVATE isobus::Isobus isobus::HardwareIntegration
-                                    isobus::Utility)
-  add_test(NAME tractor_facilities_encode_decode
-           COMMAND test_tractor_facilities)
-
-  # Sharing the bus with other Tractor ECUs (ISO 11783-9 4.4.2.1)
-  add_executable(
-    test_tecu_coexistence
-    ${CMAKE_CURRENT_LIST_DIR}/tools/test_tecu_coexistence.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/src/tecu_coexistence.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/src/tractor_facilities.cpp)
-  target_compile_features(test_tecu_coexistence PRIVATE cxx_std_20)
-  set_target_properties(test_tecu_coexistence PROPERTIES CXX_EXTENSIONS OFF)
-  target_include_directories(test_tecu_coexistence
-                             PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
-  target_link_libraries(
-    test_tecu_coexistence PRIVATE isobus::Isobus isobus::HardwareIntegration
-                                  isobus::Utility)
-  add_dependencies(iop_validator test_tecu_coexistence)
-  add_test(NAME tecu_coexistence COMMAND test_tecu_coexistence)
 endif()
 
 if(WIN32)

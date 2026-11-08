@@ -3,6 +3,7 @@
 #include "crash_handler.hpp"
 #include "logging.cpp"
 #include "settings.hpp"
+#include "isobridge_can_plugin.hpp"
 
 #include "isobus/hardware_integration/available_can_drivers.hpp"
 #include "isobus/isobus/can_stack_logger.hpp"
@@ -13,6 +14,8 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdint>
+#include <cctype>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -104,8 +107,8 @@ enum class CANAdapter
 	ADAPTER_INNOMAKER_USB2CAN,
 	ADAPTER_RUSOKU_TOUCAN,
 	ADAPTER_SYS_TEC_USB2CAN,
-	ADAPTER_CANDLELIGHT,
 	ADAPTER_SOCKETCAN,
+	ADAPTER_ISOBRIDGE,
 };
 
 class ArgumentProcessor
@@ -120,9 +123,14 @@ public:
 	{
 		for (std::string arg : arguments)
 		{
-			std::transform(arg.begin(), arg.end(), arg.begin(), [](unsigned char c) { return std::tolower(c); });
-			parse_option(arg);
-			parse_parameter(arg);
+			std::transform(arg.begin(), arg.end(), arg.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+			const bool optionHandled = parse_option(arg);
+			const bool parameterHandled = parse_parameter(arg);
+			if (!optionHandled && !parameterHandled && arg.rfind("--", 0) == 0)
+			{
+				std::cout << "Unknown argument: " << arg << std::endl;
+				return false;
+			}
 		}
 		return true;
 	}
@@ -136,6 +144,9 @@ public:
 	{
 		return canChannel;
 	}
+
+	bool get_tc_auto_mode() const { return tcAutoMode; }
+	std::uint8_t get_tc_function_instance() const { return tcFunctionInstance; }
 
 	bool is_file_logging() const
 	{
@@ -151,8 +162,10 @@ private:
 			std::cout << "Options:\n";
 			std::cout << "  --help\t\tShow this help message\n";
 			std::cout << "  --version\t\tShow the version of the application\n";
-			std::cout << "  --can_adapter=<driver>\tSelect the CAN driver (peak-pcan, innomaker-usb2can, rusoku-toucan, sys-tec-usb2can, candlelight, socketcan)\n";
-			std::cout << "  --can_channel=<channel>\tSelect the CAN channel (numeric, or interface name e.g. can0 for socketcan)\n";
+			std::cout << "  --can_adapter=<driver>\tSelect CAN driver (peak-pcan, innomaker-usb2can, rusoku-toucan, sys-tec-usb2can, socketcan, ISOBridge)\n";
+			std::cout << "  --can_channel=<channel>\tCAN channel or ISOBridge Teensy IPv4 address (UDP port 9200)\n";
+			std::cout << "  --tc_number_mode=<auto|manual>\tChoose TC Function Instance automatically or manually (default: manual)\n";
+			std::cout << "  --tc_function_instance=<0..7>\tTC Function Instance for manual mode (default: 0)\n";
 			std::cout << "  --log_level=<level>\tSet the log level (debug, info, warning, error, critical)\n";
 			std::cout << "  --log2file\t\tLog to file\n";
 			std::exit(0);
@@ -190,9 +203,8 @@ private:
 				{ "innomaker-usb2can", CANAdapter::ADAPTER_INNOMAKER_USB2CAN },
 				{ "rusoku-toucan", CANAdapter::ADAPTER_RUSOKU_TOUCAN },
 				{ "sys-tec-usb2can", CANAdapter::ADAPTER_SYS_TEC_USB2CAN },
-				{ "candlelight", CANAdapter::ADAPTER_CANDLELIGHT },
-				{ "gs_usb", CANAdapter::ADAPTER_CANDLELIGHT },
 				{ "socketcan", CANAdapter::ADAPTER_SOCKETCAN },
+				{ "isobridge", CANAdapter::ADAPTER_ISOBRIDGE },
 			};
 
 			auto it = adapterMap.find(value);
@@ -208,6 +220,22 @@ private:
 		else if ("--can_channel" == key)
 		{
 			canChannel = value;
+		}
+		else if ("--tc_number_mode" == key)
+		{
+			if (value == "auto") tcAutoMode = true;
+			else if (value == "manual") tcAutoMode = false;
+			else { std::cout << "Invalid TC number mode: " << value << " (expected auto or manual)" << std::endl; return false; }
+		}
+		else if ("--tc_function_instance" == key)
+		{
+			try
+			{
+				const int parsed = std::stoi(value);
+				if (parsed < 0 || parsed > 7) { std::cout << "TC Function Instance must be between 0 and 7" << std::endl; return false; }
+				tcFunctionInstance = static_cast<std::uint8_t>(parsed);
+			}
+			catch (...) { std::cout << "Invalid TC Function Instance: " << value << std::endl; return false; }
 		}
 		else if ("--log_level" == key)
 		{
@@ -248,6 +276,8 @@ private:
 	CANAdapter canAdapter = CANAdapter::NONE;
 	std::string canChannel;
 	bool fileLogging = false;
+	bool tcAutoMode = false;
+	std::uint8_t tcFunctionInstance = 0;
 };
 
 static std::shared_ptr<isobus::CANHardwarePlugin> create_can_driver(const ArgumentProcessor &args)
@@ -272,15 +302,15 @@ static std::shared_ptr<isobus::CANHardwarePlugin> create_can_driver(const Argume
 			return std::make_shared<isobus::SysTecWindowsPlugin>(static_cast<std::uint8_t>(std::stoi(args.get_can_channel())));
 		}
 #endif
-#if defined(ISOBUS_WINDOWSCANDLELIGHT_AVAILABLE)
-		case CANAdapter::ADAPTER_CANDLELIGHT:
+		case CANAdapter::ADAPTER_ISOBRIDGE:
 		{
-			// candleLight/gs_usb firmware over WinUSB. The channel picks the adapter, 1 = first one found
-			const std::string channel = args.get_can_channel();
-			const int adapterNumber = channel.empty() ? 1 : std::stoi(channel);
-			return std::make_shared<isobus::CandleLightWindowsPlugin>(static_cast<std::uint8_t>(std::max(adapterNumber, 1) - 1));
+			if (args.get_can_channel().empty())
+			{
+				std::cout << "ISOBridge requires --can_channel=<Teensy IPv4 address>" << std::endl;
+				return nullptr;
+			}
+			return std::make_shared<ISOBridgeCANPlugin>(args.get_can_channel());
 		}
-#endif
 #if defined(ISOBUS_SOCKETCAN_AVAILABLE)
 		case CANAdapter::ADAPTER_SOCKETCAN:
 		{
@@ -304,7 +334,7 @@ static std::shared_ptr<isobus::CANHardwarePlugin> create_can_driver(const Argume
 // Process command-line arguments, set up logging, and create the CAN driver.
 // Returns nullptr on argument-error or driver-creation failure. Note that
 // --help / --version cause the process to exit() inside argument parsing.
-static std::shared_ptr<isobus::CANHardwarePlugin> prepare_application(const std::vector<std::string> &arguments)
+static std::shared_ptr<isobus::CANHardwarePlugin> prepare_application(const std::vector<std::string> &arguments, bool &tcAutoMode, std::uint8_t &tcFunctionInstance)
 {
 	ArgumentProcessor argumentProcessor(arguments);
 	bool argumentsProcessed = argumentProcessor.process();
@@ -330,12 +360,14 @@ static std::shared_ptr<isobus::CANHardwarePlugin> prepare_application(const std:
 		return nullptr;
 	}
 
+	tcAutoMode = argumentProcessor.get_tc_auto_mode();
+	tcFunctionInstance = argumentProcessor.get_tc_function_instance();
 	return create_can_driver(argumentProcessor);
 }
 
-static int run_application_loop(std::shared_ptr<isobus::CANHardwarePlugin> canDriver)
+static int run_application_loop(std::shared_ptr<isobus::CANHardwarePlugin> canDriver, bool tcAutoMode, std::uint8_t tcFunctionInstance)
 {
-	Application app(canDriver);
+	Application app(canDriver, tcAutoMode, tcFunctionInstance);
 	try
 	{
 		if (!app.initialize())
@@ -411,7 +443,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	}
 
 	auto arguments = ParseCommandLine(lpCmdLine);
-	auto canDriver = prepare_application(arguments);
+	bool tcAutoMode = false;
+	std::uint8_t tcFunctionInstance = 0;
+	auto canDriver = prepare_application(arguments, tcAutoMode, tcFunctionInstance);
 	if (!canDriver)
 	{
 		return -1;
@@ -432,7 +466,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	}
 	ShowWindow(hwnd, SW_SHOWMINNOACTIVE); // Little hack: Keep the window hidden, but still allows AOG (or other applications) to gracefully close it
 
-	return run_application_loop(canDriver);
+	return run_application_loop(canDriver, tcAutoMode, tcFunctionInstance);
 }
 #else
 int main(int argc, char **argv)
@@ -444,11 +478,13 @@ int main(int argc, char **argv)
 	std::signal(SIGPIPE, SIG_IGN);
 
 	auto arguments = ParseCommandLine(argc, argv);
-	auto canDriver = prepare_application(arguments);
+	bool tcAutoMode = false;
+	std::uint8_t tcFunctionInstance = 0;
+	auto canDriver = prepare_application(arguments, tcAutoMode, tcFunctionInstance);
 	if (!canDriver)
 	{
 		return -1;
 	}
-	return run_application_loop(canDriver);
+	return run_application_loop(canDriver, tcAutoMode, tcFunctionInstance);
 }
 #endif

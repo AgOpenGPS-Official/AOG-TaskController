@@ -70,8 +70,6 @@ bool Settings::load()
 	nmeaSendEnabled = loadBoolean("nmeaSendEnabled", DEFAULT_NMEA_SEND_ENABLED);
 	aogHeartbeatEnabled = loadBoolean("aogHeartbeatEnabled", DEFAULT_AOG_HEARTBEAT_ENABLED);
 	vtEnabled = loadBoolean("vtEnabled", DEFAULT_VT_ENABLED);
-	sectionControlOnConnect = loadBoolean("sectionControlOnConnect", DEFAULT_SECTION_CONTROL_ON_CONNECT);
-	sectionControlOnFieldOpen = loadBoolean("sectionControlOnFieldOpen", DEFAULT_SECTION_CONTROL_ON_FIELD_OPEN);
 
 	if (data.contains("tcVersion"))
 	{
@@ -97,27 +95,6 @@ bool Settings::load()
 	else
 	{
 		tcVersion = DEFAULT_TC_VERSION; // Key not found, use default
-	}
-
-	tcNumber = DEFAULT_TC_NUMBER;
-	if (data.contains("tcNumber"))
-	{
-		try
-		{
-			int number = data["tcNumber"].get<int>();
-			if (number >= 1 && number <= MAX_TC_NUMBER)
-			{
-				tcNumber = static_cast<std::uint8_t>(number);
-			}
-			else
-			{
-				std::cout << "[" << get_timestamp() << "] Invalid tcNumber " << number << " (1-" << static_cast<int>(MAX_TC_NUMBER) << "), using default " << static_cast<int>(DEFAULT_TC_NUMBER) << std::endl;
-			}
-		}
-		catch (const nlohmann::json::exception &e)
-		{
-			std::cout << "[" << get_timestamp() << "] Error parsing 'tcNumber': " << e.what() << std::endl;
-		}
 	}
 
 	if (data.contains("languageCode"))
@@ -166,10 +143,7 @@ bool Settings::save() const
 	data["nmeaSendEnabled"] = nmeaSendEnabled;
 	data["aogHeartbeatEnabled"] = aogHeartbeatEnabled;
 	data["vtEnabled"] = vtEnabled;
-	data["sectionControlOnConnect"] = sectionControlOnConnect;
-	data["sectionControlOnFieldOpen"] = sectionControlOnFieldOpen;
 	data["tcVersion"] = tcVersion;
-	data["tcNumber"] = tcNumber;
 	data["languageCode"] = languageCode;
 	data["countryCode"] = countryCode;
 
@@ -287,28 +261,6 @@ bool Settings::set_vt_enabled(bool enabled, bool save)
 	return set_boolean(vtEnabled, enabled, save);
 }
 
-bool Settings::is_section_control_on_connect() const
-{
-	std::scoped_lock lock(settingsMutex);
-	return sectionControlOnConnect;
-}
-
-bool Settings::set_section_control_on_connect(bool enabled, bool save)
-{
-	return set_boolean(sectionControlOnConnect, enabled, save);
-}
-
-bool Settings::is_section_control_on_field_open() const
-{
-	std::scoped_lock lock(settingsMutex);
-	return sectionControlOnFieldOpen;
-}
-
-bool Settings::set_section_control_on_field_open(bool enabled, bool save)
-{
-	return set_boolean(sectionControlOnFieldOpen, enabled, save);
-}
-
 bool Settings::is_aog_heartbeat_enabled() const
 {
 	std::scoped_lock lock(settingsMutex);
@@ -337,31 +289,6 @@ bool Settings::set_tc_version(std::uint8_t version, bool save)
 	else
 	{
 		tcVersion = version;
-	}
-	if (save)
-	{
-		return this->save();
-	}
-	return true;
-}
-
-std::uint8_t Settings::get_tc_number() const
-{
-	std::scoped_lock lock(settingsMutex);
-	return tcNumber;
-}
-
-bool Settings::set_tc_number(std::uint8_t number, bool save)
-{
-	std::scoped_lock lock(settingsMutex);
-	if ((number < 1) || (number > MAX_TC_NUMBER))
-	{
-		std::cout << "[" << get_timestamp() << "] Invalid TC number " << static_cast<int>(number) << " (1-" << static_cast<int>(MAX_TC_NUMBER) << "), using default " << static_cast<int>(DEFAULT_TC_NUMBER) << std::endl;
-		tcNumber = DEFAULT_TC_NUMBER;
-	}
-	else
-	{
-		tcNumber = number;
 	}
 	if (save)
 	{

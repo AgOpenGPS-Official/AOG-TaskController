@@ -10,7 +10,6 @@
 #pragma once
 
 #include "element_hierarchy.hpp"
-#include "guidance_track_context.hpp"
 #include "isobus/isobus/isobus_data_dictionary.hpp"
 #include "isobus/isobus/isobus_device_descriptor_object_pool.hpp"
 #include "isobus/isobus/isobus_standard_data_description_indices.hpp"
@@ -19,9 +18,7 @@
 #include <cstdint>
 #include <map>
 #include <mutex>
-#include <optional>
 #include <queue>
-#include <vector>
 
 constexpr std::uint8_t NUMBER_SECTIONS_PER_CONDENSED_MESSAGE = 16;
 
@@ -31,16 +28,6 @@ enum SectionState : std::uint8_t
 	ON = 1, ///< Section is on
 	ERROR_SATE = 2, ///< Section is in an error state
 	NOT_INSTALLED = 3 ///< Section is not installed
-};
-
-/// @brief Track control levels, as the bits an implement sets in DDI 505 for the levels it supports.
-/// Only Level 1 is implemented by the TC.
-enum class TrackControlLevel : std::uint8_t
-{
-	None = 0,
-	Level1 = 1,
-	Level2 = 2,
-	Level3 = 4
 };
 
 class ClientState
@@ -69,10 +56,6 @@ public:
 	isobus::DeviceDescriptorObjectPool &get_pool();
 	bool are_measurement_commands_sent() const;
 	void mark_measurement_commands_sent();
-	/// @brief Schedules the TC's section control state to be applied to this client at the given time.
-	void schedule_initial_section_control(std::uint32_t dueMs);
-	/// @brief Returns true (once) when the scheduled initial section control state is due.
-	bool take_due_initial_section_control(std::uint32_t nowMs);
 	std::uint16_t get_element_number_for_ddi(isobus::DataDescriptionIndex ddi) const;
 	void set_element_number_for_ddi(isobus::DataDescriptionIndex ddi, std::uint16_t elementNumber);
 	bool has_element_number_for_ddi(isobus::DataDescriptionIndex ddi) const;
@@ -83,25 +66,9 @@ public:
 	void set_element_work_state(std::uint16_t elementNumber, bool isWorking);
 	bool try_get_element_work_state(std::uint16_t elementNumber, bool &isWorking) const;
 
-	/// @brief Advances the DDI 507 sequence number if the track or reference line differs from the
-	/// last one announced to this client, and remembers the new values.
-	/// @returns The sequence number to announce.
-	std::uint32_t update_guidance_track_sequence(std::int32_t trackNumber, std::uint32_t referenceLineId);
-
-	// Track control level negotiation. The implement reports the levels it supports in DDI 505,
-	// the TC answers by writing the level it wants to use to DDI 506, and the implement's echo of
-	// that completes the negotiation.
-	int get_supported_track_control_levels() const;
-	void set_supported_track_control_levels(int levels);
-	bool is_track_control_level_sent() const;
-	void set_track_control_level_sent(bool sent);
-	bool is_track_negotiation_complete() const;
-	void set_track_negotiation_complete(bool complete);
-
 private:
 	isobus::DeviceDescriptorObjectPool pool; ///< The device descriptor object pool (DDOP) for the TC
 	bool areMeasurementCommandsSent = false; ///< Whether or not the measurement commands have been sent
-	std::optional<std::uint32_t> initialSectionControlDueMs; ///< When to apply the TC's section control state after connect
 	std::map<isobus::DataDescriptionIndex, std::uint16_t> ddiToElementNumber; ///< Mapping of DDI to element number // TODO: better way to do this?
 
 	std::uint8_t numberOfSections;
@@ -116,12 +83,6 @@ private:
 	bool isSectionControlEnabled = false; ///< Stores auto vs manual mode setting
 	bool usesPerElementControl = false; ///< Legacy mode: use per-element setpoint instead of condensed
 	std::uint16_t perElementSetpointDDI = 0; ///< The DDI to use for per-element setpoints (289 or 141), 0 if not applicable
-	std::int32_t lastSentTrackNumber = 0; ///< Last track number announced, for DDI 507 change detection
-	std::uint32_t lastSentReferenceLineId = 0; ///< Last reference line ID announced, for DDI 507 change detection
-	std::uint32_t guidanceTrackSequenceNumber = 0; ///< Per-client DDI 507 sequence number
-	int supportedTrackControlLevels = 0; ///< Raw DDI 505 bitmask from the implement (bit 0 = Level 1, bit 1 = Level 2, bit 2 = Level 3)
-	bool trackControlLevelSent = false; ///< Whether DDI 506 has been written
-	bool trackNegotiationComplete = false; ///< Whether the implement confirmed the level written to DDI 506
 };
 
 // Create the task controller server object, this will handle all the ISOBUS communication for us
@@ -159,52 +120,17 @@ public:
 	void update_section_states(std::vector<bool> &sectionStates);
 	void update_section_control_enabled(bool enabled);
 
-	/// @brief Sets the section control state applied to implements as they connect, before AOG asks for one.
-	void set_initial_section_control_enabled(bool enabled);
-
 	/// @brief Sends GNSS quality (DDI 514) to every client that declares that DDI.
 	/// @param quality NMEA 2000 GNSS Method: 0=No GNSS, 1=GNSS, 2=DGNSS, 3=Precise, 4=RTK Fixed, 5=RTK Float, 6=Estimated, 7=Manual, 8=Simulated
 	void send_gnss_quality(std::uint8_t quality);
 
-	/// @brief Starts watching for clients that talk to us as if connected although we do not know them.
-	/// See take_stale_clients(). Call once, after initialize().
-	void start_stale_client_detection();
-
-	/// @brief Returns the clients that sent us a Client Task or Value message since the last call without
-	/// being one of our active clients. Such a client still believes it is connected (typically because the
-	/// TC restarted faster than the client's 6 s TC Status timeout) and the stack ignores or NACKs it until
-	/// it reconnects, which it will not do while it keeps seeing our TC Status.
-	/// Call from the thread that calls update().
-	std::vector<std::shared_ptr<isobus::ControlFunction>> take_stale_clients();
-
-	/// @brief Drops the stale client candidates collected so far, e.g. ones that arrived while the TC was quiet
-	void clear_stale_clients();
-
-	~MyTCServer() override;
-
-	/// @brief Announces the current guidance track (DDI 507-511) and line deviation (DDI 513) to every
-	/// client that declares those DDIs. Does nothing while the context is not valid.
-	/// @param ctx Current guidance track state from AOG
-	/// @param lineDeviationMm Deviation from the guidance line in mm
-	void send_guidance_track_data(const GuidanceTrackContext &ctx, std::int32_t lineDeviationMm);
-
-	/// @brief Writes the track control state (DDI 515) to every client that has finished negotiating
-	/// a track control level and declares that DDI.
-	/// @param enabled true = automatic, false = manual/off
-	void update_track_control_enabled(bool enabled);
-
 private:
-	static void on_process_data_for_stale_check(const isobus::CANMessage &message, void *parentPointer);
-
 	void send_section_setpoint_states(std::shared_ptr<isobus::ControlFunction> client, std::uint8_t ddiOffset);
 	void send_section_control_state(std::shared_ptr<isobus::ControlFunction> client, bool enabled);
-	/// @brief Sets the local auto/manual flag and commands DDI 160 if the client supports it. Caller must hold clientsMutex.
-	void apply_section_control_state(std::shared_ptr<isobus::ControlFunction> client, ClientState &state, bool enabled);
 	bool is_ddi_settable(std::shared_ptr<isobus::ControlFunction> client, std::uint16_t ddi);
 
 	std::map<std::shared_ptr<isobus::ControlFunction>, ClientState> clients;
 	std::map<std::shared_ptr<isobus::ControlFunction>, std::queue<std::vector<std::uint8_t>>> uploadedPools;
-	bool desiredSectionControlEnabled = false; ///< Applied to implements when they connect; follows AOG's ISOBUS SC button. Guarded by clientsMutex
 
 	/// @brief Guards clients and uploadedPools.
 	///
@@ -224,10 +150,4 @@ private:
 	/// update_section_states -> send_section_setpoint_states), and get_clients()
 	/// must keep returning a copy, not a reference (see its declaration above).
 	mutable std::recursive_mutex clientsMutex;
-
-	/// @brief Sources of Client Task / Value messages to us, collected on the CAN thread and checked
-	/// against the active clients in take_stale_clients(). Guarded by staleCandidatesMutex.
-	std::vector<std::shared_ptr<isobus::ControlFunction>> staleCandidates;
-	std::mutex staleCandidatesMutex;
-	bool staleClientDetectionStarted = false;
 };
