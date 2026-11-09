@@ -65,6 +65,7 @@ AOG-TaskController reads its configuration from a `settings.json` file located i
 | `aogHeartbeatEnabled` | `bool` | `true` | Sends the 100 ms zero-section heartbeat when no implement is connected. Disable for AgOpenGPS versions before v6.8.2 beta 5. |
 | `vtEnabled` | `bool` | `true` | Enables the ISOBUS Virtual Terminal UI. |
 | `tcVersion` | `integer` | `3` | Task Controller version code, from `0` through `4`; `3` is Second Edition Draft. |
+| `tcNumber` | `integer` | `1` | Task Controller number, `1`–`32` (ISO 11783-10: the TC NAME's function instance + 1). Set `2` or higher when the tractor already has a TC, so implements can tell the two apart. `0` picks the first number no other TC on the bus has, which adds about 1.4 s to startup. Takes effect after restart. |
 | `languageCode` | `string` | `"en"` | Two-character language code advertised on ISOBUS. |
 | `countryCode` | `string` | `"US"` | Two-character country code advertised on ISOBUS. |
 
@@ -78,6 +79,7 @@ AOG-TaskController reads its configuration from a `settings.json` file located i
   "aogHeartbeatEnabled": true,
   "vtEnabled": true,
   "tcVersion": 3,
+  "tcNumber": 1,
   "languageCode": "en",
   "countryCode": "US"
 }
