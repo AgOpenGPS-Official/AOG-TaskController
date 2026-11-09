@@ -105,13 +105,13 @@ bool Settings::load()
 		try
 		{
 			int number = data["tcNumber"].get<int>();
-			if (number >= 1 && number <= MAX_TC_NUMBER)
+			if (number >= TC_NUMBER_AUTOMATIC && number <= MAX_TC_NUMBER)
 			{
 				tcNumber = static_cast<std::uint8_t>(number);
 			}
 			else
 			{
-				std::cout << "[" << get_timestamp() << "] Invalid tcNumber " << number << " (1-" << static_cast<int>(MAX_TC_NUMBER) << "), using default " << static_cast<int>(DEFAULT_TC_NUMBER) << std::endl;
+				std::cout << "[" << get_timestamp() << "] Invalid tcNumber " << number << " (1-" << static_cast<int>(MAX_TC_NUMBER) << ", or 0 for automatic), using default " << static_cast<int>(DEFAULT_TC_NUMBER) << std::endl;
 			}
 		}
 		catch (const nlohmann::json::exception &e)
@@ -351,12 +351,17 @@ std::uint8_t Settings::get_tc_number() const
 	return tcNumber;
 }
 
+bool Settings::is_tc_number_automatic() const
+{
+	return TC_NUMBER_AUTOMATIC == get_tc_number();
+}
+
 bool Settings::set_tc_number(std::uint8_t number, bool save)
 {
 	std::scoped_lock lock(settingsMutex);
-	if ((number < 1) || (number > MAX_TC_NUMBER))
+	if (number > MAX_TC_NUMBER)
 	{
-		std::cout << "[" << get_timestamp() << "] Invalid TC number " << static_cast<int>(number) << " (1-" << static_cast<int>(MAX_TC_NUMBER) << "), using default " << static_cast<int>(DEFAULT_TC_NUMBER) << std::endl;
+		std::cout << "[" << get_timestamp() << "] Invalid TC number " << static_cast<int>(number) << " (1-" << static_cast<int>(MAX_TC_NUMBER) << ", or 0 for automatic), using default " << static_cast<int>(DEFAULT_TC_NUMBER) << std::endl;
 		tcNumber = DEFAULT_TC_NUMBER;
 	}
 	else

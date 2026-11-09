@@ -67,7 +67,7 @@ AOG-TaskController reads its configuration from a `settings.json` file located i
 | `sectionControlOnConnect` | `bool` | `true` | Switches section control on 2 s after an implement connects, as if AOG's SC button was pressed. |
 | `sectionControlOnFieldOpen` | `bool` | `true` | Switches section control on when AOG opens a field (field name, PGN 0xF3, or section states, PGN 229, starting after a gap), as if AOG's SC button was pressed. |
 | `tcVersion` | `integer` | `3` | Task Controller version code, from `0` through `4`; `3` is Second Edition Draft. |
-| `tcNumber` | `integer` | `1` | Task Controller number, `1`–`32` (ISO 11783-10: the TC NAME's function instance + 1). Set `2` or higher when the tractor already has a TC, so implements can tell the two apart. Takes effect after restart. |
+| `tcNumber` | `integer` | `1` | Task Controller number, `1`–`32` (ISO 11783-10: the TC NAME's function instance + 1). Set `2` or higher when the tractor already has a TC, so implements can tell the two apart. `0` picks the first number no other TC on the bus has, which adds about 1.4 s to startup. Takes effect after restart. |
 | `languageCode` | `string` | `"en"` | Two-character language code advertised on ISOBUS. |
 | `countryCode` | `string` | `"US"` | Two-character country code advertised on ISOBUS. |
 
