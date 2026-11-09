@@ -105,6 +105,7 @@ enum class CANAdapter
 	ADAPTER_RUSOKU_TOUCAN,
 	ADAPTER_SYS_TEC_USB2CAN,
 	ADAPTER_CANDLELIGHT,
+	ADAPTER_PROEMION_CANLINK,
 	ADAPTER_SOCKETCAN,
 };
 
@@ -151,8 +152,8 @@ private:
 			std::cout << "Options:\n";
 			std::cout << "  --help\t\tShow this help message\n";
 			std::cout << "  --version\t\tShow the version of the application\n";
-			std::cout << "  --can_adapter=<driver>\tSelect the CAN driver (peak-pcan, innomaker-usb2can, rusoku-toucan, sys-tec-usb2can, candlelight, socketcan)\n";
-			std::cout << "  --can_channel=<channel>\tSelect the CAN channel (numeric, or interface name e.g. can0 for socketcan)\n";
+			std::cout << "  --can_adapter=<driver>\tSelect the CAN driver (peak-pcan, innomaker-usb2can, rusoku-toucan, sys-tec-usb2can, candlelight, proemion, socketcan)\n";
+			std::cout << "  --can_channel=<channel>\tSelect the CAN channel (numeric, interface name e.g. can0 for socketcan, or IP address[:port] for proemion)\n";
 			std::cout << "  --log_level=<level>\tSet the log level (debug, info, warning, error, critical)\n";
 			std::cout << "  --log2file\t\tLog to file\n";
 			std::exit(0);
@@ -192,6 +193,7 @@ private:
 				{ "sys-tec-usb2can", CANAdapter::ADAPTER_SYS_TEC_USB2CAN },
 				{ "candlelight", CANAdapter::ADAPTER_CANDLELIGHT },
 				{ "gs_usb", CANAdapter::ADAPTER_CANDLELIGHT },
+				{ "proemion", CANAdapter::ADAPTER_PROEMION_CANLINK },
 				{ "socketcan", CANAdapter::ADAPTER_SOCKETCAN },
 			};
 
@@ -279,6 +281,18 @@ static std::shared_ptr<isobus::CANHardwarePlugin> create_can_driver(const Argume
 			const std::string channel = args.get_can_channel();
 			const int adapterNumber = channel.empty() ? 1 : std::stoi(channel);
 			return std::make_shared<isobus::CandleLightWindowsPlugin>(static_cast<std::uint8_t>(std::max(adapterNumber, 1) - 1));
+		}
+#endif
+#if defined(ISOBUS_PROEMION_AVAILABLE)
+		case CANAdapter::ADAPTER_PROEMION_CANLINK:
+		{
+			// Proemion Byte Command Protocol over TCP. The channel is the device's IP[:port] or host name
+			if (args.get_can_channel().empty())
+			{
+				std::cout << "The proemion adapter needs --can_channel=<ip-address>[:port]" << std::endl;
+				return nullptr;
+			}
+			return std::make_shared<isobus::ProemionCANLinkInterface>(args.get_can_channel());
 		}
 #endif
 #if defined(ISOBUS_SOCKETCAN_AVAILABLE)

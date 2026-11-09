@@ -268,8 +268,8 @@ AOG-TaskController [options]
 |---|---|---|
 | `--help` | — | Print usage and exit. |
 | `--version` | — | Print git-describe version (with `-dirty` suffix on a dirty tree) and exit. |
-| `--can_adapter=<name>` | none | CAN driver. One of: `peak-pcan`, `innomaker-usb2can`, `rusoku-toucan`, `sys-tec-usb2can`, `candlelight` (alias `gs_usb`; candleLight/gs_usb firmware over WinUSB) (all Windows), `socketcan` (Linux). **Required** — the TC will not start without a driver. |
-| `--can_channel=<id>` | — | Driver-specific channel. Numeric (`1`, `2`, ...) for Windows USB adapters (for `candlelight`, which adapter when several are plugged in; empty = `1`); interface name (`can0`, `vcan0`) for SocketCAN. |
+| `--can_adapter=<name>` | none | CAN driver. One of: `peak-pcan`, `innomaker-usb2can`, `rusoku-toucan`, `sys-tec-usb2can`, `candlelight` (alias `gs_usb`; candleLight/gs_usb firmware over WinUSB) (all Windows), `socketcan` (Linux), `proemion` (Proemion CANlink protocol over TCP, Windows and Linux; test builds only, it needs an AgIsoStack driver that is not merged upstream yet). **Required** — the TC will not start without a driver. |
+| `--can_channel=<id>` | — | Driver-specific channel. Numeric (`1`, `2`, ...) for Windows USB adapters (for `candlelight`, which adapter when several are plugged in; empty = `1`); interface name (`can0`, `vcan0`) for SocketCAN; `<ip-or-host>[:port]` for `proemion` (port defaults to 30000). |
 | `--log_level=<lvl>` | — | One of `debug`, `info`, `warning`, `error`, `critical`. Filters AgIsoStack log output. |
 | `--log2file` | off | Also write all output to `<config>/logs/AOG-TaskController_YYYY-M-D_H-M.log`. |
 

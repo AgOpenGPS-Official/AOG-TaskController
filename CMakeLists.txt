@@ -42,10 +42,12 @@ if(NOT DEFINED CAN_DRIVER)
     list(APPEND CAN_DRIVER "TouCAN")
     list(APPEND CAN_DRIVER "SYS_TEC")
     list(APPEND CAN_DRIVER "WindowsCandleLight")
+    list(APPEND CAN_DRIVER "proemion")
   elseif(APPLE)
     set(CAN_DRIVER "MacCANPCAN")
   else()
     set(CAN_DRIVER "SocketCAN")
+    list(APPEND CAN_DRIVER "proemion")
   endif()
 endif()
 
@@ -62,8 +64,8 @@ FetchContent_MakeAvailable(Boost)
 
 FetchContent_Declare(
   isobus
-  GIT_REPOSITORY https://github.com/Open-Agriculture/AgIsoStack-plus-plus.git
-  GIT_TAG 02f3fe910de5fdc73e2014394c2e80900490b9cc
+  GIT_REPOSITORY https://github.com/gunicsba/AgIsoStack-plus-plus.git
+  GIT_TAG 5acb61b1b539ee85ae7e5f77ac9dfeab795d0309
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(isobus)
 
