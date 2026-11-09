@@ -118,6 +118,9 @@ public:
 	 */
 	std::uint8_t get_tc_number() const;
 
+	/// @brief Whether the TC number is picked at startup from the numbers free on the bus (tcNumber 0)
+	bool is_tc_number_automatic() const;
+
 	/**
 	 * @brief Set the TC number. Takes effect after a restart, since it is part of the TC's NAME.
 	 * @param number The TC number (1-32); out of range sets the default
@@ -177,6 +180,7 @@ private:
 	constexpr static bool DEFAULT_VT_ENABLED = true;
 	constexpr static std::uint8_t DEFAULT_TC_VERSION = 3; ///< SecondEditionDraft (V3 default for maximum implement compatibility)
 	constexpr static std::uint8_t DEFAULT_TC_NUMBER = 1; ///< TC #1 = function instance 0
+	constexpr static std::uint8_t TC_NUMBER_AUTOMATIC = 0; ///< Use the first number no other TC on the bus has
 	constexpr static std::uint8_t MAX_TC_NUMBER = 32; ///< The NAME function instance has 5 bits (0-31)
 	static const std::string DEFAULT_LANGUAGE_CODE;
 	static const std::string DEFAULT_COUNTRY_CODE;

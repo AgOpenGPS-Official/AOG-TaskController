@@ -139,7 +139,7 @@ The TC reads `settings.json` from `$XDG_CONFIG_HOME/AOG-TaskController/` (typica
 | `aogHeartbeatEnabled` | `bool` | `true` | Whether the TC sends a 100 ms heartbeat UDP packet to AgIO/AgValonia even when no implement is connected. **Set to `false` if pairing with AgOpenGPS pre-v6.8.2 beta 5** — older AOG versions choke on the heartbeat. |
 | `vtEnabled` | `bool` | `true` | Whether the TC registers its Virtual Terminal UI. |
 | `tcVersion` | `integer` | `3` | Task Controller version code (`0`–`4`); `3` selects Second Edition Draft. |
-| `tcNumber` | `integer` | `1` | Task Controller number, `1`–`32` (ISO 11783-10: the TC NAME's function instance + 1). Set `2` or higher when the tractor already has a TC, so implements can tell the two apart. Takes effect after restart. |
+| `tcNumber` | `integer` | `1` | Task Controller number, `1`–`32` (ISO 11783-10: the TC NAME's function instance + 1). Set `2` or higher when the tractor already has a TC, so implements can tell the two apart. `0` picks the first number no other TC on the bus has, which adds about 1.4 s to startup. Takes effect after restart. |
 | `languageCode` | `string` | `"en"` | Two-character ISOBUS language code. |
 | `countryCode` | `string` | `"US"` | Two-character ISOBUS country code. |
 
