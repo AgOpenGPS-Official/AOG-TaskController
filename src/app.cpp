@@ -13,6 +13,7 @@
 #include "isobus/hardware_integration/can_hardware_interface.hpp"
 #include "isobus/isobus/can_internal_control_function.hpp"
 #include "isobus/isobus/can_network_manager.hpp"
+#include "isobus/isobus/can_parameter_group_number_request_protocol.hpp"
 #include "isobus/isobus/isobus_device_descriptor_object_pool_helpers.hpp"
 #include "isobus/isobus/isobus_preferred_addresses.hpp"
 #include "isobus/isobus/isobus_standard_data_description_indices.hpp"
@@ -21,14 +22,18 @@
 #include "isobus/utility/system_timing.hpp"
 
 #include "task_controller.hpp"
+#include "tractor_facilities.hpp"
 
 #include "AOG_TC.iop.h"
 
 #include "logging_utils.hpp"
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <iomanip>
 #include <iostream>
+#include <optional>
 #include <span>
 #include <sstream>
 #include <thread>
@@ -42,6 +47,95 @@ static std::string format_hex_address(std::uint8_t address)
 	std::ostringstream value;
 	value << "0x" << std::hex << std::uppercase << std::setw(2) << std::setfill('0') << static_cast<int>(address);
 	return value.str();
+}
+
+// Requests to Send with a global destination are invalid and ignored by the stack. Its per-message warning
+// has no source address, so count them per source here (CAN thread) and report once per minute from update().
+static std::array<std::atomic<std::uint32_t>, 256> globalRtsCountBySource{};
+
+static void count_global_rts(const isobus::CANMessageFrame &frame)
+{
+	constexpr std::uint8_t TP_CONNECTION_MANAGEMENT_PF = 0xEC;
+	constexpr std::uint8_t TP_REQUEST_TO_SEND = 16;
+	if (frame.isExtendedFrame && (frame.dataLength > 0) &&
+	    (((frame.identifier >> 16) & 0xFF) == TP_CONNECTION_MANAGEMENT_PF) &&
+	    (((frame.identifier >> 8) & 0xFF) == 0xFF) &&
+	    (frame.data[0] == TP_REQUEST_TO_SEND))
+	{
+		globalRtsCountBySource[frame.identifier & 0xFF]++;
+	}
+}
+
+static void report_global_rts_counts()
+{
+	std::ostringstream sources;
+	std::uint32_t total = 0;
+	for (std::size_t source = 0; source < globalRtsCountBySource.size(); source++)
+	{
+		const std::uint32_t count = globalRtsCountBySource[source].exchange(0);
+		if (count > 0)
+		{
+			sources << (total > 0 ? ", " : "") << format_hex_address(static_cast<std::uint8_t>(source)) << " (" << count << ")";
+			total += count;
+		}
+	}
+	if (total > 0)
+	{
+		log("TP") << "Ignored " << total << " Request to Send message(s) with a global destination in the last minute, from source address(es) " << sources.str() << std::endl;
+	}
+}
+
+// Diagnostic callback: log any Request for Repetition Rate (PGN 0xCC00)
+// that is properly addressed to one of our control functions.  We never
+// comply (return false) – this is purely for bus analysis.
+static bool log_repetition_rate_request(
+  std::uint32_t requestedPGN,
+  std::shared_ptr<isobus::ControlFunction> requestingCF,
+  std::shared_ptr<isobus::ControlFunction> /*targetCF*/,
+  std::uint32_t repetitionRate,
+  void * /*parentPointer*/)
+{
+	std::uint8_t srcAddr = requestingCF ? requestingCF->get_address() : 0xFF;
+	std::cout << "[" << get_timestamp() << "] [Diag] Repetition-rate request from SA "
+	          << static_cast<int>(srcAddr)
+	          << ": PGN " << requestedPGN
+	          << " (0x" << std::hex << requestedPGN << std::dec
+	          << "), rate=" << repetitionRate << " ms" << std::endl;
+	return false; // We don't comply; just logging.
+}
+
+// Diagnostic callback: log broadcast PGN 0xCC00 messages that AgIsoStack
+// warns about ("malformed or broadcast request for repetition rate").
+// These bypass the per-ICF callback, so we catch them with a global
+// PGN listener.
+static void log_broadcast_repetition_rate(
+  const isobus::CANMessage &message,
+  void * /*parentPointer*/)
+{
+	const auto &data = message.get_data();
+	if (data.size() < 8)
+	{
+		return;
+	}
+
+	auto sourceCF = message.get_source_control_function();
+	std::uint8_t srcAddr = sourceCF ? sourceCF->get_address() : 0xFF;
+
+	// PGN is a 3-byte little-endian value at bytes 0-2.
+	std::uint32_t requestedPGN =
+	  static_cast<std::uint32_t>(data[0]) |
+	  (static_cast<std::uint32_t>(data[1]) << 8) |
+	  (static_cast<std::uint32_t>(data[2]) << 16);
+	std::uint16_t requestedRate =
+	  static_cast<std::uint16_t>(data[3]) |
+	  (static_cast<std::uint16_t>(data[4]) << 8);
+
+	std::cout << "[" << get_timestamp() << "] [Diag] Broadcast repetition-rate request from SA "
+	          << static_cast<int>(srcAddr)
+	          << ": PGN " << requestedPGN
+	          << " (0x" << std::hex << requestedPGN << std::dec
+	          << "), rate=" << requestedRate << " ms"
+	          << " (broadcast – AgIsoStack will warn and ignore)" << std::endl;
 }
 
 // Enumerate and log all Control Functions on the bus
@@ -152,6 +246,50 @@ static bool check_tc_address_conflict(const std::shared_ptr<isobus::InternalCont
 	return conflictActive;
 }
 
+// TC function instances claimed on the bus during discovery, one per TC number. Static because the
+// stack can still run a frame listener once after it has been removed.
+static std::array<std::atomic_bool, 32> tcInstancesSeen{};
+
+// Reads the claims straight from the frames. The stack's table isn't enough: its roll-call after our
+// request can mark a CF offline that has just answered, depending on thread timing.
+static void record_tc_claim(const isobus::CANMessageFrame &frame)
+{
+	if ((8 != frame.dataLength) || (static_cast<std::uint32_t>(isobus::CANLibParameterGroupNumber::AddressClaim) != isobus::CANIdentifier(frame.identifier).get_parameter_group_number()))
+	{
+		return;
+	}
+
+	std::uint64_t rawName = 0;
+	for (std::size_t i = 0; i < 8; i++)
+	{
+		rawName |= static_cast<std::uint64_t>(frame.data[i]) << (8 * i);
+	}
+
+	const isobus::NAME name(rawName);
+	if ((static_cast<std::uint8_t>(isobus::NAME::Function::TaskController) == name.get_function_code()) && (name.get_function_instance() < tcInstancesSeen.size()))
+	{
+		tcInstancesSeen[name.get_function_instance()] = true;
+	}
+}
+
+// Lowest function instance not claimed by a TC during discovery, if there is one.
+static std::optional<std::uint8_t> find_free_tc_function_instance()
+{
+	std::optional<std::uint8_t> freeInstance;
+	for (std::uint8_t instance = 0; instance < tcInstancesSeen.size(); instance++)
+	{
+		if (tcInstancesSeen[instance])
+		{
+			log("TC Discovery") << "Existing Task Controller with function instance " << static_cast<int>(instance) << std::endl;
+		}
+		else if (!freeInstance)
+		{
+			freeInstance = instance;
+		}
+	}
+	return freeInstance;
+}
+
 Application::Application(std::shared_ptr<isobus::CANHardwarePlugin> canDriver) :
   canDriver(canDriver)
 {
@@ -194,6 +332,7 @@ bool Application::setup_can_hardware()
 	}
 	isobus::CANHardwareInterface::set_number_of_can_channels(1);
 	isobus::CANHardwareInterface::assign_can_channel_frame_handler(0, canDriver);
+	isobus::CANHardwareInterface::get_can_frame_received_event_dispatcher().add_listener(count_global_rts);
 
 	if ((!isobus::CANHardwareInterface::start()) || (!canDriver->get_is_valid()))
 	{
@@ -204,12 +343,30 @@ bool Application::setup_can_hardware()
 
 	isobus::CANNetworkManager::CANNetwork.get_configuration().set_number_of_packets_per_cts_message(255);
 
+	// A TC that claimed its address before we started says nothing about its NAME unless asked
+	const bool discoverTcNumbers = settings->is_tc_number_automatic();
+	isobus::EventCallbackHandle tcClaimListener = 0;
+	if (discoverTcNumbers)
+	{
+		tcClaimListener = isobus::CANHardwareInterface::get_can_frame_received_event_dispatcher().add_listener(record_tc_claim);
+	}
+	if (discoverTcNumbers && !isobus::CANNetworkManager::CANNetwork.send_request_for_address_claim(0))
+	{
+		log("TC Discovery") << "Could not request address claims, TCs already on the bus may be missed" << std::endl;
+	}
+
 	// Start CAN network and allow a brief update window to observe bus CFs
+	const std::uint32_t busDiscoveryWindowMs = discoverTcNumbers ? 1500 : 100;
 	auto busDiscoveryWindowStart = isobus::SystemTiming::get_timestamp_ms();
-	while (isobus::SystemTiming::get_time_elapsed_ms(busDiscoveryWindowStart) < 100)
+	while (isobus::SystemTiming::get_time_elapsed_ms(busDiscoveryWindowStart) < busDiscoveryWindowMs)
 	{
 		isobus::CANNetworkManager::CANNetwork.update();
 		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+
+	if (discoverTcNumbers)
+	{
+		isobus::CANHardwareInterface::get_can_frame_received_event_dispatcher().remove_listener(tcClaimListener);
 	}
 
 	return true;
@@ -228,19 +385,32 @@ bool Application::setup_control_functions()
 	ourNAME.set_device_class(0);
 	ourNAME.set_identity_number(20);
 	ourNAME.set_ecu_instance(0);
-	ourNAME.set_function_instance(0); // TC #1. If you want to change the TC number, change this.
+	ourNAME.set_function_instance(0);
 	ourNAME.set_device_class_instance(0);
 	ourNAME.set_manufacturer_code(1407);
 
 	isobus::NAME tcNAME = ourNAME;
 	tcNAME.set_function_code(static_cast<std::uint8_t>(isobus::NAME::Function::TaskController));
+	// ISO 11783-10: the TC number is the TC's NAME function instance + 1 (TC #1 = instance 0)
+	std::uint8_t tcNumber = settings->get_tc_number();
+	if (settings->is_tc_number_automatic())
+	{
+		const auto freeInstance = find_free_tc_function_instance();
+		if (!freeInstance)
+		{
+			log("TC Config") << "No free TC number available" << std::endl;
+			return false;
+		}
+		tcNumber = static_cast<std::uint8_t>(*freeInstance + 1);
+		log("TC Config") << "Automatically selected TC number " << static_cast<int>(tcNumber) << std::endl;
+	}
+	tcNAME.set_function_instance(static_cast<std::uint8_t>(tcNumber - 1));
 
-	isobus::NAME tecuNAME = ourNAME;
-	tecuNAME.set_function_code(static_cast<std::uint8_t>(isobus::NAME::Function::TractorECU));
-	tecuNAME.set_arbitrary_address_capable(false); // TECU address is fixed
-	tecuNAME.set_ecu_instance(0);
+	tecuNameTemplate = ourNAME;
+	tecuNameTemplate.set_function_code(static_cast<std::uint8_t>(isobus::NAME::Function::TractorECU));
+	tecuNameTemplate.set_ecu_instance(0);
 
-	log("Init") << "Creating Task Controller control function..." << std::endl;
+	log("Init") << "Creating Task Controller control function (TC number " << static_cast<int>(tcNumber) << ")..." << std::endl;
 	tcCF = isobus::CANNetworkManager::CANNetwork.create_internal_control_function(tcNAME, 0, isobus::preferred_addresses::IndustryGroup2::TaskController_MappingComputer); // The preferred address for a TC is defined in ISO 11783
 
 	// Wait for TC address claim with bounded wait loop (no async to avoid blocking on destruction)
@@ -287,62 +457,70 @@ bool Application::setup_control_functions()
 		}
 	}
 
-	// Create TECU control function
-	// TODO: Should we wait between this and TC?
-	// TODO: If there's already a TECU on the bus we should not create ours
-	if (tcCF && settings->is_tecu_enabled())
-	{ // Only create TECU if TC was created and ECU is enabled
-		log("Init") << "Creating Tractor ECU control function..." << std::endl;
-		tecuCF = isobus::CANNetworkManager::CANNetwork.create_internal_control_function(tecuNAME, 0, isobus::preferred_addresses::IndustryGroup2::TractorECU);
+	// Create TECU control function. By now the TC's own address claim made every CF on the bus
+	// announce itself, so a tractor's Tractor ECU is already known (ISO 11783-9 4.4.2.1).
+	// tecuEnabled on: AOG is the tractor's TECU (primary at 0xF0), stepping down if one turns up anyway.
+	// tecuEnabled off ("the tractor has its own TECU"): a secondary that fills the gaps, never at 0xF0;
+	// with no other Tractor ECU on the bus, every message is a gap.
+	if (tcCF)
+	{ // Only create TECU if TC was created
+		otherTecus.initialize();
+		isobus::CANHardwareInterface::get_can_frame_received_event_dispatcher().add_listener([this](const isobus::CANMessageFrame &frame) {
+			otherTecus.on_frame(frame); // CAN thread: notes what the other TECUs send
+		});
 
-		// Wait for TECU address claim with minimum 250ms delay per J1939-81 section 4.4.4.1
-		log("Init") << "Tractor ECU control function created, waiting for address claim..." << std::endl;
+		const auto others = otherTecus.refresh(ALL_FUNCTION_INSTANCES);
+		for (const auto &other : others)
+		{
+			knownOtherTecuAddresses.insert(other.address);
+			log("Init") << "Tractor ECU already on the bus at " << format_hex_address(other.address) << " (function instance "
+			            << static_cast<int>(other.functionInstance) << ", manufacturer " << other.manufacturerCode << ")" << std::endl;
+		}
+		if (settings->is_tecu_enabled() && others.empty())
+		{
+			start_tecu_claim(TecuRole::Primary, 0);
+		}
+		else
+		{
+			if (!settings->is_tecu_enabled())
+			{
+				log("Init") << "tecuEnabled is off: the TECU only fills in what the tractor's Tractor ECU does not provide" << std::endl;
+			}
+			const int instance = others.empty() ? 1 : std::min<int>(others.back().functionInstance + 1, ALL_FUNCTION_INSTANCES);
+			start_tecu_claim(TecuRole::Secondary, static_cast<std::uint8_t>(instance));
+		}
 
-		// Update the network manager to process TECU CF claiming
-		int tecuClaimAttempts = 0;
-		const int MAX_TECU_CLAIM_ATTEMPTS = 50; // 5 seconds max
-		while (!tecuCF->get_address_valid() && tecuClaimAttempts < MAX_TECU_CLAIM_ATTEMPTS)
+		// Wait for the claim here at startup, as before, so the TECU interfaces exist once setup is done.
+		// At runtime update_tecu() finishes claims without blocking.
+		while (!tecuCF->get_address_valid() && !isobus::SystemTiming::time_expired_ms(tecuClaimStartedMs, TECU_CLAIM_TIMEOUT_MS))
 		{
 			std::this_thread::sleep_for(std::chrono::milliseconds(100));
 			isobus::CANNetworkManager::CANNetwork.update();
-			tecuClaimAttempts++;
 		}
 
-		// TECU is non-arbitrary-address-capable: it must land on its preferred address or not at all
-		if (tecuCF->get_address_valid() && tecuCF->get_address() == isobus::preferred_addresses::IndustryGroup2::TractorECU)
+		if (tecuCF->get_address_valid())
 		{
 			// Record when the address was actually claimed for the 250ms delay calculation
-			auto tecuAddressClaimedTime = isobus::SystemTiming::get_timestamp_ms();
+			tecuClaimedMs = isobus::SystemTiming::get_timestamp_ms();
+			tecuClaimedMs = (0 == tecuClaimedMs) ? 1 : tecuClaimedMs;
 			log("Init") << "TECU claimed address " << static_cast<int>(tecuCF->get_address()) << std::endl;
 
 			// Ensure minimum 250ms delay after address claim per J1939-81
-			auto tecuClaimElapsedMs = isobus::SystemTiming::get_time_elapsed_ms(tecuAddressClaimedTime);
-			if (tecuClaimElapsedMs < MINIMUM_ADDRESS_CLAIM_DELAY_MS)
+			log("Init") << "Waiting " << MINIMUM_ADDRESS_CLAIM_DELAY_MS << "ms after TECU address claim (J1939-81 250ms rule)..." << std::endl;
+			auto delayStart = isobus::SystemTiming::get_timestamp_ms();
+			while (isobus::SystemTiming::get_time_elapsed_ms(delayStart) < MINIMUM_ADDRESS_CLAIM_DELAY_MS)
 			{
-				auto remainingDelay = MINIMUM_ADDRESS_CLAIM_DELAY_MS - tecuClaimElapsedMs;
-				log("Init") << "Waiting " << remainingDelay << "ms after TECU address claim (J1939-81 250ms rule)..." << std::endl;
-				// Process CAN messages during the delay to prevent timeouts
-				auto delayStart = isobus::SystemTiming::get_timestamp_ms();
-				while (isobus::SystemTiming::get_time_elapsed_ms(delayStart) < remainingDelay)
-				{
-					isobus::CANNetworkManager::CANNetwork.update();
-					std::this_thread::sleep_for(std::chrono::milliseconds(10));
-				}
+				isobus::CANNetworkManager::CANNetwork.update();
+				std::this_thread::sleep_for(std::chrono::milliseconds(10));
 			}
+			// A primary that did not get 0xF0 lost it to another device: update_tecu() steps it down
 		}
 		else
 		{
 			tecuAddressClaimFailed = true;
-			if (tecuCF->get_address_valid())
-			{
-				log("Warning") << "TECU claimed unexpected address " << static_cast<int>(tecuCF->get_address()) << " instead of " << static_cast<int>(isobus::preferred_addresses::IndustryGroup2::TractorECU) << "!" << std::endl;
-			}
-			else
-			{
-				log("Warning") << "TECU failed to claim address " << static_cast<int>(isobus::preferred_addresses::IndustryGroup2::TractorECU) << "! Another TECU may be on the bus." << std::endl;
-			}
-			log("Warning") << "TECU functionality will be disabled." << std::endl;
-			tecuCF.reset(); // Release the failed control function
+			log("Warning") << "TECU failed to claim an address. TECU functionality will be disabled." << std::endl;
+			teardown_tecu();
+			tecuRole = TecuRole::None;
 		}
 	}
 
@@ -381,6 +559,11 @@ void Application::setup_task_controller_server()
 	languageInterface.set_language_code(settings->get_language_code());
 	languageInterface.set_country_code(settings->get_country_code());
 	tcServer->initialize();
+	tcServer->set_initial_section_control_enabled(settings->is_section_control_on_connect());
+	tcServer->start_stale_client_detection();
+	// An implement still connected to a previous run of the TC (a restart takes only a few seconds) would keep
+	// talking to us without reconnecting, and get NACKed, unless it sees our TC Status stop for longer than 6 s.
+	start_tc_quiet_period("startup");
 	tcServer->set_task_totals_active(true); // TODO: make this dynamic based on status in AOG
 	tcFunctionalities = std::make_unique<isobus::ControlFunctionFunctionalities>(tcCF);
 	tcFunctionalities->set_functionality_is_supported(
@@ -399,13 +582,21 @@ void Application::setup_task_controller_server()
 	  1,
 	  true);
 	tcFunctionalities->set_task_controller_section_control_server_option_state(1, 64);
-	log("Init") << "TC announced TC-BAS and TC-SC (1 boom / 64 sections) via PGN 64654" << std::endl;
+
+	// Announce the Task Controller TRACK Server (functionality 27), telling implements this TC
+	// negotiates a track control level. AgIsoStack has no enumerator for it yet, so cast the value.
+	constexpr auto TASK_CONTROLLER_TRACK_SERVER = static_cast<isobus::ControlFunctionFunctionalities::Functionalities>(27);
+	tcFunctionalities->set_functionality_is_supported(TASK_CONTROLLER_TRACK_SERVER, 1, true);
+
+	log("Init") << "TC announced TC-BAS, TC-SC (1 boom / 64 sections) and TC-TRACK via PGN 64654" << std::endl;
 }
 
 void Application::setup_tecu_interfaces()
 {
-	// Initialize speed and distance messages
-	if (tecuCF && tecuCF->get_address_valid())
+	// Initialize speed and distance messages. A primary that did not get 0xF0 waits for update_tecu()
+	// to step it down instead of sending from another address.
+	if (tecuCF && tecuCF->get_address_valid() &&
+	    ((TecuRole::Primary != tecuRole) || (isobus::preferred_addresses::IndustryGroup2::TractorECU == tecuCF->get_address())))
 	{
 		log("Init") << "Creating TECU Control Function Functionalities..." << std::endl;
 		tecuFunctionalities = std::make_unique<isobus::ControlFunctionFunctionalities>(tecuCF);
@@ -419,30 +610,312 @@ void Application::setup_tecu_interfaces()
 		  true);
 		log("Init") << "TECU announced as Class 1 Tractor ECU (PGN 64654)" << std::endl;
 
+		// The primary sends everything. A secondary sends nothing until it knows what the other
+		// Tractor ECUs provide (update_tecu()), so it never doubles one of their messages.
+		const TecuMessagePlan plan = (TecuRole::Primary == tecuRole) ? plan_tecu_messages(true, Facilities{}, {}) : TecuMessagePlan{};
+
 		log("Init") << "Creating Speed Messages Interface on TECU..." << std::endl;
-		speedMessagesInterface = std::make_unique<isobus::SpeedMessagesInterface>(tecuCF, true, true, true, false); //TODO: make configurable whether to send these messages
-		speedMessagesInterface->initialize();
-		speedMessagesInterface->wheelBasedSpeedTransmitData.set_implement_start_stop_operations_state(isobus::WheelBasedMachineSpeedData::ImplementStartStopOperations::NotAvailable);
-		speedMessagesInterface->wheelBasedSpeedTransmitData.set_key_switch_state(isobus::WheelBasedMachineSpeedData::KeySwitchState::NotAvailable);
-		speedMessagesInterface->wheelBasedSpeedTransmitData.set_operator_direction_reversed_state(isobus::WheelBasedMachineSpeedData::OperatorDirectionReversed::NotAvailable);
-		speedMessagesInterface->machineSelectedSpeedTransmitData.set_speed_source(isobus::MachineSelectedSpeedData::SpeedSource::NavigationBasedSpeed);
+		create_speed_messages_interface(plan);
 		log("Init") << "Speed Messages Interface created and initialized." << std::endl;
 
 		log("Init") << "Creating NMEA2000 Message Interface on TECU..." << std::endl;
-		nmea2000MessageInterface = std::make_unique<isobus::NMEA2000MessageInterface>(tecuCF, settings->is_nmea_send_enabled(), false, false, false, false, false, false);
+		nmea2000MessageInterface = std::make_unique<isobus::NMEA2000MessageInterface>(
+		  tecuCF, settings->is_nmea_send_enabled() && plan.sends(TecuMessage::CogSogRapidUpdate), false, false, false, false, false, false);
 		nmea2000MessageInterface->initialize();
 		log("Init") << "NMEA2000 Message Interface created and initialized." << std::endl;
+
+		// Initialize Tractor Facilities (PGN 65033 / 65032)
+		tractorFacilities = std::make_unique<TractorFacilities>(tecuCF, settings);
+		tractorFacilities->set_speed_messages_interface(speedMessagesInterface.get());
+		tractorFacilities->set_nmea2000_message_interface(nmea2000MessageInterface.get());
+		tractorFacilities->set_provided_facilities(facilities_for_plan(plan));
+		tractorFacilities->set_time_date_active(plan.sends(TecuMessage::TimeDate));
+		tractorFacilities->initialize();
+		tecuPlan = plan;
+		tecuInterfacesReady = true;
+		tecuInterfacesReadyMs = isobus::SystemTiming::get_timestamp_ms();
+
+		// Register repetition-rate diagnostic on the TECU's PGN request protocol
+		auto tecuPgnReq = tecuCF->get_pgn_request_protocol().lock();
+		if (tecuPgnReq)
+		{
+			tecuPgnReq->register_request_for_repetition_rate_callback(
+			  static_cast<std::uint32_t>(isobus::CANLibParameterGroupNumber::Any), &log_repetition_rate_request, nullptr);
+		}
+
+		// Also catch broadcast PGN 0xCC00 messages that AgIsoStack warns about.
+		// Once only: this runs again whenever the TECU is rebuilt (update_tecu()).
+		static bool broadcastRepetitionRateListenerAdded = false;
+		if (!broadcastRepetitionRateListenerAdded)
+		{
+			isobus::CANNetworkManager::CANNetwork.add_global_parameter_group_number_callback(
+			  0xCC00 /* RequestForRepetitionRate */, &log_broadcast_repetition_rate, nullptr);
+			broadcastRepetitionRateListenerAdded = true;
+		}
 	}
 	else
 	{
-		if (!settings->is_tecu_enabled())
+		log("Warning") << "TECU Control Function not available, Speed/NMEA interfaces not created" << std::endl;
+	}
+}
+
+void Application::start_tecu_claim(TecuRole role, std::uint8_t functionInstance)
+{
+	// Arbitrary-address-capable as either role. That bit is the most significant one of the NAME, so a
+	// primary always loses an address claim contest for 0xF0 against a tractor's fixed-address Tractor
+	// ECU, instead of taking the address from it, and then moves elsewhere until update_tecu() steps it down.
+	isobus::NAME name = tecuNameTemplate;
+	name.set_arbitrary_address_capable(true);
+	name.set_function_instance(functionInstance);
+	const std::uint8_t preferredAddress = (TecuRole::Primary == role) ? isobus::preferred_addresses::IndustryGroup2::TractorECU : SECONDARY_TECU_PREFERRED_ADDRESS;
+
+	log("TECU") << "Claiming an address as the " << ((TecuRole::Primary == role) ? "primary" : "secondary")
+	            << " Tractor ECU (function instance " << static_cast<int>(functionInstance) << ", preferred address "
+	            << format_hex_address(preferredAddress) << ")" << std::endl;
+	tecuCF = isobus::CANNetworkManager::CANNetwork.create_internal_control_function(name, 0, preferredAddress);
+	tecuRole = role;
+	tecuFunctionInstance = functionInstance;
+	tecuClaimStartedMs = isobus::SystemTiming::get_timestamp_ms();
+	tecuClaimedMs = 0;
+	tecuInterfacesReady = false;
+	tecuPlanSettled = (TecuRole::Primary == role); // The primary sends everything; nothing to settle
+	tecuPlan = TecuMessagePlan{};
+}
+
+void Application::teardown_tecu()
+{
+	// Interfaces first: their destructors unregister from the control function's PGN request protocol,
+	// which deactivate_control_function() releases
+	tractorFacilities.reset();
+	speedMessagesInterface.reset();
+	nmea2000MessageInterface.reset();
+	tecuFunctionalities.reset();
+	if (tecuCF)
+	{
+		isobus::CANNetworkManager::CANNetwork.deactivate_control_function(tecuCF);
+		tecuCF.reset();
+	}
+	tecuInterfacesReady = false;
+	tecuPlanSettled = false;
+	tecuPlan = TecuMessagePlan{};
+	tractorFacilitiesSentOnPowerUp = false;
+}
+
+void Application::create_speed_messages_interface(const TecuMessagePlan &plan)
+{
+	// The stack fixes which speed messages are sent when the interface is constructed, so a changed plan
+	// needs a new one. Carry the current values over so implements never see a zero speed in between.
+	auto previous = std::move(speedMessagesInterface);
+	speedMessagesInterface = std::make_unique<isobus::SpeedMessagesInterface>(tecuCF,
+	                                                                          plan.sends(TecuMessage::GroundBasedSpeed),
+	                                                                          plan.sends(TecuMessage::WheelBasedSpeed),
+	                                                                          plan.sends(TecuMessage::MachineSelectedSpeed),
+	                                                                          false);
+	speedMessagesInterface->initialize();
+	speedMessagesInterface->wheelBasedSpeedTransmitData.set_implement_start_stop_operations_state(isobus::WheelBasedMachineSpeedData::ImplementStartStopOperations::NotAvailable);
+	speedMessagesInterface->wheelBasedSpeedTransmitData.set_key_switch_state(isobus::WheelBasedMachineSpeedData::KeySwitchState::NotAvailable);
+	speedMessagesInterface->wheelBasedSpeedTransmitData.set_operator_direction_reversed_state(isobus::WheelBasedMachineSpeedData::OperatorDirectionReversed::NotAvailable);
+	speedMessagesInterface->machineSelectedSpeedTransmitData.set_speed_source(isobus::MachineSelectedSpeedData::SpeedSource::NavigationBasedSpeed);
+
+	if (previous)
+	{
+		auto &next = *speedMessagesInterface;
+		next.groundBasedSpeedTransmitData.set_machine_speed(previous->groundBasedSpeedTransmitData.get_machine_speed());
+		next.groundBasedSpeedTransmitData.set_machine_distance(previous->groundBasedSpeedTransmitData.get_machine_distance());
+		next.groundBasedSpeedTransmitData.set_machine_direction_of_travel(previous->groundBasedSpeedTransmitData.get_machine_direction_of_travel());
+		next.wheelBasedSpeedTransmitData.set_machine_speed(previous->wheelBasedSpeedTransmitData.get_machine_speed());
+		next.wheelBasedSpeedTransmitData.set_machine_distance(previous->wheelBasedSpeedTransmitData.get_machine_distance());
+		next.wheelBasedSpeedTransmitData.set_machine_direction_of_travel(previous->wheelBasedSpeedTransmitData.get_machine_direction_of_travel());
+		next.machineSelectedSpeedTransmitData.set_machine_speed(previous->machineSelectedSpeedTransmitData.get_machine_speed());
+		next.machineSelectedSpeedTransmitData.set_machine_distance(previous->machineSelectedSpeedTransmitData.get_machine_distance());
+		next.machineSelectedSpeedTransmitData.set_machine_direction_of_travel(previous->machineSelectedSpeedTransmitData.get_machine_direction_of_travel());
+	}
+	if (tractorFacilities)
+	{
+		tractorFacilities->set_speed_messages_interface(speedMessagesInterface.get());
+	}
+}
+
+void Application::apply_tecu_plan(const TecuMessagePlan &plan)
+{
+	for (std::size_t i = 0; i < TECU_MESSAGE_COUNT; i++)
+	{
+		if (plan.send[i] != tecuPlan.send[i])
 		{
-			log("Info") << "Tractor ECU disabled in settings, skipping ECU initialization." << std::endl;
+			const auto message = static_cast<TecuMessage>(i);
+			log("TECU") << (plan.send[i] ? "Sending " : "Not sending ") << tecu_message_name(message)
+			            << (plan.send[i] ? ": no other Tractor ECU provides it" : ": another Tractor ECU provides it") << std::endl;
 		}
-		else
+	}
+
+	const bool speedMessagesChanged = (plan.sends(TecuMessage::GroundBasedSpeed) != tecuPlan.sends(TecuMessage::GroundBasedSpeed)) ||
+	  (plan.sends(TecuMessage::WheelBasedSpeed) != tecuPlan.sends(TecuMessage::WheelBasedSpeed)) ||
+	  (plan.sends(TecuMessage::MachineSelectedSpeed) != tecuPlan.sends(TecuMessage::MachineSelectedSpeed));
+	if (speedMessagesChanged)
+	{
+		create_speed_messages_interface(plan);
+	}
+	if (nmea2000MessageInterface)
+	{
+		nmea2000MessageInterface->set_enable_sending_cog_sog_cyclically(settings->is_nmea_send_enabled() && plan.sends(TecuMessage::CogSogRapidUpdate));
+	}
+	tecuPlan = plan;
+
+	if (tractorFacilities)
+	{
+		tractorFacilities->set_provided_facilities(facilities_for_plan(plan));
+		tractorFacilities->set_time_date_active(plan.sends(TecuMessage::TimeDate));
+		if (tractorFacilitiesSentOnPowerUp)
 		{
-			log("Warning") << "TECU Control Function not available, Speed/NMEA interfaces not created" << std::endl;
+			// Implements that cached our earlier response learn what changed
+			tractorFacilities->send_facilities_response();
 		}
+	}
+}
+
+void Application::on_aog_field_opened(const std::string &how)
+{
+	if (!settings->is_section_control_on_field_open())
+	{
+		return;
+	}
+	if ((0 != lastFieldOpenAppliedMs) && !isobus::SystemTiming::time_expired_ms(lastFieldOpenAppliedMs, FIELD_OPEN_DEDUPLICATE_MS))
+	{
+		return;
+	}
+	lastFieldOpenAppliedMs = isobus::SystemTiming::get_timestamp_ms();
+	if (0 == lastFieldOpenAppliedMs)
+	{
+		lastFieldOpenAppliedMs = 1; // 0 means "never"
+	}
+
+	// Saves pressing AOG's SC button after every field change; same effect as PGN 241 "enabled"
+	log("TC") << "AOG " << how << ": switching section control on, as if AOG's SC button was pressed" << std::endl;
+	tcServer->update_section_control_enabled(true);
+}
+
+void Application::update_tecu()
+{
+	if (TecuRole::None == tecuRole)
+	{
+		return;
+	}
+
+	auto step_down = [this](const std::string &reason) {
+		// ISO 11783-9 4.4.2.1: the tractor's own Tractor ECU is the primary; we become a secondary,
+		// with a function instance above every Tractor ECU on the bus
+		log("TECU") << reason << ": stepping down to a secondary Tractor ECU that only adds what it lacks" << std::endl;
+		send_hardware_message("Tractor ECU found: AOG adds only missing data", 10, HW_MSG_INFO);
+		const auto all = otherTecus.refresh(ALL_FUNCTION_INSTANCES);
+		const int instance = all.empty() ? 1 : std::min<int>(all.back().functionInstance + 1, ALL_FUNCTION_INSTANCES);
+		teardown_tecu();
+		start_tecu_claim(TecuRole::Secondary, static_cast<std::uint8_t>(instance));
+	};
+
+	// A primary claim that did not end on 0xF0 lost it to another device: do not start sending from there
+	if ((TecuRole::Primary == tecuRole) && tecuCF && tecuCF->get_address_valid() &&
+	    (isobus::preferred_addresses::IndustryGroup2::TractorECU != tecuCF->get_address()))
+	{
+		step_down("Address 0xF0 is taken");
+		return;
+	}
+
+	// A claim started at runtime: finish it without blocking the main loop
+	if (!tecuInterfacesReady)
+	{
+		if (tecuCF && tecuCF->get_address_valid())
+		{
+			if (0 == tecuClaimedMs)
+			{
+				tecuClaimedMs = isobus::SystemTiming::get_timestamp_ms();
+				tecuClaimedMs = (0 == tecuClaimedMs) ? 1 : tecuClaimedMs;
+				log("TECU") << "Claimed address " << format_hex_address(tecuCF->get_address()) << std::endl;
+			}
+			if (isobus::SystemTiming::time_expired_ms(tecuClaimedMs, 250)) // J1939-81 250 ms rule
+			{
+				setup_tecu_interfaces();
+			}
+		}
+		else if (isobus::SystemTiming::time_expired_ms(tecuClaimStartedMs, TECU_CLAIM_TIMEOUT_MS))
+		{
+			log("Warning") << "TECU failed to claim an address. TECU functionality will be disabled." << std::endl;
+			tecuAddressClaimFailed = true;
+			teardown_tecu();
+			tecuRole = TecuRole::None;
+		}
+		return;
+	}
+
+	if (!isobus::SystemTiming::time_expired_ms(lastTecuCheckMs, TECU_CHECK_INTERVAL_MS))
+	{
+		return;
+	}
+	lastTecuCheckMs = isobus::SystemTiming::get_timestamp_ms();
+
+	// Only Tractor ECUs with a lower function instance count (ISO 11783-9 4.4.2.1 c). For the primary
+	// (instance 0) that is another instance 0: the tractor's own; a secondary appearing is no reason to step down.
+	const std::uint8_t deferTo = (TecuRole::Primary == tecuRole) ? 0 : static_cast<std::uint8_t>(tecuFunctionInstance - 1);
+	const auto others = otherTecus.refresh(deferTo);
+	std::set<std::uint8_t> addresses;
+	for (const auto &other : others)
+	{
+		addresses.insert(other.address);
+		if (0 == knownOtherTecuAddresses.count(other.address))
+		{
+			log("TECU") << "Another Tractor ECU appeared at " << format_hex_address(other.address) << " (function instance "
+			            << static_cast<int>(other.functionInstance) << ", manufacturer " << other.manufacturerCode << ")" << std::endl;
+		}
+	}
+	for (const auto address : knownOtherTecuAddresses)
+	{
+		if (0 == addresses.count(address))
+		{
+			log("TECU") << "The Tractor ECU at " << format_hex_address(address) << " left the bus" << std::endl;
+		}
+	}
+	knownOtherTecuAddresses = addresses;
+
+	if (TecuRole::Primary == tecuRole)
+	{
+		if (!others.empty())
+		{
+			step_down("A Tractor ECU is on the bus");
+		}
+		else if (!tecuCF->get_address_valid())
+		{
+			step_down("Lost address 0xF0");
+		}
+		return;
+	}
+
+	// Secondary: ask each other TECU what it provides (ISO 11783-9 4.4.2.1 d)
+	for (const auto &other : others)
+	{
+		if (!otherTecus.facilities_requested(other.address) &&
+		    isobus::ParameterGroupNumberRequestProtocol::request_parameter_group_number(TractorFacilities::PGN_TRACTOR_FACILITIES, tecuCF, other.controlFunction))
+		{
+			otherTecus.mark_facilities_requested(other.address);
+			log("TECU") << "Requested tractor facilities (PGN 65033) from " << format_hex_address(other.address) << std::endl;
+		}
+	}
+
+	if (!tecuPlanSettled)
+	{
+		const std::uint32_t elapsed = isobus::SystemTiming::get_time_elapsed_ms(tecuInterfacesReadyMs);
+		const bool answered = otherTecus.all_facilities_received() && (elapsed >= TECU_PLAN_MIN_SETTLE_MS);
+		if (!answered && (elapsed < TECU_PLAN_SETTLE_MS))
+		{
+			return;
+		}
+		tecuPlanSettled = true;
+		log("TECU") << (answered ? "The other Tractor ECUs reported their facilities" : "Not every Tractor ECU answered PGN 65033; going by what they send")
+		            << std::endl;
+	}
+
+	const TecuMessagePlan plan = plan_tecu_messages(false, otherTecus.advertised_facilities(), otherTecus.sent_by_others());
+	if (plan != tecuPlan)
+	{
+		apply_tecu_plan(plan);
 	}
 }
 
@@ -501,6 +974,8 @@ void Application::setup_udp_connections()
 					sectionStates.push_back(data[j] & (1 << i));
 				}
 			}
+			// Older AOG versions do not send the field name, but PGN 229 only flows while a field is open
+			const bool resumed = (0 == lastSectionDemandMs) || isobus::SystemTiming::time_expired_ms(lastSectionDemandMs, SECTION_DEMAND_TIMEOUT_MS);
 			lastSectionDemandMs = lastAogPacketMs;
 			if (sectionStates != sectionDemand)
 			{
@@ -508,6 +983,10 @@ void Application::setup_udp_connections()
 				sectionDemandChangesSinceLog++;
 			}
 			tcServer->update_section_states(sectionStates);
+			if (resumed)
+			{
+				on_aog_field_opened("started sending section states (PGN 229)");
+			}
 		}
 		else if (pgn == 0xF1 && !data.empty()) // 241 - Section Control
 		{
@@ -515,6 +994,85 @@ void Application::setup_udp_connections()
 			std::uint8_t sectionControlState = data[0];
 			log() << "Received request from AOG to change section control state to " << (sectionControlState == 1 ? "enabled" : "disabled") << std::endl;
 			tcServer->update_section_control_enabled(sectionControlState == 1);
+			// Track control is separate from section control, even though the same AOG Auto command drives both.
+			tcServer->update_track_control_enabled(sectionControlState == 1);
+		}
+		else if (pgn == 0xEF) // 239 - Machine Data
+		{
+			// Not parsed; only counts as AOG liveness.
+			lastAogPacketMs = isobus::SystemTiming::get_timestamp_ms();
+		}
+		else if (pgn == 0xF3) // 243 - Field Name
+		{
+			lastAogPacketMs = isobus::SystemTiming::get_timestamp_ms();
+
+			// The whole payload IS the UTF-8 field name — no length prefix, no offset.
+			// Confirmed against a live packet: a documented "length byte at offset 4,
+			// name at offset 5+" layout does not match what AOG actually sends — the
+			// payload was exactly N raw UTF-8 name bytes, nothing else. An empty
+			// payload means the field is closed.
+			if (data.empty())
+			{
+				if (hasActiveField)
+				{
+					log("Field") << "Field closed: " << currentFieldName << std::endl;
+				}
+				currentFieldName.clear();
+				hasActiveField = false;
+				// Invalidate any in-flight track context immediately — broadcasting
+				// DDI 508 without a field to scope it to would defeat the point of the
+				// field index folded into it below.
+				currentTrackContext.valid = false;
+			}
+			else
+			{
+				constexpr std::size_t MAX_FIELD_NAME_BYTES = 248;
+				std::size_t nameLength = data.size();
+				if (nameLength > MAX_FIELD_NAME_BYTES)
+				{
+					log("Field") << "PGN 0xF3 name of " << nameLength << " bytes exceeds the documented "
+					             << MAX_FIELD_NAME_BYTES << "-byte max; truncating." << std::endl;
+					nameLength = MAX_FIELD_NAME_BYTES;
+				}
+
+				std::string fieldName(reinterpret_cast<const char *>(data.data()), nameLength);
+				if (fieldName != currentFieldName || !hasActiveField)
+				{
+					currentFieldName = fieldName;
+					currentFieldIndex = fieldRegistry.get_or_assign_index(fieldName);
+					hasActiveField = true;
+					log("Field") << "Field opened: " << currentFieldName << " (index " << currentFieldIndex << ")" << std::endl;
+				}
+				on_aog_field_opened("opened field '" + fieldName + "'");
+			}
+		}
+		else if (pgn == 0xF4) // 244 - Guidance Track Context
+		{
+			lastAogPacketMs = isobus::SystemTiming::get_timestamp_ms();
+
+			// Always update currentTrackContext: when AOG sends valid=false
+			// (guidance off / no active track), the context must be invalidated
+			// so the TC stops broadcasting stale track data.
+			// Note: parse() handles short-payload validation internally.
+			currentTrackContext = trackProvider.parse(data);
+
+			// AOG's own guidance reference ID (see GuidanceTrackProvider) is only unique
+			// within whichever field AOG currently has open — fold in the field's own
+			// persistent index (upper 16 bits) so DDI 508 is unique across fields too.
+			// Without an active field, there's nothing to scope the ID to — don't send it.
+			if (currentTrackContext.valid)
+			{
+				if (hasActiveField)
+				{
+					currentTrackContext.guidanceReferenceLineId =
+					  (static_cast<std::uint32_t>(currentFieldIndex) << 16) |
+					  (currentTrackContext.guidanceReferenceLineId & 0xFFFFu);
+				}
+				else
+				{
+					currentTrackContext.valid = false;
+				}
+			}
 		}
 		else if (pgn == 0xF2 && data.size() >= 6) // Process Data
 		{
@@ -631,10 +1189,21 @@ bool Application::update()
 
 	udpConnections->handle_address_detection();
 	udpConnections->handle_incoming_packets();
+	update_tecu();
 
-	tcServer->request_measurement_commands();
-	warn_if_late("tcServer->update()", lastTcServerUpdateCallMs, 200);
-	tcServer->update();
+	if (is_tc_quiet())
+	{
+		// Not calling update() also holds the stack's own TC Status; messages wait in its queue
+		lastTcServerUpdateCallMs = 0;
+		tcServer->clear_stale_clients();
+	}
+	else
+	{
+		tcServer->request_measurement_commands();
+		warn_if_late("tcServer->update()", lastTcServerUpdateCallMs, 200);
+		tcServer->update();
+		recover_stale_clients();
+	}
 	if (tcFunctionalities)
 		tcFunctionalities->update();
 	if (tecuFunctionalities)
@@ -646,6 +1215,20 @@ bool Application::update()
 	}
 	if (nmea2000MessageInterface)
 		nmea2000MessageInterface->update();
+
+	// Transmit PGN 65033 once on power-up (ISO 11783-7 B.24.3 repetition
+	// rate: "on power-up, and then on request").
+	// The send fails until the TECU has claimed an address (or if the transmit queue rejects it),
+	// so only stop once it went out and retry once a second until then.
+	static std::uint32_t lastFacilitiesAttemptMs = 0;
+	// A secondary TECU waits until it knows what the other Tractor ECUs provide.
+	if (!tractorFacilitiesSentOnPowerUp && tractorFacilities && tecuPlanSettled &&
+	    isobus::SystemTiming::time_expired_ms(lastFacilitiesAttemptMs, 1000))
+	{
+		lastFacilitiesAttemptMs = isobus::SystemTiming::get_timestamp_ms();
+		tractorFacilitiesSentOnPowerUp = tractorFacilities->send_facilities_response();
+	}
+
 	if (vtClient)
 		update_vt_client();
 
@@ -672,6 +1255,13 @@ bool Application::update()
 		}
 		tcAddressConflictActive = conflictActive;
 		lastConflictCheck = isobus::SystemTiming::get_timestamp_ms();
+	}
+
+	static std::uint32_t lastGlobalRtsReportMs = 0;
+	if (isobus::SystemTiming::time_expired_ms(lastGlobalRtsReportMs, 60000))
+	{
+		report_global_rts_counts();
+		lastGlobalRtsReportMs = isobus::SystemTiming::get_timestamp_ms();
 	}
 
 	// Diff active implement clients once per second so disconnect messages retain prior metadata.
@@ -719,7 +1309,7 @@ bool Application::update()
 	// This is deferred from setup_control_functions() until UDP is ready.
 	if (tecuAddressClaimFailed)
 	{
-		send_hardware_message("TECU failed to claim address " + std::to_string(static_cast<int>(isobus::preferred_addresses::IndustryGroup2::TractorECU)), 10, HW_MSG_ALERT);
+		send_hardware_message("TECU failed to claim an address", 10, HW_MSG_ALERT);
 		tecuAddressClaimFailed = false;
 	}
 
@@ -769,7 +1359,8 @@ bool Application::update()
 	}
 
 	// Send J1939 PGN 65256 every 100ms (0.1 seconds)
-	if (isobus::SystemTiming::time_expired_ms(lastJ1939SpeedTransmit, 100) && tecuCF && tecuCF->get_address_valid())
+	if (isobus::SystemTiming::time_expired_ms(lastJ1939SpeedTransmit, 100) && tecuCF && tecuCF->get_address_valid() &&
+	    tecuPlan.sends(TecuMessage::VehicleDirectionSpeed))
 	{
 		std::uint16_t speed_j1939 = (static_cast<std::uint32_t>(std::abs(lastSpeedValue)) * 576u + 312u) / 625u; // mm/s -> (km/h)*256
 		std::array<std::uint8_t, 8> j1939_speed_data = {
@@ -803,7 +1394,11 @@ bool Application::update()
 			lastLateWarningMs = isobus::SystemTiming::get_timestamp_ms();
 		}
 	}
-	if (isobus::SystemTiming::time_expired_ms(lastTCStatusTransmit, 2000) && tcCF && tcCF->get_address_valid())
+	if (is_tc_quiet())
+	{
+		lastTCStatusTransmit = 0; // Send right away when the quiet period ends, without a "late" warning
+	}
+	else if (isobus::SystemTiming::time_expired_ms(lastTCStatusTransmit, 2000) && tcCF && tcCF->get_address_valid())
 	{
 		static bool firstStatusSent = false;
 		send_task_controller_status_message();
@@ -834,7 +1429,31 @@ bool Application::update()
 		lastGnssSendMs = isobus::SystemTiming::get_timestamp_ms();
 	}
 
+	// Send guidance track data (DDI 507-511, 513) to implements every 250 ms
+	static std::uint32_t lastTrackSendMs = 0;
+	if (tcServer && isobus::SystemTiming::time_expired_ms(lastTrackSendMs, 250))
+	{
+		// AOG only sends PGN 0xF4 when the guidance track actually changes (no heartbeat) —
+		// long gaps between packets are the normal state while driving straight, not staleness.
+		// Only clear the context on a real AOG disconnect (edge-triggered, not every tick).
+		const bool aogConnectedNow = is_aog_connected();
+		if (!aogConnectedNow && aogWasConnectedForTrack)
+		{
+			currentTrackContext.valid = false;
+			trackProvider.reset(); // Treat next packet as fresh start after the gap
+		}
+		aogWasConnectedForTrack = aogConnectedNow;
+
+		tcServer->send_guidance_track_data(currentTrackContext, lastXteValue);
+		lastTrackSendMs = isobus::SystemTiming::get_timestamp_ms();
+	}
+
 	return true;
+}
+
+bool Application::is_aog_connected() const
+{
+	return (lastAogPacketMs != 0) && !isobus::SystemTiming::time_expired_ms(lastAogPacketMs, AOG_CONNECTION_TIMEOUT_MS);
 }
 
 void Application::send_hardware_message(const std::string &text, std::uint8_t duration, std::uint8_t color)
@@ -945,6 +1564,73 @@ Application::ImplementDetails Application::derive_implement_details(ClientState 
 	}
 
 	return details;
+}
+
+void Application::start_tc_quiet_period(const std::string &reason)
+{
+	tcQuietUntilMs = isobus::SystemTiming::get_timestamp_ms() + TC_QUIET_PERIOD_MS;
+	if (0 == tcQuietUntilMs)
+	{
+		tcQuietUntilMs = 1; // 0 means "not quiet"
+	}
+	log("TC") << "Holding TC Status for " << TC_QUIET_PERIOD_MS << " ms (" << reason
+	          << ") so connected implements drop their connection and reconnect" << std::endl;
+}
+
+bool Application::is_tc_quiet()
+{
+	if (0 == tcQuietUntilMs)
+	{
+		return false;
+	}
+	// Signed difference so the comparison survives timestamp wrap-around
+	if (static_cast<std::int32_t>(isobus::SystemTiming::get_timestamp_ms() - tcQuietUntilMs) < 0)
+	{
+		return true;
+	}
+	tcQuietUntilMs = 0;
+	log("TC") << "Quiet period over, sending TC Status again" << std::endl;
+	return false;
+}
+
+void Application::recover_stale_clients()
+{
+	for (const auto &client : tcServer->take_stale_clients())
+	{
+		const std::uint64_t name = client->get_NAME().get_full_name();
+		std::ostringstream clientText;
+		clientText << "0x" << std::hex << std::uppercase << std::setw(2) << std::setfill('0') << static_cast<int>(client->get_address())
+		           << " (NAME " << std::dec << name << ")";
+
+		if ((0 != lastStaleClientRecoveryMs) &&
+		    !isobus::SystemTiming::time_expired_ms(lastStaleClientRecoveryMs, STALE_CLIENT_RECOVERY_COOLDOWN_MS))
+		{
+			continue; // Give the clients of the last quiet period time to reconnect
+		}
+
+		auto &recoveries = staleClientRecoveries[name];
+		if (recoveries >= MAX_STALE_CLIENT_RECOVERIES)
+		{
+			if (MAX_STALE_CLIENT_RECOVERIES == recoveries)
+			{
+				log("TC") << "Client " << clientText.str() << " is still talking to us without being connected after "
+				          << static_cast<int>(MAX_STALE_CLIENT_RECOVERIES)
+				          << " quiet periods; giving up. Power-cycle the implement to reconnect it." << std::endl;
+				send_hardware_message("Implement not reconnecting: power-cycle it", 20, HW_MSG_ALERT);
+				recoveries++; // Log once
+			}
+			continue;
+		}
+
+		recoveries++;
+		lastStaleClientRecoveryMs = isobus::SystemTiming::get_timestamp_ms();
+		log("TC") << "Client " << clientText.str() << " is talking to us as if connected, but it is not one of our clients "
+		          << "(it missed a TC restart or timeout). Reconnecting it, attempt " << static_cast<int>(recoveries)
+		          << " of " << static_cast<int>(MAX_STALE_CLIENT_RECOVERIES) << "." << std::endl;
+		send_hardware_message("Reconnecting implement", 5, HW_MSG_INFO);
+		start_tc_quiet_period("stale client " + clientText.str());
+		break; // One quiet period reconnects every client
+	}
 }
 
 std::string Application::describe_section_demand(const std::vector<bool> &demand, std::uint8_t numberOfSections)
@@ -1195,7 +1881,7 @@ void Application::setup_vt_client()
 					saved = settings->set_nmea_send_enabled(enabled);
 					if (saved)
 					{
-						nmea2000MessageInterface->set_enable_sending_cog_sog_cyclically(enabled);
+						nmea2000MessageInterface->set_enable_sending_cog_sog_cyclically(enabled && tecuPlan.sends(TecuMessage::CogSogRapidUpdate));
 					}
 				}
 				else
@@ -1396,7 +2082,7 @@ void Application::update_vt_client()
 
 	sync_vt_config_once();
 
-	const bool aogConnected = (lastAogPacketMs != 0) && !isobus::SystemTiming::time_expired_ms(lastAogPacketMs, 3000);
+	const bool aogConnected = is_aog_connected();
 	vtUpdateHelper->set_numeric_value(VTSpeedValue, aogConnected ? static_cast<std::uint32_t>(std::abs(lastSpeedValue)) : 0U);
 
 	vtUpdateHelper->set_numeric_value(VTXteValue, aogConnected ? (static_cast<std::uint32_t>(lastXteValue) ^ 0x80000000U) : 0x80000000U);
@@ -1472,6 +2158,42 @@ void Application::update_vt_status_strings(bool aogConnected)
 	mainImplementStatus << "Name             " << implementDisplayName << '\n'
 	                    << "Sections         " << totalSections << '\n'
 	                    << "Section control  " << sectionControl;
+
+	// Live guidance track from AOG, plus the track control levels the implement reports (DDI 505)
+	{
+		std::string trackState = "OFF";
+		if (!aogConnected)
+		{
+			trackState = "n/a";
+		}
+		else if (currentTrackContext.valid)
+		{
+			trackState = "ref:" + std::to_string(currentTrackContext.guidanceReferenceLineId) +
+			  " track:" + std::to_string(currentTrackContext.actualTrackNumber);
+		}
+
+		int implementTrackLevels = 0;
+		for (const auto &client : clients)
+		{
+			if (client.second.get_supported_track_control_levels() != 0)
+			{
+				implementTrackLevels = client.second.get_supported_track_control_levels();
+				break;
+			}
+		}
+		std::string trackLevels;
+		if (implementTrackLevels & static_cast<int>(TrackControlLevel::Level1))
+			trackLevels += "L1 ";
+		if (implementTrackLevels & static_cast<int>(TrackControlLevel::Level2))
+			trackLevels += "L2 ";
+		if (implementTrackLevels & static_cast<int>(TrackControlLevel::Level3))
+			trackLevels += "L3 ";
+		if (trackLevels.empty())
+			trackLevels = "NONE";
+
+		mainImplementStatus << "\nTrack state      " << trackState
+		                    << "\nTrack levels     " << trackLevels;
+	}
 	send_vt_string_if_changed(VTSectionsFromAOGS, mainImplementStatus.str());
 
 	std::ostringstream distanceText;
@@ -1497,8 +2219,8 @@ void Application::update_vt_status_strings(bool aogConnected)
 	  ConfigNmeaSendLabel, // pool length 14
 	  nmea2000MessageInterface ? (std::string("NMEA Send: ") + (settings->is_nmea_send_enabled() ? "ON" : "OFF")) : "NMEA Send: N/A");
 	send_vt_string_if_changed(
-	  ConfigTecuLabel,
-	  std::string("TECU: ") + (settings->is_tecu_enabled() ? "ON" : "OFF") + " (restart req)");
+	  ConfigTecuLabel, // pool length 23. Off: the tractor's TECU leads and ours only fills its gaps
+	  settings->is_tecu_enabled() ? "TECU: AOG (restart req)" : "TECU: tractor (restart)");
 
 	std::ostringstream networkRows;
 	std::uint8_t displayedCFs = 0;
