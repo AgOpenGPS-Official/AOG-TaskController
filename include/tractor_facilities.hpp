@@ -181,6 +181,7 @@ private:
 	/// on the CAN stack's thread (see docs/CONCURRENCY.md).
 	std::atomic<bool> timeDateActive{ false };
 	std::atomic<bool> timeDateRequestLogged{ false }; ///< To log only the first request answered
+	std::atomic<bool> timeDateRequestHandlerRegistered{ false }; ///< Without it, requests for PGN 65254 go unanswered
 
 	/// Set by set_provided_facilities() on the main thread, read by build_payload() from PGN request callbacks
 	mutable std::mutex providedFacilitiesMutex;

@@ -386,8 +386,10 @@ std::array<std::uint8_t, 8> TractorFacilities::build_payload() const
 	f.wheelBasedDirection = wheelSpeedActive;
 
 	// Time/date (PGN 65254 / FEE6) – set by the application layer while
-	// the TECU answers requests for it.
-	f.timeDate = timeDateActive;
+	// the TECU answers requests for it. Not advertised when it could not
+	// answer: no request handler, or a PC clock the message cannot carry.
+	std::array<std::uint8_t, 8> unusedTimeDate{};
+	f.timeDate = timeDateActive && timeDateRequestHandlerRegistered && read_system_time_date(unusedTimeDate);
 
 	// Everything else stays 0: we have no engine data, hitch feedback,
 	// PTO, auxiliary valves, lighting, language storage (PGN 65039),
@@ -429,9 +431,10 @@ bool TractorFacilities::initialize()
 	  PGN_REQUIRED_TRACTOR_FACILITIES, &TractorFacilities::on_required_facilities, this);
 	std::cout << "[" << get_timestamp() << "] [TractorFacilities] Registered PGN 65032 diagnostic listener." << std::endl;
 
-	if (!pgnRequestProtocol->register_pgn_request_callback(PGN_TIME_DATE, &TractorFacilities::on_time_date_request, this))
+	timeDateRequestHandlerRegistered = pgnRequestProtocol->register_pgn_request_callback(PGN_TIME_DATE, &TractorFacilities::on_time_date_request, this);
+	if (!timeDateRequestHandlerRegistered)
 	{
-		std::cout << "[" << get_timestamp() << "] [TractorFacilities] Failed to register PGN 65254 request callback." << std::endl;
+		std::cout << "[" << get_timestamp() << "] [TractorFacilities] Failed to register PGN 65254 request callback; Time/Date is not advertised." << std::endl;
 	}
 
 	initialized = true;
