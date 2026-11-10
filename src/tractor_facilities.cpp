@@ -298,7 +298,7 @@ std::array<std::uint8_t, 8> TractorFacilities::build_payload() const
 	// machine-selected-speed sending enabled; the interface then holds a
 	// sender control function for that message.
 	f.selectedSpeed = (speedMessagesInterface != nullptr) &&
-	                  (speedMessagesInterface->machineSelectedSpeedTransmitData.get_sender_control_function() != nullptr);
+	  (speedMessagesInterface->machineSelectedSpeedTransmitData.get_sender_control_function() != nullptr);
 
 	// Everything else stays 0: we have no engine data, hitch feedback,
 	// PTO, auxiliary valves, lighting, language storage (PGN 65039),

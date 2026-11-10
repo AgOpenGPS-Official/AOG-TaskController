@@ -56,8 +56,8 @@ static bool should_log_repetition_rate_request(std::uint8_t srcAddr, std::uint32
 	static std::mutex loggedMutex;
 	static std::set<std::uint64_t> logged;
 	const std::uint64_t key = (static_cast<std::uint64_t>(broadcast) << 32) |
-	                          (static_cast<std::uint64_t>(srcAddr) << 24) |
-	                          (requestedPGN & 0x00FFFFFFu);
+	  (static_cast<std::uint64_t>(srcAddr) << 24) |
+	  (requestedPGN & 0x00FFFFFFu);
 	std::lock_guard<std::mutex> lock(loggedMutex);
 	return logged.insert(key).second;
 }
