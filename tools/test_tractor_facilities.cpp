@@ -323,6 +323,61 @@ static void test_rear_hitch_in_work_not_set()
 	check((payload[1] & 0x40) == 0x00, "rear hitch in work (byte 2 bit 7) = 0 by default");
 }
 
+static std::tm make_tm(int year, int month, int day, int yday, int hour, int minute, int second)
+{
+	std::tm t{};
+	t.tm_year = year - 1900;
+	t.tm_mon = month - 1;
+	t.tm_mday = day;
+	t.tm_yday = yday;
+	t.tm_hour = hour;
+	t.tm_min = minute;
+	t.tm_sec = second;
+	return t;
+}
+
+static void test_utc_offset()
+{
+	std::printf("[test_utc_offset]\n");
+	const auto summerUtc = make_tm(2026, 7, 15, 195, 10, 20, 30);
+	check(utc_offset_minutes(summerUtc, make_tm(2026, 7, 15, 195, 12, 20, 30)) == 120, "CEST (daylight saving) = +120");
+	check(utc_offset_minutes(summerUtc, summerUtc) == 0, "UTC = 0");
+
+	const auto lateUtc = make_tm(2026, 3, 10, 68, 23, 30, 0);
+	check(utc_offset_minutes(lateUtc, make_tm(2026, 3, 11, 69, 0, 30, 0)) == 60, "local is already tomorrow");
+	const auto earlyUtc = make_tm(2026, 3, 11, 69, 1, 0, 0);
+	check(utc_offset_minutes(earlyUtc, make_tm(2026, 3, 10, 68, 21, 0, 0)) == -240, "local is still yesterday");
+
+	const auto newYearEveUtc = make_tm(2026, 12, 31, 364, 23, 30, 0);
+	check(utc_offset_minutes(newYearEveUtc, make_tm(2027, 1, 1, 0, 0, 30, 0)) == 60, "local is already next year");
+	const auto newYearUtc = make_tm(2027, 1, 1, 0, 2, 0, 0);
+	check(utc_offset_minutes(newYearUtc, make_tm(2026, 12, 31, 364, 22, 30, 0)) == -210, "local is still last year, half-hour zone");
+}
+
+static void test_time_date_payload()
+{
+	std::printf("[test_time_date_payload]\n");
+	const auto utc = make_tm(2026, 7, 15, 195, 10, 20, 30);
+	const auto p = encode_time_date(utc, make_tm(2026, 7, 15, 195, 12, 20, 30), 750);
+	check(p[0] == (30 * 4) + 3, "seconds in 0.25 s steps");
+	check(p[1] == 20, "minutes");
+	check(p[2] == 10, "hours, UTC");
+	check(p[3] == 7, "month");
+	check(p[4] == (14 * 4) + 1 + 1, "day in quarter days, second quarter");
+	check(p[5] == 41, "years since 1985");
+	check(p[6] == 125, "local minute offset 0");
+	check(p[7] == 127, "local hour offset +2");
+
+	const auto newYearUtc = make_tm(2027, 1, 1, 0, 2, 0, 0);
+	const auto west = encode_time_date(newYearUtc, make_tm(2026, 12, 31, 364, 22, 30, 0), 0);
+	check(west[6] == 125 - 30, "local minute offset -30");
+	check(west[7] == 125 - 3, "local hour offset -3");
+	check(west[4] == 1, "first quarter of the first day");
+
+	const auto leap = encode_time_date(make_tm(2026, 6, 30, 180, 23, 59, 60), make_tm(2026, 6, 30, 180, 23, 59, 60), 999);
+	check(leap[0] == (59 * 4) + 3, "a leap second stays in range");
+}
+
 int main()
 {
 	test_default_ground_speed_only();
@@ -333,6 +388,8 @@ int main()
 	test_tecu_class_not_available();
 	test_zero_payload();
 	test_rear_hitch_in_work_not_set();
+	test_utc_offset();
+	test_time_date_payload();
 
 	if (failures > 0)
 	{

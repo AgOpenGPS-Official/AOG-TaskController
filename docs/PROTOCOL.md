@@ -271,6 +271,7 @@ Common NAME fields: Industry Group `2` (Agricultural), Device Class `0`, Manufac
 | `0xFC8E` (Control Function Functionalities) | At claim + periodic | TECU | Announces Class 1 BasicTractorECUServer (no options). |
 | `0xFE48`, `0xFE49`, `0xF022` (PGN 65096, 65097, 61474) | 100 ms | TECU | Wheel-based speed, ground-based speed, machine selected speed (with distance and direction). As a secondary, only those no other Tractor ECU provides (§5.7). |
 | `0xFE09` (PGN 65033 Tractor Facilities) | Power-up + on request, and when it changes | TECU | 8-byte facility bitmask advertising which PGNs the TECU actually broadcasts. See §5.6. |
+| `0xFEE6` (PGN 65254 Time/Date) | On request only (ISO 11783-7 B.1) | TECU | UTC from the PC clock plus the local offset, including daylight saving time. A secondary TECU leaves requests to a Tractor ECU that provides it. |
 | NMEA2000 COG/SOG | Periodic | TECU | Optional course/speed over ground. Not while another Tractor ECU sends it (§5.7). |
 | GNSS Quality (DDI 514, via `0xCB00` Process Data) | 250 ms | TC | GPS fix quality from AgIO (PGN `0xD6`, see §2.5), sent to each client whose DDOP declares DDI 514 as settable. Falls back to `1` if `0xD6` has never arrived, and to `0` once it stops arriving (see §2.5). |
 
@@ -313,6 +314,7 @@ When the TECU is enabled, the TC responds to PGN 65033 requests (ISO 11783-7 B.2
 | 1 | 8,7 | TECU class | Always `00` (Class 1). |
 | 1 | 2 | Ground-based speed (PGN 65097) | The TECU sends it: always as the primary; as a secondary only if no other Tractor ECU provides it (§5.7). |
 | 1 | 3 | Wheel-based speed (PGN 65096) | Same rule. |
+| 3 | 8 | Time/date (PGN 65254) | Our TECU answers requests for it: as the primary always, as a secondary only when no lower Tractor ECU advertises or sends it. |
 | 3 | 7,6 | Ground-based distance + direction | Same as ground-based speed. |
 | 3 | 5,4 | Wheel-based distance + direction | Same as wheel-based speed. |
 | 5 | 3 | Selected speed (machine selected speed, PGN 61474) | Same rule. |
@@ -320,7 +322,6 @@ When the TECU is enabled, the TC responds to PGN 65033 requests (ISO 11783-7 B.2
 **Facilities NOT advertised (bits always 0):**
 
 - Engine speed — no engine CAN access.
-- Time/date (PGN 65254) — the TC does not broadcast it.
 - Power management — no key switch or power timer signals.
 - Hitch position / in-work / draft — the hydraulic lift output is a command we issue, not measured feedback; implements would trust it for work-state logic.
 - PTO shaft speed / engagement — no PTO sensor.
@@ -331,7 +332,7 @@ When the TECU is enabled, the TC responds to PGN 65033 requests (ISO 11783-7 B.2
 - Front hitch / PTO — no front hitch or PTO sensors.
 - All reserved bits (byte 2 bits 2–1, byte 4 bits 3–1, byte 5 bit 5, byte 7, byte 8 including the reserved-bit indicator at bit 1).
 
-**Default payload** (TECU enabled as the primary): `[0x06, 0x00, 0x78, 0x00, 0x04, 0x00, 0x00, 0x00]`.
+**Default payload** (TECU enabled as the primary): `[0x06, 0x00, 0xF8, 0x00, 0x04, 0x00, 0x00, 0x00]`.
 
 **PGN 65032 (Required Tractor Facilities):** When an implement broadcasts what it needs, the TC logs the request at debug level. The response is not modified based on the implement's requirements — a facility bit is set to 1 only when backed by a live broadcast.
 
@@ -342,7 +343,7 @@ ISO 11783-9:2012 §4.4.2.1 allows several Tractor ECUs on the implement bus. The
 - **`tecuEnabled` picks the role.** `true`: AOG is the tractor's TECU. At startup the TC's own address claim makes every control function on the bus announce itself; if no other Tractor ECU (function code 134) is there, our TECU claims `240` as the primary (function instance 0) and sends everything in §5.2, otherwise it starts as a secondary. `false` ("the tractor has its own TECU"): always a secondary at an arbitrary address, with a function instance above every Tractor ECU on the bus. With no other Tractor ECU there, every message is a gap and it sends them all; once the tractor's appears, it cuts back to what that one lacks.
 - **Never taking `240` from a tractor:** our TECU NAME is arbitrary-address-capable in both roles. That is the most significant NAME bit, so in an address claim contest for `240` our primary loses to a fixed-address Tractor ECU and moves elsewhere, instead of knocking the tractor's ECU off the bus.
 - **Stepping down at runtime** (`tecuEnabled: true`): once a second the TC checks for other Tractor ECUs. If another one with function instance 0 appears while ours is the primary, or ours lost `240`, our TECU is rebuilt as a secondary above every Tractor ECU's function instance. Another secondary appearing is no reason to step down. The operator sees a hardware message ("Tractor ECU found: AOG adds only missing data").
-- **What a secondary sends:** nothing until the other Tractor ECUs have answered PGN 65033 (and at least 1 s has passed) or 2.5 s have passed. Then each of ground-based speed, wheel-based speed, machine selected speed, J1939 vehicle direction/speed and NMEA 2000 COG/SOG is sent only if no Tractor ECU with a lower function instance advertises it in PGN 65033 *and* none has sent it in the last 3 s. Only lower instances count, so two secondaries never wait on each other. Its PGN 65033 advertises exactly what it sends, and is re-sent when that changes.
+- **What a secondary sends:** nothing until the other Tractor ECUs have answered PGN 65033 (and at least 1 s has passed) or 2.5 s have passed. Then each of ground-based speed, wheel-based speed, machine selected speed, J1939 vehicle direction/speed and NMEA 2000 COG/SOG is sent only if no Tractor ECU with a lower function instance advertises it in PGN 65033 *and* none has sent it in the last 3 s. Answering requests for time/date follows the same rule, except that a lower Tractor ECU that has sent time/date counts as providing it until it leaves the bus: it may only send it when asked, so no time window would do. Time/date is advertised only while it can be answered (request handler registered, PC clock between 1985 and 2235). Only lower instances count, so two secondaries never wait on each other. Its PGN 65033 advertises exactly what it sends, and is re-sent when that changes.
 - A secondary does not step back up to primary if the tractor's Tractor ECU leaves; it then sends everything, still as a secondary.
 
 ---

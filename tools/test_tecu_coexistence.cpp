@@ -137,6 +137,20 @@ static void test_pgn_from_can_identifier()
 	check(tecu_message_pgn(TecuMessage::CogSogRapidUpdate) == 129026, "COG/SOG PGN");
 }
 
+// A lower TECU that answered a Time/Date request keeps providing it until it leaves, however long the gap
+static void test_time_date_providers()
+{
+	std::printf("test_time_date_providers\n");
+	TimeDateProviders providers;
+	check(!providers.any(), "nobody provides time/date at first");
+	providers.mark_sent(0x80);
+	check(providers.any(), "a TECU that sent time/date provides it");
+	providers.forget(0x81);
+	check(providers.any(), "another address leaving changes nothing");
+	providers.forget(0x80);
+	check(!providers.any(), "the provider leaving the bus ends it");
+}
+
 int main()
 {
 	test_primary_sends_everything();
@@ -146,6 +160,7 @@ int main()
 	test_primary_advertises_selected_speed();
 	test_merge_facilities();
 	test_pgn_from_can_identifier();
+	test_time_date_providers();
 
 	if (failures > 0)
 	{

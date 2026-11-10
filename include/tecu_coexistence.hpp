@@ -99,6 +99,39 @@ struct OtherTecu
 	std::uint16_t manufacturerCode = 0;
 };
 
+/// @brief The other Tractor ECUs that have sent Time/Date (PGN 65254) since they appeared on the bus.
+///
+/// Time/Date is only sent on request (ISO 11783-7 B.1), so a time window cannot tell whether a lower Tractor
+/// ECU provides it: with requests further apart than the window, both TECUs would answer every one. Instead a
+/// TECU counts as providing Time/Date from the first time it sends it until it leaves the bus (forget()).
+/// mark_sent() runs on the CAN stack's background thread, forget() and any() on the main thread.
+class TimeDateProviders
+{
+public:
+	void mark_sent(std::uint8_t address)
+	{
+		sent[address] = true;
+	}
+	void forget(std::uint8_t address)
+	{
+		sent[address] = false;
+	}
+	bool any() const
+	{
+		for (const auto &address : sent)
+		{
+			if (address)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+private:
+	std::array<std::atomic<bool>, 256> sent{};
+};
+
 /// @brief Tracks the other Tractor ECUs: who they are, the facilities they advertise and what they send.
 ///
 /// refresh() and the queries run on the main thread. on_frame() and the PGN 65033 callback run on the
@@ -108,7 +141,7 @@ struct OtherTecu
 class OtherTecuMonitor
 {
 public:
-	/// How long a message seen from another TECU counts as "sent by it"
+	/// How long a message seen from another TECU counts as "sent by it" (not time/date, see TimeDateProviders)
 	static constexpr std::uint32_t SENT_BY_OTHERS_WINDOW_MS = 3000;
 
 	/// @brief Register the PGN 65033 listener. Call once.
@@ -130,7 +163,7 @@ public:
 	/// @brief Whether every other TECU has answered with PGN 65033
 	bool all_facilities_received() const;
 
-	/// @brief Messages seen from another TECU within SENT_BY_OTHERS_WINDOW_MS
+	/// @brief Messages seen from another TECU within SENT_BY_OTHERS_WINDOW_MS. Time/date: sent by a TECU still on the bus
 	std::array<bool, TECU_MESSAGE_COUNT> sent_by_others() const;
 
 	/// @brief Whether we already asked this address for PGN 65033 since it appeared
@@ -142,6 +175,7 @@ private:
 
 	std::array<std::atomic<bool>, 256> isOtherTecuAddress{};
 	std::array<std::atomic<std::uint32_t>, TECU_MESSAGE_COUNT> lastSentByOthersMs{}; ///< 0 = never
+	TimeDateProviders timeDateProviders;
 
 	mutable std::mutex mutex; ///< Guards the members below
 	std::map<std::uint8_t, Facilities> facilitiesByAddress;

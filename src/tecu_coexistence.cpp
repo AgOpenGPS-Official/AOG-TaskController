@@ -178,6 +178,17 @@ std::vector<OtherTecu> OtherTecuMonitor::refresh(std::uint8_t maxFunctionInstanc
 	std::lock_guard<std::mutex> lock(mutex);
 	for (std::size_t address = 0; address < isOtherTecuAddress.size(); address++)
 	{
+		// A TECU that left, or a different one now at that address, no longer provides time/date. Done before
+		// isOtherTecuAddress is set, so a TECU that just appeared cannot have its first time/date cleared.
+		const auto name = names.find(static_cast<std::uint8_t>(address));
+		const auto previous = nameByAddress.find(static_cast<std::uint8_t>(address));
+		if ((names.end() == name) || (nameByAddress.end() == previous) || (name->second != previous->second))
+		{
+			timeDateProviders.forget(static_cast<std::uint8_t>(address));
+		}
+	}
+	for (std::size_t address = 0; address < isOtherTecuAddress.size(); address++)
+	{
 		isOtherTecuAddress[address] = (addresses.count(static_cast<std::uint8_t>(address)) > 0);
 	}
 	for (auto it = facilitiesByAddress.begin(); it != facilitiesByAddress.end();)
@@ -213,6 +224,10 @@ void OtherTecuMonitor::on_frame(const isobus::CANMessageFrame &frame)
 		{
 			const std::uint32_t now = isobus::SystemTiming::get_timestamp_ms();
 			lastSentByOthersMs[i] = (0 == now) ? 1 : now; // 0 means "never"
+			if (static_cast<std::size_t>(TecuMessage::TimeDate) == i)
+			{
+				timeDateProviders.mark_sent(static_cast<std::uint8_t>(frame.identifier & 0xFF));
+			}
 		}
 	}
 }
@@ -274,7 +289,14 @@ std::array<bool, TECU_MESSAGE_COUNT> OtherTecuMonitor::sent_by_others() const
 	for (std::size_t i = 0; i < TECU_MESSAGE_COUNT; i++)
 	{
 		const std::uint32_t last = lastSentByOthersMs[i];
-		sent[i] = (0 != last) && !isobus::SystemTiming::time_expired_ms(last, SENT_BY_OTHERS_WINDOW_MS);
+		if (static_cast<std::size_t>(TecuMessage::TimeDate) == i)
+		{
+			sent[i] = timeDateProviders.any();
+		}
+		else
+		{
+			sent[i] = (0 != last) && !isobus::SystemTiming::time_expired_ms(last, SENT_BY_OTHERS_WINDOW_MS);
+		}
 	}
 	return sent;
 }
