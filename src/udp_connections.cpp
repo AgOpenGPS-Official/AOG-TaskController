@@ -10,9 +10,12 @@
 #include "udp_connections.hpp"
 #include <algorithm>
 #include <cassert>
+#include <chrono>
+#include <deque>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
+#include <vector>
 #include "aog_packet_parser.hpp"
 #include "logging_utils.hpp"
 
@@ -181,9 +184,41 @@ namespace
 		return hex.str() + "  \"" + text + "\"";
 	}
 
+	/// @brief True when the same datagram from the same sender was logged within the last 50 ms.
+	/// Both sockets listen on port 8888 (one on the AOG subnet address, one on all interfaces), so a broadcast
+	/// usually arrives on both; it is logged once. Compares the whole datagram and remembers every datagram
+	/// logged in the window, so distinct or interleaved datagrams are still logged.
+	/// Only called from the update() thread (both sockets are read there).
+	bool was_logged_recently(const udp::endpoint &sender, std::span<std::uint8_t> datagram)
+	{
+		static constexpr auto DUPLICATE_WINDOW = std::chrono::milliseconds(50);
+		struct LoggedDatagram
+		{
+			std::chrono::steady_clock::time_point time;
+			udp::endpoint sender;
+			std::vector<std::uint8_t> data;
+		};
+		static std::deque<LoggedDatagram> recentlyLogged;
+
+		const auto now = std::chrono::steady_clock::now();
+		while (!recentlyLogged.empty() && (now - recentlyLogged.front().time >= DUPLICATE_WINDOW))
+		{
+			recentlyLogged.pop_front();
+		}
+		for (const auto &logged : recentlyLogged)
+		{
+			if ((logged.sender == sender) && std::equal(logged.data.begin(), logged.data.end(), datagram.begin(), datagram.end()))
+			{
+				return true;
+			}
+		}
+		recentlyLogged.push_back({ now, sender, std::vector<std::uint8_t>(datagram.begin(), datagram.end()) });
+		return false;
+	}
+
 	void log_parse_stop(const char *socketName, const udp::endpoint &sender, std::span<std::uint8_t> datagram, const aog_packet::ParseResult &result)
 	{
-		if (aog_packet::ParseStop::Complete == result.stop)
+		if ((aog_packet::ParseStop::Complete == result.stop) || was_logged_recently(sender, datagram))
 		{
 			return;
 		}
