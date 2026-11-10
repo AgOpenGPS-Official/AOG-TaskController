@@ -640,6 +640,7 @@ bool Application::update()
 	{
 		// Not calling update() also holds the stack's own TC Status; messages wait in its queue
 		lastTcServerUpdateCallMs = 0;
+		tcServer->discard_queued_messages();
 		tcServer->clear_stale_clients();
 	}
 	else
@@ -968,17 +969,14 @@ Application::ImplementDetails Application::derive_implement_details(ClientState 
 void Application::start_tc_quiet_period(const std::string &reason)
 {
 	tcQuietUntilMs = isobus::SystemTiming::get_timestamp_ms() + TC_QUIET_PERIOD_MS;
-	if (0 == tcQuietUntilMs)
-	{
-		tcQuietUntilMs = 1; // 0 means "not quiet"
-	}
+	tcQuiet = true;
 	log("TC") << "Holding TC Status for " << TC_QUIET_PERIOD_MS << " ms (" << reason
 	          << ") so connected implements drop their connection and reconnect" << std::endl;
 }
 
 bool Application::is_tc_quiet()
 {
-	if (0 == tcQuietUntilMs)
+	if (!tcQuiet)
 	{
 		return false;
 	}
@@ -987,13 +985,25 @@ bool Application::is_tc_quiet()
 	{
 		return true;
 	}
-	tcQuietUntilMs = 0;
+	tcQuiet = false;
 	log("TC") << "Quiet period over, sending TC Status again" << std::endl;
 	return false;
 }
 
 void Application::recover_stale_clients()
 {
+	// A client that reconnected gets its full number of recovery attempts back for a later stale episode
+	if (!staleClientRecoveries.empty())
+	{
+		for (const auto &connected : tcServer->get_clients()) // snapshot copy — see get_clients()'s declaration
+		{
+			if (nullptr != connected.first)
+			{
+				staleClientRecoveries.erase(connected.first->get_NAME().get_full_name());
+			}
+		}
+	}
+
 	for (const auto &client : tcServer->take_stale_clients())
 	{
 		const std::uint64_t name = client->get_NAME().get_full_name();
@@ -1001,7 +1011,7 @@ void Application::recover_stale_clients()
 		clientText << "0x" << std::hex << std::uppercase << std::setw(2) << std::setfill('0') << static_cast<int>(client->get_address())
 		           << " (NAME " << std::dec << name << ")";
 
-		if ((0 != lastStaleClientRecoveryMs) &&
+		if (staleClientRecoveryStarted &&
 		    !isobus::SystemTiming::time_expired_ms(lastStaleClientRecoveryMs, STALE_CLIENT_RECOVERY_COOLDOWN_MS))
 		{
 			continue; // Give the clients of the last quiet period time to reconnect
@@ -1023,6 +1033,7 @@ void Application::recover_stale_clients()
 
 		recoveries++;
 		lastStaleClientRecoveryMs = isobus::SystemTiming::get_timestamp_ms();
+		staleClientRecoveryStarted = true;
 		log("TC") << "Client " << clientText.str() << " is talking to us as if connected, but it is not one of our clients "
 		          << "(it missed a TC restart or timeout). Reconnecting it, attempt " << static_cast<int>(recoveries)
 		          << " of " << static_cast<int>(MAX_STALE_CLIENT_RECOVERIES) << "." << std::endl;

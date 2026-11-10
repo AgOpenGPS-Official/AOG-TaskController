@@ -139,6 +139,10 @@ public:
 	/// @brief Drops the stale client candidates collected so far, e.g. ones that arrived while the TC was quiet
 	void clear_stale_clients();
 
+	/// @brief Drops the messages the stack queued for update() while the TC is quiet. Processing them after the
+	/// quiet period would NACK every Client Task / Value message the disconnecting clients sent meanwhile.
+	void discard_queued_messages();
+
 	~MyTCServer() override;
 
 private:

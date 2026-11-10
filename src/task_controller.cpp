@@ -412,6 +412,14 @@ void MyTCServer::clear_stale_clients()
 	staleCandidates.clear();
 }
 
+void MyTCServer::discard_queued_messages()
+{
+#if !defined CAN_STACK_DISABLE_THREADS && !defined ARDUINO
+	const std::lock_guard<std::mutex> lock(messagesMutex);
+#endif
+	rxMessageQueue.clear();
+}
+
 bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> partnerCF, ObjectPoolActivationError &activationError, ObjectPoolErrorCodes &objectPoolError, std::uint16_t &parentObjectIDOfFaultyObject, std::uint16_t &faultyObjectID)
 {
 	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
