@@ -153,7 +153,7 @@ AOG's real-time AB-line/track guidance state. 12-byte payload (a 10-byte payload
  Bytes 10-11 Swath Width in mm (uint16 LE) — distance between adjacent tracks; 0 = not reported
 ```
 
-AOG sends this **only when the guidance state actually changes** — there is no heartbeat. The TC rejects any packet whose sequence number isn't strictly ahead of the last accepted one (catches duplicates, freezes, and reordered/stale UDP delivery).
+AOG sends this **only when the guidance state actually changes** — there is no heartbeat. The TC rejects any packet whose sequence number isn't strictly ahead of the last accepted one (catches duplicates, freezes, and reordered/stale UDP delivery). A rejected or too-short packet is ignored: the TC keeps the track it has.
 
 **Track-number offset:** the TC adds `+1` to all three track numbers (current/left/right) before announcing them — confirmed by field testing, not documented anywhere on AOG's side. As sent raw by AOG, a tramline implement's own on-board phase (which pass of N is "on") was consistently one pass out of sync with AOG's own intended on/off state, for both left and right passes; a uniform `+1` (independent of sign) brought them into agreement. See `GuidanceTrackProvider::parse()` (`AOG_TRACK_NUMBER_OFFSET`).
 
@@ -320,10 +320,10 @@ The TC pushes guidance data to each client whose DDOP declares the DDI as settab
 | 509 | ActualGuidanceTrackNumber | Valid track. Signed; can be negative and can jump by more than 1 in a single update (e.g. skipping several tracks on a headland turn). |
 | 510 / 511 | GuidanceTrackNumberToTheRight / ...ToTheLeft | Valid track. |
 | 512 | GuidanceLineSwathWidth | Valid track, and AOG reported a non-zero swath width in `0xF4`. AOG's track spacing (tool width minus overlap), the same spacing the track numbers are derived from. |
-| 513 | GuidanceLineDeviation | Valid track. AOG's XTE in mm (PGN `0xF2`, see §2.5). |
+| 513 | GuidanceLineDeviation | Valid track, and AOG sent its XTE within the last 2 s. AOG's XTE in mm (PGN `0xF2`, see §2.5). |
 | 514 | GNSSQuality | Always — see `0xD6`. |
 
-"Valid track" means the TC holds an accepted PGN `0xF4` payload with the valid flag set, a non-zero reference line ID, and an open field (PGN `0xF3`) to scope the ID to. Since AOG only sends `0xF4` on change, validity is *not* cleared just because no new `0xF4` has arrived; it is cleared only by an explicit "guidance off" packet, by the field closing, or by AOG disconnecting entirely (no packets of any kind for 3 s).
+"Valid track" means the TC holds an accepted PGN `0xF4` payload with the valid flag set, a non-zero reference line ID, and an open field (PGN `0xF3`) to scope the ID to. Since AOG only sends `0xF4` on change, validity is *not* cleared just because no new `0xF4` has arrived; it is cleared only by an explicit "guidance off" packet or by the field closing. While AOG is disconnected (no packets of any kind for 3 s) nothing is sent; the track is kept and announced again when AOG reconnects, because AOG does not resend an unchanged track. The field index in DDI 508 is applied when sending, so it follows a field change.
 
 ### 5.5 Virtual Terminal UI
 

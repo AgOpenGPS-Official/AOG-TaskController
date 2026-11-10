@@ -57,7 +57,9 @@ struct GuidanceTrackContext
  *     data and reordered/stale UDP packets arriving out of order.
  *   - Call reset() after a disconnect to treat the next packet as a fresh start.
  *
- * Returns valid=true when data is valid, refId != 0, and sequence is fresh.
+ * Returns nothing for a packet that is too short or not fresh, so the caller keeps the context it has:
+ * AOG only sends PGN 0xF4 on change, so dropping the last good context on a duplicate would stop
+ * guidance until the next change. Returns a context with valid=false for an accepted "guidance off".
  */
 class GuidanceTrackProvider
 {
@@ -72,9 +74,10 @@ public:
 	 * @brief Parse AOG PGN 0xF4 payload and produce a GuidanceTrackContext.
 	 *
 	 * @param data Payload bytes (after UDP header stripping)
-	 * @return GuidanceTrackContext with valid=true if parse succeeded and flags indicate valid data
+	 * @return Nothing if the packet is rejected (too short, duplicate, out of order). Otherwise the new
+	 * context: valid=true when the flags report an active track with a non-zero reference ID.
 	 */
-	GuidanceTrackContext parse(std::span<const std::uint8_t> data);
+	std::optional<GuidanceTrackContext> parse(std::span<const std::uint8_t> data);
 
 	/// @brief Reset sequence tracking (e.g., after AOG disconnect timeout).
 	/// The next parse() call is treated as a fresh start — no delta comparison.

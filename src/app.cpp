@@ -562,28 +562,13 @@ void Application::setup_udp_connections()
 		{
 			lastAogPacketMs = isobus::SystemTiming::get_timestamp_ms();
 
-			// Always update currentTrackContext: when AOG sends valid=false
-			// (guidance off / no active track), the context must be invalidated
-			// so the TC stops broadcasting stale track data.
-			// Note: parse() handles short-payload validation internally.
-			currentTrackContext = trackProvider.parse(data);
-
-			// AOG's own guidance reference ID (see GuidanceTrackProvider) is only unique
-			// within whichever field AOG currently has open — fold in the field's own
-			// persistent index (upper 16 bits) so DDI 508 is unique across fields too.
-			// Without an active field, there's nothing to scope the ID to — don't send it.
-			if (currentTrackContext.valid)
+			// An accepted packet replaces the context, including valid=false (guidance off / no active
+			// track) so the TC stops broadcasting it. A rejected one (short, duplicate, out of order)
+			// keeps the current context: AOG sends 0xF4 only on change, so it would not come back.
+			// The field index is folded in when sending (scoped_track_context()), so it follows field changes.
+			if (const auto parsed = trackProvider.parse(data))
 			{
-				if (hasActiveField)
-				{
-					currentTrackContext.guidanceReferenceLineId =
-					  (static_cast<std::uint32_t>(currentFieldIndex) << 16) |
-					  (currentTrackContext.guidanceReferenceLineId & 0xFFFFu);
-				}
-				else
-				{
-					currentTrackContext.valid = false;
-				}
+				currentTrackContext = *parsed;
 			}
 		}
 		else if (pgn == 0xF2 && data.size() >= 6) // Process Data
@@ -624,6 +609,11 @@ void Application::setup_udp_connections()
 			else if (identifier == isobus::DataDescriptionIndex::GuidanceLineDeviation)
 			{
 				lastXteValue = value;
+				lastXteMs = isobus::SystemTiming::get_timestamp_ms();
+				if (0 == lastXteMs)
+				{
+					lastXteMs = 1; // 0 means "never"
+				}
 				std::int32_t xte = value / 1000; // Convert from mm to m
 				static const std::uint8_t xteMode = 0b00000001;
 				xteSid = xteSid % 253 + 1;
@@ -897,20 +887,48 @@ bool Application::update()
 	{
 		// AOG only sends PGN 0xF4 when the guidance track actually changes (no heartbeat) —
 		// long gaps between packets are the normal state while driving straight, not staleness.
-		// Only clear the context on a real AOG disconnect (edge-triggered, not every tick).
+		// While AOG is disconnected nothing is sent, so implements see the updates stop. The context
+		// is kept: AOG would not resend an unchanged track after a short dropout, so clearing it would
+		// leave guidance off until the next track change. Sequence tracking restarts, in case AOG did.
 		const bool aogConnectedNow = is_aog_connected();
 		if (!aogConnectedNow && aogWasConnectedForTrack)
 		{
-			currentTrackContext.valid = false;
 			trackProvider.reset(); // Treat next packet as fresh start after the gap
 		}
 		aogWasConnectedForTrack = aogConnectedNow;
 
-		tcServer->send_guidance_track_data(currentTrackContext, lastXteValue);
+		if (aogConnectedNow)
+		{
+			// Only a deviation AOG sent recently is current; 0 or an old value would be announced as live
+			const bool xteFresh = (0 != lastXteMs) && !isobus::SystemTiming::time_expired_ms(lastXteMs, XTE_TIMEOUT_MS);
+			tcServer->send_guidance_track_data(scoped_track_context(), xteFresh ? std::optional<std::int32_t>(lastXteValue) : std::nullopt);
+		}
 		lastTrackSendMs = isobus::SystemTiming::get_timestamp_ms();
 	}
 
 	return true;
+}
+
+GuidanceTrackContext Application::scoped_track_context() const
+{
+	// AOG's own guidance reference ID (see GuidanceTrackProvider) is only unique
+	// within whichever field AOG currently has open — fold in the field's own
+	// persistent index (upper 16 bits) so DDI 508 is unique across fields too.
+	// Without an active field, there's nothing to scope the ID to — don't send it.
+	GuidanceTrackContext scoped = currentTrackContext;
+	if (scoped.valid)
+	{
+		if (hasActiveField)
+		{
+			scoped.guidanceReferenceLineId = (static_cast<std::uint32_t>(currentFieldIndex) << 16) |
+			  (scoped.guidanceReferenceLineId & 0xFFFFu);
+		}
+		else
+		{
+			scoped.valid = false;
+		}
+	}
+	return scoped;
 }
 
 bool Application::is_aog_connected() const

@@ -43,9 +43,10 @@ static std::array<std::uint8_t, 10> make_packet(std::uint8_t sequence,
 		       hi(right) };
 }
 
+// A rejected packet reads as an invalid context here; test_rejected_keeps_context() checks the difference
 static GuidanceTrackContext parse(GuidanceTrackProvider &provider, const std::array<std::uint8_t, 10> &packet)
 {
-	return provider.parse(std::span<const std::uint8_t>(packet.data(), packet.size()));
+	return provider.parse(std::span<const std::uint8_t>(packet.data(), packet.size())).value_or(GuidanceTrackContext{});
 }
 
 static GuidanceTrackContext parse_with_swath_width(GuidanceTrackProvider &provider, std::uint16_t swathWidthMm)
@@ -55,7 +56,7 @@ static GuidanceTrackContext parse_with_swath_width(GuidanceTrackProvider &provid
 	std::copy(base.begin(), base.end(), packet.begin());
 	packet[10] = static_cast<std::uint8_t>(swathWidthMm & 0xFF);
 	packet[11] = static_cast<std::uint8_t>(swathWidthMm >> 8);
-	return provider.parse(std::span<const std::uint8_t>(packet.data(), packet.size()));
+	return provider.parse(std::span<const std::uint8_t>(packet.data(), packet.size())).value_or(GuidanceTrackContext{});
 }
 
 static void test_valid_packet_fields_and_offset()
@@ -108,7 +109,22 @@ static void test_short_payload_rejected()
 	const std::array<std::uint8_t, 9> shortPacket = { 0, 0x01, 1, 0, 0, 0, 0, 0, 0 };
 	auto ctx = provider.parse(std::span<const std::uint8_t>(shortPacket.data(), shortPacket.size()));
 
-	check(!ctx.valid, "a 9-byte payload is rejected");
+	check(!ctx.has_value(), "a 9-byte payload is rejected");
+}
+
+// A rejected packet must not read as "guidance off": the caller keeps its track
+static void test_rejected_keeps_context()
+{
+	std::printf("test_rejected_keeps_context\n");
+
+	GuidanceTrackProvider provider;
+	const auto first = make_packet(10, 0x01, 1, 0, 0, 0);
+	const auto off = make_packet(11, 0x00, 1, 0, 0, 0);
+	const auto accepted = provider.parse(std::span<const std::uint8_t>(first.data(), first.size()));
+	check(accepted.has_value() && accepted->valid, "first packet is accepted");
+	check(!provider.parse(std::span<const std::uint8_t>(first.data(), first.size())).has_value(), "duplicate returns nothing");
+	const auto guidanceOff = provider.parse(std::span<const std::uint8_t>(off.data(), off.size()));
+	check(guidanceOff.has_value() && !guidanceOff->valid, "guidance off returns an invalid context");
 }
 
 static void test_guidance_off()
@@ -158,6 +174,7 @@ int main()
 	test_swath_width();
 	test_negative_track_numbers();
 	test_short_payload_rejected();
+	test_rejected_keeps_context();
 	test_guidance_off();
 	test_sequence_freshness();
 	test_sequence_wrap();

@@ -132,8 +132,8 @@ public:
 	/// @brief Announces the current guidance track (DDI 507-511) and line deviation (DDI 513) to every
 	/// client that declares those DDIs. Does nothing while the context is not valid.
 	/// @param ctx Current guidance track state from AOG
-	/// @param lineDeviationMm Deviation from the guidance line in mm
-	void send_guidance_track_data(const GuidanceTrackContext &ctx, std::int32_t lineDeviationMm);
+	/// @param lineDeviationMm Deviation from the guidance line in mm; DDI 513 is not sent without one
+	void send_guidance_track_data(const GuidanceTrackContext &ctx, std::optional<std::int32_t> lineDeviationMm);
 
 private:
 	void send_section_setpoint_states(std::shared_ptr<isobus::ControlFunction> client, std::uint8_t ddiOffset);

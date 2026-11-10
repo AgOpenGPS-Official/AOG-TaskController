@@ -111,10 +111,17 @@ private:
 	static constexpr std::uint32_t GNSS_QUALITY_TIMEOUT_MS = 2000; ///< No PGN 0xD6 for this long = fix quality unknown
 	static constexpr std::uint32_t AOG_CONNECTION_TIMEOUT_MS = 3000; ///< No AOG packet for this long = disconnected
 
-	// Guidance track context — real data from AOG PGN 0xF4.
+	// Guidance track context — real data from AOG PGN 0xF4, as AOG reported it: the reference line ID is
+	// AOG's own, scoped to the open field only when it is sent (see scoped_track_context()).
 	GuidanceTrackProvider trackProvider;
 	GuidanceTrackContext currentTrackContext;
 	bool aogWasConnectedForTrack = false; ///< Edge-detection for AOG connect/disconnect transitions
+	/// @brief currentTrackContext with the open field's index folded into the upper 16 bits of DDI 508,
+	/// invalid while no field is open
+	GuidanceTrackContext scoped_track_context() const;
+	std::uint32_t lastXteMs = 0; ///< When AOG last sent the line deviation (DDI 513 via PGN 0xF2), 0 = never
+	/// No line deviation from AOG for this long = not sent to implements as current
+	static constexpr std::uint32_t XTE_TIMEOUT_MS = 2000;
 
 	// Field identity — from AOG PGN 0xF3. Folded into the upper 16 bits of DDI 508
 	// (see the PGN 0xF4 handling in setup_udp_connections()) so a track's guidance reference

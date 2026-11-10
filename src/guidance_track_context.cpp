@@ -24,7 +24,7 @@ namespace
 	}
 } // namespace
 
-GuidanceTrackContext GuidanceTrackProvider::parse(std::span<const std::uint8_t> data)
+std::optional<GuidanceTrackContext> GuidanceTrackProvider::parse(std::span<const std::uint8_t> data)
 {
 	GuidanceTrackContext ctx;
 
@@ -32,7 +32,7 @@ GuidanceTrackContext GuidanceTrackProvider::parse(std::span<const std::uint8_t> 
 	{
 		log("TRACK") << "[real] PGN 0xF4 too short (len="
 		             << data.size() << ")" << std::endl;
-		return ctx;
+		return std::nullopt;
 	}
 
 	// Parse fields
@@ -59,10 +59,12 @@ GuidanceTrackContext GuidanceTrackProvider::parse(std::span<const std::uint8_t> 
 	// positive (forward progress). Rejects both frozen/duplicate packets (delta == 0)
 	// and reordered/stale packets that arrived out of order (delta < 0).
 	const char *outcome;
+	bool rejected = false;
 
 	if (lastSequence_.has_value() && static_cast<std::int8_t>(sequence - *lastSequence_) <= 0)
 	{
-		outcome = "REJECTED (stale/duplicate/out-of-order sequence)";
+		outcome = "REJECTED (stale/duplicate/out-of-order sequence), keeping the current track";
+		rejected = true;
 	}
 	else
 	{
@@ -95,6 +97,10 @@ GuidanceTrackContext GuidanceTrackProvider::parse(std::span<const std::uint8_t> 
 	             << " swath=" << ctx.swathWidthMm << "mm"
 	             << " -> " << outcome << std::endl;
 
+	if (rejected)
+	{
+		return std::nullopt;
+	}
 	return ctx;
 }
 

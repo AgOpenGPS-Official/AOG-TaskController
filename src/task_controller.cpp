@@ -1008,7 +1008,7 @@ void MyTCServer::send_gnss_quality(std::uint8_t quality)
 	}
 }
 
-void MyTCServer::send_guidance_track_data(const GuidanceTrackContext &ctx, std::int32_t lineDeviationMm)
+void MyTCServer::send_guidance_track_data(const GuidanceTrackContext &ctx, std::optional<std::int32_t> lineDeviationMm)
 {
 	if (!ctx.valid)
 	{
@@ -1040,7 +1040,10 @@ void MyTCServer::send_guidance_track_data(const GuidanceTrackContext &ctx, std::
 		{
 			trySend(isobus::DataDescriptionIndex::GuidanceLineSwathWidth, static_cast<std::int32_t>(ctx.swathWidthMm));
 		}
-		trySend(isobus::DataDescriptionIndex::GuidanceLineDeviation, lineDeviationMm);
+		if (lineDeviationMm.has_value())
+		{
+			trySend(isobus::DataDescriptionIndex::GuidanceLineDeviation, *lineDeviationMm);
+		}
 	}
 }
 
