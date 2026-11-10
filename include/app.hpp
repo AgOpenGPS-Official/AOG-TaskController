@@ -126,6 +126,10 @@ private:
 	/// The field name (PGN 0xF3) and PGN 229 resuming both report one field opening; act on it once
 	static constexpr std::uint32_t FIELD_OPEN_DEDUPLICATE_MS = 5000;
 	std::uint32_t lastFieldOpenAppliedMs = 0; ///< When on_aog_field_opened() last switched section control on, 0 = never
+	/// Set once AOG sent a field name (PGN 0xF3). From then on only a new field name counts as a field opening:
+	/// a gap in PGN 229 (AOG stalling, lost UDP packets) must not override the operator switching section control off.
+	bool aogSendsFieldName = false;
+	std::string openFieldName; ///< Last field name AOG reported, empty while no field is open
 
 	static constexpr std::uint32_t SECTION_DEMAND_LOG_INTERVAL_MS = 200;
 	static constexpr std::uint32_t SECTION_DEMAND_TIMEOUT_MS = 2000; ///< AOG sends PGN 229 every frame while a field is open

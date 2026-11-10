@@ -532,7 +532,7 @@ void Application::setup_udp_connections()
 				sectionDemandChangesSinceLog++;
 			}
 			tcServer->update_section_states(sectionStates);
-			if (resumed)
+			if (resumed && !aogSendsFieldName)
 			{
 				on_aog_field_opened("started sending section states (PGN 229)");
 			}
@@ -548,12 +548,18 @@ void Application::setup_udp_connections()
 		{
 			lastAogPacketMs = isobus::SystemTiming::get_timestamp_ms();
 			const std::string fieldName(data.begin(), data.end());
+			aogSendsFieldName = true;
 			if (fieldName.empty())
 			{
-				log("Field") << "AOG closed the field" << std::endl;
+				if (!openFieldName.empty())
+				{
+					log("Field") << "AOG closed field '" << openFieldName << "'" << std::endl;
+					openFieldName.clear();
+				}
 			}
-			else
+			else if (fieldName != openFieldName)
 			{
+				openFieldName = fieldName;
 				log("Field") << "AOG opened field '" << fieldName << "'" << std::endl;
 				on_aog_field_opened("opened field '" + fieldName + "'");
 			}
