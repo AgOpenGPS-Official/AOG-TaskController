@@ -73,6 +73,7 @@ static void test_full_default()
 	f.wheelBasedSpeed = true;
 	f.wheelBasedDistance = true;
 	f.wheelBasedDirection = true;
+	f.selectedSpeed = true;
 
 	auto payload = encode_facilities(f);
 
@@ -88,7 +89,8 @@ static void test_full_default()
 
 	check(payload[1] == 0x00, "byte 2 = 0x00");
 	check(payload[3] == 0x00, "byte 4 = 0x00");
-	check(payload[4] == 0x00, "byte 5 = 0x00");
+	// Byte 5: selected speed (ISO bit 3 = 0x04)
+	check(payload[4] == 0x04, "byte 5 = 0x04 (selected speed)");
 	check(payload[5] == 0x00, "byte 6 = 0x00");
 	check(payload[6] == 0x00, "byte 7 = 0x00");
 	check(payload[7] == 0x00, "byte 8 = 0x00");

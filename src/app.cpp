@@ -31,6 +31,8 @@
 #include <algorithm>
 #include <iomanip>
 #include <iostream>
+#include <mutex>
+#include <set>
 #include <span>
 #include <sstream>
 #include <thread>
@@ -46,6 +48,20 @@ static std::string format_hex_address(std::uint8_t address)
 	return value.str();
 }
 
+// Repetition-rate diagnostics are logged once per (source address, PGN,
+// addressed/broadcast) combination, so a node that keeps sending PGN 0xCC00
+// cannot flood the log or slow down the CAN callback thread.
+static bool should_log_repetition_rate_request(std::uint8_t srcAddr, std::uint32_t requestedPGN, bool broadcast)
+{
+	static std::mutex loggedMutex;
+	static std::set<std::uint64_t> logged;
+	const std::uint64_t key = (static_cast<std::uint64_t>(broadcast) << 32) |
+	                          (static_cast<std::uint64_t>(srcAddr) << 24) |
+	                          (requestedPGN & 0x00FFFFFFu);
+	std::lock_guard<std::mutex> lock(loggedMutex);
+	return logged.insert(key).second;
+}
+
 // Diagnostic callback: log any Request for Repetition Rate (PGN 0xCC00)
 // that is properly addressed to one of our control functions.  We never
 // comply (return false) – this is purely for bus analysis.
@@ -57,11 +73,14 @@ static bool log_repetition_rate_request(
   void * /*parentPointer*/)
 {
 	std::uint8_t srcAddr = requestingCF ? requestingCF->get_address() : 0xFF;
-	std::cout << "[" << get_timestamp() << "] [Diag] Repetition-rate request from SA "
-	          << static_cast<int>(srcAddr)
-	          << ": PGN " << requestedPGN
-	          << " (0x" << std::hex << requestedPGN << std::dec
-	          << "), rate=" << repetitionRate << " ms" << std::endl;
+	if (should_log_repetition_rate_request(srcAddr, requestedPGN, false))
+	{
+		log("Diag") << "Repetition-rate request from SA "
+		            << static_cast<int>(srcAddr)
+		            << ": PGN " << requestedPGN
+		            << " (0x" << std::hex << requestedPGN << std::dec
+		            << "), rate=" << repetitionRate << " ms (further requests from this SA for this PGN are not logged)" << std::endl;
+	}
 	return false; // We don't comply; just logging.
 }
 
@@ -91,12 +110,15 @@ static void log_broadcast_repetition_rate(
 	  static_cast<std::uint16_t>(data[3]) |
 	  (static_cast<std::uint16_t>(data[4]) << 8);
 
-	std::cout << "[" << get_timestamp() << "] [Diag] Broadcast repetition-rate request from SA "
-	          << static_cast<int>(srcAddr)
-	          << ": PGN " << requestedPGN
-	          << " (0x" << std::hex << requestedPGN << std::dec
-	          << "), rate=" << requestedRate << " ms"
-	          << " (broadcast – AgIsoStack will warn and ignore)" << std::endl;
+	if (should_log_repetition_rate_request(srcAddr, requestedPGN, true))
+	{
+		log("Diag") << "Broadcast repetition-rate request from SA "
+		            << static_cast<int>(srcAddr)
+		            << ": PGN " << requestedPGN
+		            << " (0x" << std::hex << requestedPGN << std::dec
+		            << "), rate=" << requestedRate << " ms"
+		            << " (broadcast – AgIsoStack will warn and ignore; further requests from this SA for this PGN are not logged)" << std::endl;
+	}
 }
 
 // Enumerate and log all Control Functions on the bus
@@ -492,7 +514,12 @@ void Application::setup_tecu_interfaces()
 		tractorFacilities = std::make_unique<TractorFacilities>(tecuCF, settings);
 		tractorFacilities->set_speed_messages_interface(speedMessagesInterface.get());
 		tractorFacilities->set_nmea2000_message_interface(nmea2000MessageInterface.get());
-		tractorFacilities->initialize();
+		if (!tractorFacilities->initialize())
+		{
+			// The power-up broadcast still goes out from update(), but PGN 65033
+			// requests will be NACKed by the stack because no callback is registered.
+			log("Warning") << "Tractor Facilities PGN 65033 request handler not registered; requests for PGN 65033 will not be answered." << std::endl;
+		}
 
 		// Register repetition-rate diagnostic on the TECU's PGN request protocol
 		auto tecuPgnReq = tecuCF->get_pgn_request_protocol().lock();

@@ -6,7 +6,7 @@
  * and registers a PGN-request callback so that implements can query which
  * tractor facilities are actually backed by a periodic CAN broadcast.
  *
- * @see ISO 11783-7:2009, B.24.3 (PGN 65033) and B.24.2 (PGN 65032).
+ * @see ISO 11783-7:2009, B.24.3 (PGN 65033) and B.24.4 (PGN 65032).
  */
 
 #pragma once

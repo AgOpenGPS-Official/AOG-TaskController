@@ -314,6 +314,7 @@ When the TECU is enabled, the TC responds to PGN 65033 requests (ISO 11783-7 B.2
 | 1 | 3 | Wheel-based speed (PGN 65096) | `speedMessagesInterface` exists (always true when TECU is enabled). |
 | 3 | 7,6 | Ground-based distance + direction | Same as ground-based speed. |
 | 3 | 5,4 | Wheel-based distance + direction | Same as wheel-based speed. |
+| 5 | 3 | Selected speed (Machine Selected Speed, PGN 61474) | `speedMessagesInterface` is sending Machine Selected Speed (always true when TECU is enabled). |
 
 **Facilities NOT advertised (bits always 0):**
 
@@ -325,12 +326,12 @@ When the TECU is enabled, the TC responds to PGN 65033 requests (ISO 11783-7 B.2
 - Lighting — no lighting controller.
 - Language command storage (PGN 65039) — not broadcast by the TECU.
 - Auxiliary valve commands / status — no valve interface.
-- Selected speed (PGN 65265) — not broadcast.
+- Selected speed control — the TECU does not accept Machine Selected Speed Command (PGN 64835).
 - Navigation position data / high-output position — NMEA 2000 position PGNs are not forwarded over Fast Packet.
 - Front hitch / PTO — no front hitch or PTO sensors.
 - All reserved bits (byte 2 bits 2–1, byte 4 bits 3–1, byte 5 bit 5, byte 7, byte 8 including the reserved-bit indicator at bit 1).
 
-**Default payload** (TECU enabled, speed broadcasts active): `[0x06, 0x00, 0x78, 0x00, 0x00, 0x00, 0x00, 0x00]`.
+**Default payload** (TECU enabled, speed broadcasts active): `[0x06, 0x00, 0x78, 0x00, 0x04, 0x00, 0x00, 0x00]`. The message is sent at priority 3 (ISO 11783-7 B.24.3 default).
 
 **PGN 65032 (Required Tractor Facilities):** When an implement broadcasts what it needs, the TC logs the request at debug level. The response is not modified based on the implement's requirements — a facility bit is set to 1 only when backed by a live broadcast.
 

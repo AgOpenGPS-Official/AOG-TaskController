@@ -1,7 +1,7 @@
 /**
  * @brief ISO 11783-7 Tractor Facilities (PGN 65033) implementation.
  *
- * @see ISO 11783-7:2009, B.24.3 (PGN 65033) and B.24.2 (PGN 65032).
+ * @see ISO 11783-7:2009, B.24.3 (PGN 65033) and B.24.4 (PGN 65032).
  */
 
 #include "tractor_facilities.hpp"
@@ -293,10 +293,17 @@ std::array<std::uint8_t, 8> TractorFacilities::build_payload() const
 	// exists on the bus.
 	f.timeDate = timeDateActive;
 
+	// Machine selected speed (PGN 61474 / 0xF022, ISO 11783-7 B.28.1) is
+	// broadcast only when the SpeedMessagesInterface was constructed with
+	// machine-selected-speed sending enabled; the interface then holds a
+	// sender control function for that message.
+	f.selectedSpeed = (speedMessagesInterface != nullptr) &&
+	                  (speedMessagesInterface->machineSelectedSpeedTransmitData.get_sender_control_function() != nullptr);
+
 	// Everything else stays 0: we have no engine data, hitch feedback,
 	// PTO, auxiliary valves, lighting, language storage (PGN 65039),
-	// selected speed (PGN 65265), or NMEA 2000
-	// position forwarding over Fast Packet.
+	// selected speed control (we do not accept PGN 64835 commands), or
+	// NMEA 2000 position forwarding over Fast Packet.
 
 	return encode_facilities(f);
 }
@@ -345,7 +352,8 @@ bool TractorFacilities::send_facilities_response(bool isPowerUp)
 
 	auto payload = build_payload();
 	bool sent = isobus::CANNetworkManager::CANNetwork.send_can_message(
-	  PGN_TRACTOR_FACILITIES, payload.data(), payload.size(), tecuCF);
+	  PGN_TRACTOR_FACILITIES, payload.data(), payload.size(), tecuCF, nullptr,
+	  isobus::CANIdentifier::CANPriority::Priority3); // ISO 11783-7 B.24.3 default priority
 
 	if (sent)
 	{
