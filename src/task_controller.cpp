@@ -573,7 +573,13 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 		}
 
 		// Announce and configure the section control method (hierarchy: Modern > Old > Oldest)
-		if (hasCondensedSetpoint)
+		if (0 == numberOfSections)
+		{
+			// e.g. a tractor ECU describing hitch or GNSS geometry: nothing to control, nothing wrong,
+			// even if it declares section control DDIs
+			log("TC Server") << "Non-section client: the DDOP has no section elements, section control not applicable." << std::endl;
+		}
+		else if (hasCondensedSetpoint)
 		{
 			// Modern: condensed setpoint DDI 290+ (always paired with DDI 289 for global work state)
 			log("TC Server") << "Attempting Section Control via: DDI 290 (SetpointCondensedWorkState) + DDI 289 (SetpointWorkState)"
@@ -596,11 +602,6 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 			{
 				log() << "  Section " << static_cast<int>(i) << " -> element " << sectionElementNumbers[i] << std::endl;
 			}
-		}
-		else if (0 == numberOfSections)
-		{
-			// e.g. a tractor ECU describing hitch or GNSS geometry: nothing to control, nothing wrong
-			log("TC Server") << "Non-section client: the DDOP has no section elements, section control not applicable." << std::endl;
 		}
 		else
 		{

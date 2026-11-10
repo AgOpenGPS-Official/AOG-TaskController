@@ -52,10 +52,11 @@ static std::array<std::atomic<std::uint32_t>, 256> globalRtsCountBySource{};
 
 static void count_global_rts(const isobus::CANMessageFrame &frame)
 {
-	constexpr std::uint8_t TP_CONNECTION_MANAGEMENT_PF = 0xEC;
+	// Extended data page, data page and PDU format (identifier bits 25-16) of TP.CM, PGN 0xEC00
+	constexpr std::uint32_t TP_CONNECTION_MANAGEMENT_EDP_DP_PF = 0x0EC;
 	constexpr std::uint8_t TP_REQUEST_TO_SEND = 16;
 	if (frame.isExtendedFrame && (frame.dataLength > 0) &&
-	    (((frame.identifier >> 16) & 0xFF) == TP_CONNECTION_MANAGEMENT_PF) &&
+	    (((frame.identifier >> 16) & 0x3FF) == TP_CONNECTION_MANAGEMENT_EDP_DP_PF) &&
 	    (((frame.identifier >> 8) & 0xFF) == 0xFF) &&
 	    (frame.data[0] == TP_REQUEST_TO_SEND))
 	{
