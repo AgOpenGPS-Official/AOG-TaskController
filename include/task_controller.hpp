@@ -126,15 +126,19 @@ public:
 	void update_section_states(std::vector<bool> &sectionStates);
 	void update_section_control_enabled(bool enabled);
 
-	/// @brief Sets the section control state applied to implements as they connect, before AOG asks for one.
-	void set_initial_section_control_enabled(bool enabled);
+	/// @brief Sets whether implements are switched to section control when they connect (settings: sectionControlOnConnect).
+	/// @details When on, section control starts enabled for implements that connect before AOG asks for a state.
+	/// When off, nothing is sent on connect, as before; AOG's SC button still switches every connected client.
+	void set_section_control_on_connect(bool enabled);
 
 	/// @brief Sends GNSS quality (DDI 514) to every client that declares that DDI.
 	/// @param quality NMEA 2000 GNSS Method: 0=No GNSS, 1=GNSS, 2=DGNSS, 3=Precise, 4=RTK Fixed, 5=RTK Float, 6=Estimated, 7=Manual, 8=Simulated
 	void send_gnss_quality(std::uint8_t quality);
 
 private:
-	void send_section_setpoint_states(std::shared_ptr<isobus::ControlFunction> client, std::uint8_t ddiOffset);
+	/// @brief Sends every condensed setpoint block and DDI 289, even when unchanged (ISO 11783-10 F.3.5.3 b)
+	void send_all_section_setpoint_states(std::shared_ptr<isobus::ControlFunction> client);
+	void send_section_setpoint_states(std::shared_ptr<isobus::ControlFunction> client, std::uint8_t ddiOffset, bool forceWorkState = false);
 	void send_section_control_state(std::shared_ptr<isobus::ControlFunction> client, bool enabled);
 	/// @brief Sets the local auto/manual flag and commands DDI 160 if the client supports it. Caller must hold clientsMutex.
 	void apply_section_control_state(std::shared_ptr<isobus::ControlFunction> client, ClientState &state, bool enabled);
@@ -143,6 +147,11 @@ private:
 	std::map<std::shared_ptr<isobus::ControlFunction>, ClientState> clients;
 	std::map<std::shared_ptr<isobus::ControlFunction>, std::queue<std::vector<std::uint8_t>>> uploadedPools;
 	bool desiredSectionControlEnabled = false; ///< Applied to implements when they connect; follows AOG's ISOBUS SC button. Guarded by clientsMutex
+	bool sectionControlOnConnect = false; ///< Whether desiredSectionControlEnabled is applied on connect at all. Guarded by clientsMutex
+
+	static constexpr std::uint32_t SECTION_DEMAND_TIMEOUT_MS = 2000; ///< AOG sends PGN 229 every frame while a field is open
+	std::vector<bool> aogSectionDemand; ///< Last section states from AOG (PGN 229). Guarded by clientsMutex
+	std::uint32_t lastSectionDemandMs = 0; ///< When AOG's section demand was last received, 0 = never. Guarded by clientsMutex
 
 	/// @brief Guards clients and uploadedPools.
 	///
