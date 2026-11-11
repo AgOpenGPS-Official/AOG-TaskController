@@ -207,6 +207,19 @@ if(AOG_TC_VALIDATE_IOP)
   add_dependencies(iop_validator test_element_hierarchy)
   add_test(NAME element_hierarchy COMMAND test_element_hierarchy)
 
+  # section_layout (condensed-DDI owners per boom, overlapping-section grouping)
+  # unit tests, built with the validation workflow for the same reason.
+  add_executable(test_section_layout
+                 ${CMAKE_CURRENT_LIST_DIR}/tools/test_section_layout.cpp)
+  target_compile_features(test_section_layout PRIVATE cxx_std_20)
+  set_target_properties(test_section_layout PROPERTIES CXX_EXTENSIONS OFF)
+  target_include_directories(test_section_layout
+                             PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
+  target_link_libraries(test_section_layout PRIVATE isobus::Isobus
+                                                    isobus::Utility)
+  add_dependencies(iop_validator test_section_layout)
+  add_test(NAME section_layout COMMAND test_section_layout)
+
   # PASS_REGULAR_EXPRESSION makes CTest ignore the exit code, which is the part
   # a CI gate actually reads.
   add_test(NAME malformed_pool_exit_status COMMAND iop_validator

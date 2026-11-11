@@ -64,6 +64,7 @@ AOG-TaskController reads its configuration from a `settings.json` file located i
 | `nmeaSendEnabled` | `bool` | `true` | Enables cyclic NMEA2000 COG/SOG transmission. Requires `tecuEnabled`. |
 | `aogHeartbeatEnabled` | `bool` | `true` | Sends the 100 ms zero-section heartbeat when no implement is connected. Disable for AgOpenGPS versions before v6.8.2 beta 5. |
 | `vtEnabled` | `bool` | `true` | Enables the ISOBUS Virtual Terminal UI. |
+| `groupOverlappingSections` | `bool` | `false` | Sections with the same lateral offset and width (within 10 mm) share one AOG section, e.g. several dispensers on one working width, or a 3 + 3 m seeder with three products per half (two AOG sections). AOG's section count must match the grouped count. The TC requests the offsets and widths an implement only declares as process data. The resulting mapping is logged even while this is off. |
 | `tcVersion` | `integer` | `3` | Task Controller version code, from `0` through `4`; `3` is Second Edition Draft. |
 | `languageCode` | `string` | `"en"` | Two-character language code advertised on ISOBUS. |
 | `countryCode` | `string` | `"US"` | Two-character country code advertised on ISOBUS. |

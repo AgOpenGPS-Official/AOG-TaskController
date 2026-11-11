@@ -381,6 +381,7 @@ void Application::setup_task_controller_server()
 	languageInterface.set_language_code(settings->get_language_code());
 	languageInterface.set_country_code(settings->get_country_code());
 	tcServer->initialize();
+	tcServer->set_group_overlapping_sections(settings->is_group_overlapping_sections());
 	tcServer->set_task_totals_active(true); // TODO: make this dynamic based on status in AOG
 	tcFunctionalities = std::make_unique<isobus::ControlFunctionFunctionalities>(tcCF);
 	tcFunctionalities->set_functionality_is_supported(
@@ -739,17 +740,20 @@ bool Application::update()
 			}
 
 			anyClientWithSections = true;
-			std::vector<uint8_t> data = { state.is_section_control_enabled(), state.get_number_of_sections() };
+
+			// AOG's sections: overlapping implement sections are reported as one (identity mapping otherwise)
+			const std::uint8_t aogSections = state.get_number_of_aog_sections();
+			std::vector<uint8_t> data = { state.is_section_control_enabled(), aogSections };
 
 			std::uint8_t sectionIndex = 0;
-			while (sectionIndex < state.get_number_of_sections())
+			while (sectionIndex < aogSections)
 			{
 				std::uint8_t byte = 0;
 				for (std::uint8_t i = 0; i < 8; i++)
 				{
-					if (sectionIndex < state.get_number_of_sections())
+					if (sectionIndex < aogSections)
 					{
-						byte |= (state.get_section_actual_state(sectionIndex) == SectionState::ON) << i;
+						byte |= state.is_aog_section_on(sectionIndex) << i;
 						sectionIndex++;
 					}
 				}
@@ -1029,7 +1033,9 @@ void Application::check_section_demand()
 		for (std::uint8_t i = 0; i < state.get_number_of_sections(); i++)
 		{
 			actual.push_back(SectionState::ON == state.get_section_actual_state(i));
-			demanded = demanded || (arriving && (i < sectionDemand.size()) && sectionDemand[i]);
+			// Demand is AOG's bit for the AOG section this implement section belongs to (grouped sections share one)
+			const std::uint8_t demandIndex = state.get_aog_section_for_section(i);
+			demanded = demanded || (arriving && (demandIndex < sectionDemand.size()) && sectionDemand[demandIndex]);
 		}
 		const bool working = (actual.end() != std::find(actual.begin(), actual.end(), true));
 

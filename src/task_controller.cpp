@@ -114,6 +114,8 @@ void ClientState::set_number_of_sections(std::uint8_t number)
 	sectionSetpointStates.resize(number);
 	sectionActualStates.resize(number);
 	sectionToElementNumber.resize(number, 0); // Initialize all sections mapped to element 0 by default
+	sectionGeometry.resize(number);
+	aogSectionMap = section_layout::identity_map(number);
 }
 
 void ClientState::set_section_setpoint_state(std::uint8_t section, std::uint8_t state)
@@ -239,6 +241,16 @@ bool ClientState::is_section_control_enabled() const
 void ClientState::set_section_control_enabled(bool state)
 {
 	isSectionControlEnabled = state;
+	// Commanded for every boom, including booms that have not reported DDI 160 yet, so one boom's report
+	// is never aggregated against a missing entry for another; each boom's next report corrects its own entry
+	for (std::uint16_t element : sectionControlStateElements)
+	{
+		elementSectionControlStates[element] = state;
+	}
+	for (auto &entry : elementSectionControlStates)
+	{
+		entry.second = state;
+	}
 }
 
 bool ClientState::uses_per_element_control() const
@@ -324,6 +336,148 @@ bool ClientState::try_get_element_work_state(std::uint16_t elementNumber, bool &
 	{
 		isWorking = it->second;
 		return true;
+	}
+	return false;
+}
+
+void ClientState::set_condensed_owners(std::vector<section_layout::CondensedOwner> owners, std::uint16_t setpointBaseDdi)
+{
+	condensedOwners = std::move(owners);
+	condensedSetpointBaseDdi = setpointBaseDdi;
+}
+
+const std::vector<section_layout::CondensedOwner> &ClientState::get_condensed_owners() const
+{
+	return condensedOwners;
+}
+
+bool ClientState::has_multiple_condensed_owners() const
+{
+	return condensedOwners.size() > 1;
+}
+
+std::uint16_t ClientState::get_condensed_setpoint_base_ddi() const
+{
+	return condensedSetpointBaseDdi;
+}
+
+bool ClientState::try_get_owned_section(std::uint16_t ownerElement, std::uint8_t localSection, std::uint8_t &section) const
+{
+	for (const auto &owner : condensedOwners)
+	{
+		if ((owner.elementNumber == ownerElement) && (localSection < owner.count))
+		{
+			section = owner.firstSection + localSection;
+			return true;
+		}
+	}
+	return false;
+}
+
+void ClientState::set_element_section_control_state(std::uint16_t elementNumber, bool enabled)
+{
+	elementSectionControlStates[elementNumber] = enabled;
+	bool anyEnabled = false;
+	for (const auto &entry : elementSectionControlStates)
+	{
+		anyEnabled = anyEnabled || entry.second;
+	}
+	isSectionControlEnabled = anyEnabled;
+}
+
+void ClientState::add_section_control_state_element(std::uint16_t elementNumber)
+{
+	if (std::find(sectionControlStateElements.begin(), sectionControlStateElements.end(), elementNumber) == sectionControlStateElements.end())
+	{
+		sectionControlStateElements.push_back(elementNumber);
+		// Until it reports, assume the boom is in the mode last commanded
+		elementSectionControlStates.try_emplace(elementNumber, isSectionControlEnabled);
+	}
+}
+
+const std::vector<std::uint16_t> &ClientState::get_section_control_state_elements() const
+{
+	return sectionControlStateElements;
+}
+
+void ClientState::set_section_elements(const std::vector<std::uint16_t> &elements)
+{
+	sectionElements = elements;
+}
+
+const std::vector<std::uint16_t> &ClientState::get_section_elements() const
+{
+	return sectionElements;
+}
+
+bool ClientState::set_section_geometry_value(std::uint16_t elementNumber, std::uint16_t ddi, std::int32_t value)
+{
+	for (std::size_t i = 0; (i < sectionElements.size()) && (i < sectionGeometry.size()); i++)
+	{
+		if (sectionElements[i] != elementNumber)
+		{
+			continue;
+		}
+		auto &geometry = sectionGeometry[i];
+		std::optional<std::int32_t> &target = (ddi == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::DeviceElementOffsetY)) ? geometry.yOffset_mm : geometry.width_mm;
+		if (target == value)
+		{
+			return false;
+		}
+		target = value;
+		return true;
+	}
+	return false;
+}
+
+const std::vector<section_layout::SectionGeometry> &ClientState::get_section_geometry() const
+{
+	return sectionGeometry;
+}
+
+void ClientState::set_section_geometry(std::vector<section_layout::SectionGeometry> geometry)
+{
+	sectionGeometry = std::move(geometry);
+}
+
+void ClientState::set_aog_section_map(const section_layout::AogSectionMap &map)
+{
+	aogSectionMap = map;
+}
+
+const section_layout::AogSectionMap &ClientState::get_aog_section_map() const
+{
+	return aogSectionMap;
+}
+
+void ClientState::set_proposed_aog_section_map(const section_layout::AogSectionMap &map)
+{
+	proposedAogSectionMap = map;
+}
+
+const section_layout::AogSectionMap &ClientState::get_proposed_aog_section_map() const
+{
+	return proposedAogSectionMap;
+}
+
+std::uint8_t ClientState::get_aog_section_for_section(std::uint8_t section) const
+{
+	return (section < aogSectionMap.aogSectionForSection.size()) ? aogSectionMap.aogSectionForSection[section] : section;
+}
+
+std::uint8_t ClientState::get_number_of_aog_sections() const
+{
+	return (aogSectionMap.aogSectionForSection.size() == numberOfSections) ? aogSectionMap.numberOfAogSections : numberOfSections;
+}
+
+bool ClientState::is_aog_section_on(std::uint8_t aogSection) const
+{
+	for (std::uint8_t i = 0; i < numberOfSections; i++)
+	{
+		if ((get_aog_section_for_section(i) == aogSection) && (get_section_actual_state(i) == SectionState::ON))
+		{
+			return true;
+		}
 	}
 	return false;
 }
@@ -501,6 +655,23 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 		{
 			state.set_element_number_for_section(i, sectionElementNumbers[i]);
 		}
+		state.set_section_elements(sectionElementNumbers);
+
+		// Lateral geometry the DDOP gives as fixed values; the rest is requested after activation
+		std::vector<section_layout::SectionGeometry> geometry(numberOfSections);
+		for (std::size_t i = 0; (i < geometryRows.size()) && (i < geometry.size()); i++)
+		{
+			const auto &section = geometryRows[i].section;
+			if (section.yOffset_mm.exists())
+			{
+				geometry[i].yOffset_mm = section.yOffset_mm.get();
+			}
+			if (section.width_mm.exists())
+			{
+				geometry[i].width_mm = section.width_mm.get();
+			}
+		}
+		state.set_section_geometry(geometry);
 
 		// Scan the DDOP to determine which section control method the device supports
 		bool hasCondensedSetpoint = false; // Modern: DDI 290+ (paired with DDI 289 for global work state)
@@ -564,6 +735,25 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 			log("TC Server") << "WARNING: No supported section control method detected! "
 			                 << "Device has no DDI 290, 161 (settable), or 141 (settable)." << std::endl;
 		}
+
+		// Several booms that each carry their own condensed DDIs (e.g. one Function per product) number their
+		// sections from 1 each; give every one of them its own setpoint and DDI 160.
+		if (hasCondensedSetpoint || hasSettableCondensedActual)
+		{
+			const auto firstDdi = static_cast<std::uint16_t>(hasCondensedSetpoint ? isobus::DataDescriptionIndex::SetpointCondensedWorkState1_16 : isobus::DataDescriptionIndex::ActualCondensedWorkState1_16);
+			const auto lastDdi = static_cast<std::uint16_t>(hasCondensedSetpoint ? isobus::DataDescriptionIndex::SetpointCondensedWorkState241_256 : isobus::DataDescriptionIndex::ActualCondensedWorkState241_256);
+			// DDI 161 is only a command target where it is settable; a read-only one just reports
+			auto owners = section_layout::resolve_condensed_owners(state.get_pool(), element_hierarchy::build_parent_map(state.get_pool()), sectionElementNumbers, firstDdi, lastDdi, !hasCondensedSetpoint);
+			if (owners.size() > 1)
+			{
+				log("TC Server") << "Sections are split over " << owners.size() << " elements with their own condensed DDIs:" << std::endl;
+				for (const auto &owner : owners)
+				{
+					log() << "  Element " << owner.elementNumber << ": sections " << (owner.firstSection + 1) << "-" << (owner.firstSection + owner.count) << std::endl;
+				}
+			}
+			state.set_condensed_owners(std::move(owners), firstDdi);
+		}
 	}
 	else
 	{
@@ -576,6 +766,7 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 	clients[partnerCF] = state;
 	log("TC Server") << "Client " << partnerCF->get_NAME().get_full_name() << " registered successfully with "
 	                 << static_cast<int>(state.get_number_of_sections()) << " sections." << std::endl;
+	update_aog_section_map(partnerCF, clients[partnerCF]);
 	return true;
 }
 
@@ -680,6 +871,20 @@ bool MyTCServer::on_value_command(std::shared_ptr<isobus::ControlFunction> partn
 		{
 			std::uint8_t sectionIndexOffset = NUMBER_SECTIONS_PER_CONDENSED_MESSAGE * static_cast<std::uint8_t>(dataDescriptionIndex - static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState1_16));
 
+			if (clients[partner].has_multiple_condensed_owners())
+			{
+				// Sections are numbered within the reporting boom
+				for (std::uint_fast8_t i = 0; i < NUMBER_SECTIONS_PER_CONDENSED_MESSAGE; i++)
+				{
+					std::uint8_t section;
+					if (clients[partner].try_get_owned_section(elementNumber, static_cast<std::uint8_t>(sectionIndexOffset + i), section))
+					{
+						clients[partner].set_section_actual_state(section, ((processDataValue >> (2 * i)) & 0x03));
+					}
+				}
+				break;
+			}
+
 			for (std::uint_fast8_t i = 0; i < NUMBER_SECTIONS_PER_CONDENSED_MESSAGE; i++)
 			{
 				std::uint8_t sectionState = ((processDataValue >> (2 * i)) & 0x03);
@@ -691,7 +896,29 @@ bool MyTCServer::on_value_command(std::shared_ptr<isobus::ControlFunction> partn
 
 		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SectionControlState):
 		{
-			clients[partner].set_section_control_enabled(processDataValue == 1);
+			if (clients[partner].has_multiple_condensed_owners())
+			{
+				clients[partner].set_element_section_control_state(elementNumber, processDataValue == 1);
+			}
+			else
+			{
+				clients[partner].set_section_control_enabled(processDataValue == 1);
+			}
+		}
+		break;
+
+		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::DeviceElementOffsetY):
+		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualWorkingWidth):
+		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::MaximumWorkingWidth):
+		case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::DefaultWorkingWidth):
+		{
+			// Section geometry that the DDOP declares as process data, answered after request_measurement_commands()
+			if (clients[partner].set_section_geometry_value(elementNumber, dataDescriptionIndex, processDataValue))
+			{
+				log("TC Server") << "Element " << elementNumber << " reports " << isobus::DataDictionary::get_entry(dataDescriptionIndex).to_string()
+				                 << " = " << processDataValue << " mm" << std::endl;
+				update_aog_section_map(partner, clients[partner]);
+			}
 		}
 		break;
 
@@ -819,6 +1046,10 @@ void MyTCServer::request_measurement_commands()
 										// TODO: This is a bit of a hack, but it works for now
 										client.second.set_element_number_for_ddi(static_cast<isobus::DataDescriptionIndex>(processDataObject->get_ddi()), elementObject->get_element_number());
 										const auto &entryB = isobus::DataDictionary::get_entry(processDataObject->get_ddi());
+										if (processDataObject->get_ddi() == static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SectionControlState))
+										{
+											client.second.add_section_control_state_element(elementObject->get_element_number());
+										}
 
 										if (processDataObject->has_trigger_method(isobus::task_controller_object::DeviceProcessDataObject::AvailableTriggerMethods::OnChange))
 										{
@@ -870,6 +1101,51 @@ void MyTCServer::request_measurement_commands()
 				}
 			}
 
+			// Ask each section for the lateral geometry the DDOP only declares as process data (not as fixed
+			// values), so sections covering the same strip can share one AOG section.
+			{
+				using isobus::DataDescriptionIndex;
+				auto &pool = client.second.get_pool();
+				const auto &sectionElements = client.second.get_section_elements();
+				const auto &geometry = client.second.get_section_geometry();
+				for (std::size_t s = 0; (s < sectionElements.size()) && (s < geometry.size()); s++)
+				{
+					std::shared_ptr<isobus::task_controller_object::DeviceElementObject> element;
+					for (std::uint16_t i = 0; i < pool.size(); i++)
+					{
+						auto object = pool.get_object_by_index(i);
+						if (object && (object->get_object_type() == isobus::task_controller_object::ObjectTypes::DeviceElement) &&
+						    (std::static_pointer_cast<isobus::task_controller_object::DeviceElementObject>(object)->get_element_number() == sectionElements[s]))
+						{
+							element = std::static_pointer_cast<isobus::task_controller_object::DeviceElementObject>(object);
+							break;
+						}
+					}
+					if (!element)
+					{
+						continue;
+					}
+					auto request = [&](DataDescriptionIndex ddi) {
+						if (section_layout::element_links_ddi(pool, *element, static_cast<std::uint16_t>(ddi), static_cast<std::uint16_t>(ddi)))
+						{
+							send_request_value(client.first, static_cast<std::uint16_t>(ddi), sectionElements[s]);
+							log() << "Requested " << isobus::DataDictionary::get_entry(static_cast<std::uint16_t>(ddi)).to_string() << " from element " << sectionElements[s] << std::endl;
+							return true;
+						}
+						return false;
+					};
+					if (!geometry[s].yOffset_mm)
+					{
+						request(DataDescriptionIndex::DeviceElementOffsetY);
+					}
+					if (!geometry[s].width_mm)
+					{
+						// Same priority as the DDOP helper: actual, then maximum, then default width
+						request(DataDescriptionIndex::ActualWorkingWidth) || request(DataDescriptionIndex::MaximumWorkingWidth) || request(DataDescriptionIndex::DefaultWorkingWidth);
+					}
+				}
+			}
+
 			log() << "Measurement commands sent." << std::endl;
 			client.second.mark_measurement_commands_sent();
 		}
@@ -894,10 +1170,12 @@ void MyTCServer::update_section_states(std::vector<bool> &sectionStates)
 			continue;
 		}
 
+		const bool multipleOwners = state.has_multiple_condensed_owners();
 		bool requiresUpdate = false;
+		bool anyUpdate = false;
 		for (std::uint8_t i = 0; i < state.get_number_of_sections(); i++)
 		{
-			if ((i % NUMBER_SECTIONS_PER_CONDENSED_MESSAGE == 0) && requiresUpdate)
+			if ((i % NUMBER_SECTIONS_PER_CONDENSED_MESSAGE == 0) && requiresUpdate && !multipleOwners)
 			{
 				// Send the previous 16 sections
 				std::uint8_t ddiOffset = (i / NUMBER_SECTIONS_PER_CONDENSED_MESSAGE) - 1;
@@ -905,16 +1183,26 @@ void MyTCServer::update_section_states(std::vector<bool> &sectionStates)
 				requiresUpdate = false;
 			}
 
-			if (i < sectionStates.size())
+			// Overlapping sections share one AOG section (identity mapping unless grouped)
+			const std::uint8_t aogSection = state.get_aog_section_for_section(i);
+			if (aogSection < sectionStates.size())
 			{
-				if (sectionStates[i] != (state.get_section_setpoint_state(i) == SectionState::ON))
+				if (sectionStates[aogSection] != (state.get_section_setpoint_state(i) == SectionState::ON))
 				{
-					state.set_section_setpoint_state(i, sectionStates[i] ? SectionState::ON : SectionState::OFF);
+					state.set_section_setpoint_state(i, sectionStates[aogSection] ? SectionState::ON : SectionState::OFF);
 					requiresUpdate = true;
+					anyUpdate = true;
 				}
 			}
 		}
-		if (requiresUpdate)
+		if (multipleOwners)
+		{
+			if (anyUpdate)
+			{
+				send_owner_section_setpoint_states(client.first);
+			}
+		}
+		else if (requiresUpdate)
 		{
 			std::uint8_t ddiOffset = (state.get_number_of_sections() - 1) / NUMBER_SECTIONS_PER_CONDENSED_MESSAGE;
 			send_section_setpoint_states(client.first, ddiOffset);
@@ -1039,9 +1327,88 @@ void MyTCServer::send_section_setpoint_states(std::shared_ptr<isobus::ControlFun
 	}
 }
 
+void MyTCServer::set_group_overlapping_sections(bool enabled)
+{
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
+	groupOverlappingSections = enabled;
+	for (auto &client : clients)
+	{
+		update_aog_section_map(client.first, client.second);
+	}
+}
+
+void MyTCServer::update_aog_section_map(std::shared_ptr<isobus::ControlFunction> client, ClientState &state)
+{
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
+	const auto grouped = section_layout::group_overlapping_sections(state.get_section_geometry());
+	auto describe = [](const section_layout::AogSectionMap &map) {
+		std::ostringstream text;
+		for (std::size_t i = 0; i < map.aogSectionForSection.size(); i++)
+		{
+			text << (i ? ", " : "") << (i + 1) << "->" << (map.aogSectionForSection[i] + 1);
+		}
+		return text.str();
+	};
+
+	if (grouped.aogSectionForSection != state.get_proposed_aog_section_map().aogSectionForSection)
+	{
+		// What the geometry says, logged whether or not the grouping is applied
+		state.set_proposed_aog_section_map(grouped);
+		log("TC Server") << "Client " << client->get_NAME().get_full_name() << ": geometry gives " << static_cast<int>(grouped.numberOfAogSections)
+		                 << " AOG section(s) for " << static_cast<int>(state.get_number_of_sections()) << " implement section(s) (" << describe(grouped) << ")"
+		                 << (grouped.grouped ? (groupOverlappingSections ? ", applied" : ", not applied: groupOverlappingSections is off") : "") << std::endl;
+	}
+
+	const auto map = groupOverlappingSections ? grouped : section_layout::identity_map(state.get_number_of_sections());
+	if (map.aogSectionForSection == state.get_aog_section_map().aogSectionForSection)
+	{
+		return;
+	}
+	state.set_aog_section_map(map);
+	log("TC Server") << "Client " << client->get_NAME().get_full_name() << ": reporting " << static_cast<int>(map.numberOfAogSections)
+	                 << " section(s) to AOG (" << describe(map) << ")" << std::endl;
+}
+
+void MyTCServer::send_owner_section_setpoint_states(std::shared_ptr<isobus::ControlFunction> client)
+{
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
+	auto &state = clients[client];
+	const std::uint16_t baseDdi = state.get_condensed_setpoint_base_ddi();
+	for (const auto &owner : state.get_condensed_owners())
+	{
+		for (std::uint8_t block = 0; block * NUMBER_SECTIONS_PER_CONDENSED_MESSAGE < owner.count; block++)
+		{
+			std::uint32_t value = 0;
+			for (std::uint8_t i = 0; i < NUMBER_SECTIONS_PER_CONDENSED_MESSAGE; i++)
+			{
+				const std::uint8_t local = block * NUMBER_SECTIONS_PER_CONDENSED_MESSAGE + i;
+				const std::uint8_t sectionState = (local < owner.count) ? state.get_section_setpoint_state(owner.firstSection + local) : SectionState::NOT_INSTALLED;
+				value |= (static_cast<std::uint32_t>(sectionState) << (2 * i));
+			}
+			send_set_value(client, static_cast<std::uint16_t>(baseDdi + block), owner.elementNumber, value);
+		}
+	}
+
+	const bool setpointWorkState = state.is_any_section_setpoint_on();
+	if ((state.get_setpoint_work_state() != setpointWorkState) && state.has_element_number_for_ddi(isobus::DataDescriptionIndex::SetpointWorkState))
+	{
+		send_set_value(client, static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SetpointWorkState), state.get_element_number_for_ddi(isobus::DataDescriptionIndex::SetpointWorkState), setpointWorkState ? 1 : 0);
+		state.set_setpoint_work_state(setpointWorkState);
+	}
+}
+
 void MyTCServer::send_section_control_state(std::shared_ptr<isobus::ControlFunction> client, bool enabled)
 {
 	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
+	if (clients[client].has_multiple_condensed_owners())
+	{
+		// Every boom has its own auto/manual switch
+		for (std::uint16_t element : clients[client].get_section_control_state_elements())
+		{
+			send_set_value(client, static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SectionControlState), element, enabled ? 1 : 0);
+		}
+		return;
+	}
 	send_set_value(client, static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SectionControlState), clients[client].get_element_number_for_ddi(isobus::DataDescriptionIndex::SectionControlState), enabled ? 1 : 0);
 }
 

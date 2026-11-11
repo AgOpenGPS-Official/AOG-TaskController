@@ -98,6 +98,12 @@ public:
 	 */
 	bool set_vt_enabled(bool enabled, bool save = true);
 
+	/// @brief Check whether sections that cover the same strip (same Y offset and width) share one AOG section.
+	bool is_group_overlapping_sections() const;
+
+	/// @brief Set whether sections that cover the same strip share one AOG section.
+	bool set_group_overlapping_sections(bool enabled, bool save = true);
+
 	/**
 	 * @brief Get the configured TC version
 	 * @return The configured version (0-4, default 3)
@@ -161,6 +167,7 @@ private:
 	constexpr static bool DEFAULT_NMEA_SEND_ENABLED = true;
 	constexpr static bool DEFAULT_AOG_HEARTBEAT_ENABLED = true;
 	constexpr static bool DEFAULT_VT_ENABLED = true;
+	constexpr static bool DEFAULT_GROUP_OVERLAPPING_SECTIONS = false;
 	constexpr static std::uint8_t DEFAULT_TC_VERSION = 3; ///< SecondEditionDraft (V3 default for maximum implement compatibility)
 	static const std::string DEFAULT_LANGUAGE_CODE;
 	static const std::string DEFAULT_COUNTRY_CODE;
@@ -169,6 +176,7 @@ private:
 	bool nmeaSendEnabled = DEFAULT_NMEA_SEND_ENABLED;
 	bool aogHeartbeatEnabled = DEFAULT_AOG_HEARTBEAT_ENABLED;
 	bool vtEnabled = DEFAULT_VT_ENABLED;
+	bool groupOverlappingSections = DEFAULT_GROUP_OVERLAPPING_SECTIONS;
 	std::uint8_t tcVersion = DEFAULT_TC_VERSION;
 	std::string languageCode = DEFAULT_LANGUAGE_CODE;
 	std::string countryCode = DEFAULT_COUNTRY_CODE;
