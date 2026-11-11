@@ -70,7 +70,6 @@ bool Settings::load()
 	nmeaSendEnabled = loadBoolean("nmeaSendEnabled", DEFAULT_NMEA_SEND_ENABLED);
 	aogHeartbeatEnabled = loadBoolean("aogHeartbeatEnabled", DEFAULT_AOG_HEARTBEAT_ENABLED);
 	vtEnabled = loadBoolean("vtEnabled", DEFAULT_VT_ENABLED);
-	allSectionsFollowFirst = loadBoolean("allSectionsFollowFirst", DEFAULT_ALL_SECTIONS_FOLLOW_FIRST);
 	groupOverlappingSections = loadBoolean("groupOverlappingSections", DEFAULT_GROUP_OVERLAPPING_SECTIONS);
 
 	if (data.contains("tcVersion"))
@@ -145,7 +144,6 @@ bool Settings::save() const
 	data["nmeaSendEnabled"] = nmeaSendEnabled;
 	data["aogHeartbeatEnabled"] = aogHeartbeatEnabled;
 	data["vtEnabled"] = vtEnabled;
-	data["allSectionsFollowFirst"] = allSectionsFollowFirst;
 	data["groupOverlappingSections"] = groupOverlappingSections;
 	data["tcVersion"] = tcVersion;
 	data["languageCode"] = languageCode;
@@ -263,17 +261,6 @@ bool Settings::is_vt_enabled() const
 bool Settings::set_vt_enabled(bool enabled, bool save)
 {
 	return set_boolean(vtEnabled, enabled, save);
-}
-
-bool Settings::is_all_sections_follow_first() const
-{
-	std::scoped_lock lock(settingsMutex);
-	return allSectionsFollowFirst;
-}
-
-bool Settings::set_all_sections_follow_first(bool enabled, bool save)
-{
-	return set_boolean(allSectionsFollowFirst, enabled, save);
 }
 
 bool Settings::is_group_overlapping_sections() const

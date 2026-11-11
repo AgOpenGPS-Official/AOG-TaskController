@@ -508,12 +508,6 @@ void Application::setup_udp_connections()
 				sectionDemand = sectionStates;
 				sectionDemandChangesSinceLog++;
 			}
-			if (settings->is_all_sections_follow_first())
-			{
-				// The implement's sections are really one: all follow AOG's section 1 (sectionDemand above stays as AOG sent it).
-				// PGN 229 carries 64 bits; cover every section a DDOP can declare (up to 255), not just the first 64.
-				sectionStates.assign(256, sectionStates.front());
-			}
 			tcServer->update_section_states(sectionStates);
 		}
 		else if (pgn == 0xF1 && !data.empty()) // 241 - Section Control
@@ -735,9 +729,6 @@ bool Application::update()
 	if (isobus::SystemTiming::time_expired_ms(lastHeartbeatTransmit, 100))
 	{
 		bool anyClientWithSections = false;
-		const bool followFirst = settings->is_all_sections_follow_first();
-		bool followFirstEnabled = false;
-		bool followFirstOn = false;
 		for (auto &client : tcServer->get_clients())
 		{
 			auto &state = client.second;
@@ -749,18 +740,6 @@ bool Application::update()
 			}
 
 			anyClientWithSections = true;
-
-			if (followFirst)
-			{
-				// AOG is set up with one section, and section 1 drives every connected implement:
-				// collect them all into one report, on while any implement section is on
-				followFirstEnabled = followFirstEnabled || state.is_section_control_enabled();
-				for (std::uint8_t i = 0; i < state.get_number_of_sections(); i++)
-				{
-					followFirstOn = followFirstOn || (state.get_section_actual_state(i) == SectionState::ON);
-				}
-				continue;
-			}
 
 			// AOG's sections: overlapping implement sections are reported as one (identity mapping otherwise)
 			const std::uint8_t aogSections = state.get_number_of_aog_sections();
@@ -781,12 +760,6 @@ bool Application::update()
 				data.push_back(byte);
 			}
 			udpConnections->send(0x80, 0xF0, data);
-		}
-
-		if (followFirst && anyClientWithSections)
-		{
-			std::vector<uint8_t> oneSection = { followFirstEnabled, 1, static_cast<std::uint8_t>(followFirstOn ? 1 : 0) };
-			udpConnections->send(0x80, 0xF0, oneSection);
 		}
 
 		// If no clients with sections, send heartbeat with 0 sections
@@ -1060,9 +1033,8 @@ void Application::check_section_demand()
 		for (std::uint8_t i = 0; i < state.get_number_of_sections(); i++)
 		{
 			actual.push_back(SectionState::ON == state.get_section_actual_state(i));
-			// Demand is AOG's bit for the AOG section this implement section belongs to (grouped sections share
-			// one); with allSectionsFollowFirst, AOG has one section, so any other bit is padding
-			const std::uint8_t demandIndex = settings->is_all_sections_follow_first() ? 0 : state.get_aog_section_for_section(i);
+			// Demand is AOG's bit for the AOG section this implement section belongs to (grouped sections share one)
+			const std::uint8_t demandIndex = state.get_aog_section_for_section(i);
 			demanded = demanded || (arriving && (demandIndex < sectionDemand.size()) && sectionDemand[demandIndex]);
 		}
 		const bool working = (actual.end() != std::find(actual.begin(), actual.end(), true));
