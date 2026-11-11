@@ -29,7 +29,9 @@ namespace section_layout
 	};
 
 	/// @brief Whether an element links a process data object with a DDI in [firstDdi, lastDdi]
-	inline bool element_links_ddi(isobus::DeviceDescriptorObjectPool &pool, const isobus::task_controller_object::DeviceElementObject &element, std::uint16_t firstDdi, std::uint16_t lastDdi)
+	/// @param requireSettable Only count process data the TC may set (needed when the range is DDI 161+, whose
+	/// read-only form only reports and cannot be commanded)
+	inline bool element_links_ddi(isobus::DeviceDescriptorObjectPool &pool, const isobus::task_controller_object::DeviceElementObject &element, std::uint16_t firstDdi, std::uint16_t lastDdi, bool requireSettable = false)
 	{
 		using isobus::task_controller_object::DeviceProcessDataObject;
 		using isobus::task_controller_object::ObjectTypes;
@@ -38,8 +40,10 @@ namespace section_layout
 			auto child = pool.get_object_by_id(childId);
 			if (child && (child->get_object_type() == ObjectTypes::DeviceProcessData))
 			{
-				const auto ddi = std::static_pointer_cast<DeviceProcessDataObject>(child)->get_ddi();
-				if ((ddi >= firstDdi) && (ddi <= lastDdi))
+				const auto processData = std::static_pointer_cast<DeviceProcessDataObject>(child);
+				const auto ddi = processData->get_ddi();
+				if ((ddi >= firstDdi) && (ddi <= lastDdi) &&
+				    (!requireSettable || processData->has_property(DeviceProcessDataObject::PropertiesBit::Settable)))
 				{
 					return true;
 				}
@@ -50,13 +54,15 @@ namespace section_layout
 
 	/// @brief Finds, for each section, the nearest element (the section itself or an ancestor) that links a
 	/// DDI in [firstDdi, lastDdi], and groups consecutive sections with the same owner.
+	/// @param requireSettable Only settable process data makes an owner (see element_links_ddi)
 	/// @returns The owners in section order, or an empty vector when a section has no owner or one owner's
 	/// sections are not consecutive (callers then keep the single-element behaviour).
 	inline std::vector<CondensedOwner> resolve_condensed_owners(isobus::DeviceDescriptorObjectPool &pool,
 	                                                            const element_hierarchy::ParentMap &parents,
 	                                                            const std::vector<std::uint16_t> &sectionElements,
 	                                                            std::uint16_t firstDdi,
-	                                                            std::uint16_t lastDdi)
+	                                                            std::uint16_t lastDdi,
+	                                                            bool requireSettable = false)
 	{
 		using isobus::task_controller_object::DeviceElementObject;
 		using isobus::task_controller_object::ObjectTypes;
@@ -80,7 +86,7 @@ namespace section_layout
 			for (std::size_t depth = 0; depth < 32; depth++) // depth guard against a cyclic pool
 			{
 				auto found = elements.find(current);
-				if ((found != elements.end()) && element_links_ddi(pool, *found->second, firstDdi, lastDdi))
+				if ((found != elements.end()) && element_links_ddi(pool, *found->second, firstDdi, lastDdi, requireSettable))
 				{
 					owner = current;
 					break;
@@ -165,8 +171,9 @@ namespace section_layout
 			for (std::size_t g = 0; g < representative.size(); g++)
 			{
 				const auto &first = sections[representative[g]];
-				if ((std::abs(*first.yOffset_mm - *sections[i].yOffset_mm) <= toleranceMm) &&
-				    (std::abs(*first.width_mm - *sections[i].width_mm) <= toleranceMm))
+				// 64-bit differences: two int32 values can be further apart than an int32 holds
+				if ((std::llabs(static_cast<long long>(*first.yOffset_mm) - *sections[i].yOffset_mm) <= toleranceMm) &&
+				    (std::llabs(static_cast<long long>(*first.width_mm) - *sections[i].width_mm) <= toleranceMm))
 				{
 					aogSection = static_cast<std::uint8_t>(g);
 					break;

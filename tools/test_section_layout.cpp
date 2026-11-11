@@ -11,6 +11,7 @@
 
 #include "isobus/isobus/isobus_device_descriptor_object_pool_helpers.hpp"
 
+#include <cstdint>
 #include <cstdio>
 #include <fstream>
 #include <iterator>
@@ -140,6 +141,17 @@ static void test_missing_owner_falls_back()
 	check(owners_of(pool, 1).empty(), "no element with DDI 290 gives no owners");
 }
 
+static void test_read_only_actual_is_not_an_owner()
+{
+	// The seeder pool links DDI 161 read-only (properties 0x01): it reports, but cannot be commanded
+	isobus::DeviceDescriptorObjectPool pool;
+	check(build_seeder_pool(pool, { 1, 1, 1 }), "three-function pool builds");
+	const auto parents = element_hierarchy::build_parent_map(pool);
+	check(section_layout::resolve_condensed_owners(pool, parents, section_elements(3), 161, 176).size() == 3, "any linked DDI 161 counts when settability is not asked for");
+	check(section_layout::resolve_condensed_owners(pool, parents, section_elements(3), 161, 176, true).empty(), "a read-only DDI 161 is not a command target");
+	check(section_layout::resolve_condensed_owners(pool, parents, section_elements(3), DDI_SETPOINT_CONDENSED_1_16, DDI_SETPOINT_CONDENSED_241_256, true).size() == 3, "a settable DDI 290 still is");
+}
+
 static void test_grouping()
 {
 	using section_layout::group_overlapping_sections;
@@ -164,6 +176,10 @@ static void test_grouping()
 
 	auto differentWidth = group_overlapping_sections({ { 0, 3000 }, { 0, 1500 } });
 	check(!differentWidth.grouped, "same centre but different width stays separate");
+
+	// Offsets at the ends of the int32 range differ by more than an int32 holds
+	auto extremes = group_overlapping_sections({ { INT32_MIN, 3000 }, { INT32_MAX, 3000 }, { 0, INT32_MAX }, { 0, 1 } });
+	check(!extremes.grouped && extremes.numberOfAogSections == 4, "int32 extremes do not wrap around into one AOG section");
 }
 
 // Prints the owners and the DDOP's fixed geometry for a captured binary DDOP, in the TC's section order
@@ -233,6 +249,7 @@ int main(int argc, char **argv)
 	test_mixed_section_counts();
 	test_owner_on_device_element();
 	test_missing_owner_falls_back();
+	test_read_only_actual_is_not_an_owner();
 	test_grouping();
 
 	if (failures != 0)

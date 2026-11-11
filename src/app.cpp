@@ -1060,8 +1060,9 @@ void Application::check_section_demand()
 		for (std::uint8_t i = 0; i < state.get_number_of_sections(); i++)
 		{
 			actual.push_back(SectionState::ON == state.get_section_actual_state(i));
-			// With allSectionsFollowFirst, AOG has one section: only its bit is demand, any others are padding
-			const std::uint8_t demandIndex = settings->is_all_sections_follow_first() ? 0 : i;
+			// Demand is AOG's bit for the AOG section this implement section belongs to (grouped sections share
+			// one); with allSectionsFollowFirst, AOG has one section, so any other bit is padding
+			const std::uint8_t demandIndex = settings->is_all_sections_follow_first() ? 0 : state.get_aog_section_for_section(i);
 			demanded = demanded || (arriving && (demandIndex < sectionDemand.size()) && sectionDemand[demandIndex]);
 		}
 		const bool working = (actual.end() != std::find(actual.begin(), actual.end(), true));

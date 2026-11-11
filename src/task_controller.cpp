@@ -241,9 +241,15 @@ bool ClientState::is_section_control_enabled() const
 void ClientState::set_section_control_enabled(bool state)
 {
 	isSectionControlEnabled = state;
+	// Commanded for every boom, including booms that have not reported DDI 160 yet, so one boom's report
+	// is never aggregated against a missing entry for another; each boom's next report corrects its own entry
+	for (std::uint16_t element : sectionControlStateElements)
+	{
+		elementSectionControlStates[element] = state;
+	}
 	for (auto &entry : elementSectionControlStates)
 	{
-		entry.second = state; // Commanded for every boom; each boom's next DDI 160 report corrects its own entry
+		entry.second = state;
 	}
 }
 
@@ -384,6 +390,8 @@ void ClientState::add_section_control_state_element(std::uint16_t elementNumber)
 	if (std::find(sectionControlStateElements.begin(), sectionControlStateElements.end(), elementNumber) == sectionControlStateElements.end())
 	{
 		sectionControlStateElements.push_back(elementNumber);
+		// Until it reports, assume the boom is in the mode last commanded
+		elementSectionControlStates.try_emplace(elementNumber, isSectionControlEnabled);
 	}
 }
 
@@ -734,7 +742,8 @@ bool MyTCServer::activate_object_pool(std::shared_ptr<isobus::ControlFunction> p
 		{
 			const auto firstDdi = static_cast<std::uint16_t>(hasCondensedSetpoint ? isobus::DataDescriptionIndex::SetpointCondensedWorkState1_16 : isobus::DataDescriptionIndex::ActualCondensedWorkState1_16);
 			const auto lastDdi = static_cast<std::uint16_t>(hasCondensedSetpoint ? isobus::DataDescriptionIndex::SetpointCondensedWorkState241_256 : isobus::DataDescriptionIndex::ActualCondensedWorkState241_256);
-			auto owners = section_layout::resolve_condensed_owners(state.get_pool(), element_hierarchy::build_parent_map(state.get_pool()), sectionElementNumbers, firstDdi, lastDdi);
+			// DDI 161 is only a command target where it is settable; a read-only one just reports
+			auto owners = section_layout::resolve_condensed_owners(state.get_pool(), element_hierarchy::build_parent_map(state.get_pool()), sectionElementNumbers, firstDdi, lastDdi, !hasCondensedSetpoint);
 			if (owners.size() > 1)
 			{
 				log("TC Server") << "Sections are split over " << owners.size() << " elements with their own condensed DDIs:" << std::endl;
