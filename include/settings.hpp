@@ -98,6 +98,14 @@ public:
 	 */
 	bool set_vt_enabled(bool enabled, bool save = true);
 
+	/// @brief Check whether every implement section follows AOG's section 1.
+	/// @details For implements that declare several sections (or booms) that really are one, such as
+	/// several dispensers on one working width. AOG then sees the implement as a single section.
+	bool is_all_sections_follow_first() const;
+
+	/// @brief Set whether every implement section follows AOG's section 1.
+	bool set_all_sections_follow_first(bool enabled, bool save = true);
+
 	/**
 	 * @brief Get the configured TC version
 	 * @return The configured version (0-4, default 3)
@@ -161,6 +169,7 @@ private:
 	constexpr static bool DEFAULT_NMEA_SEND_ENABLED = true;
 	constexpr static bool DEFAULT_AOG_HEARTBEAT_ENABLED = true;
 	constexpr static bool DEFAULT_VT_ENABLED = true;
+	constexpr static bool DEFAULT_ALL_SECTIONS_FOLLOW_FIRST = false;
 	constexpr static std::uint8_t DEFAULT_TC_VERSION = 3; ///< SecondEditionDraft (V3 default for maximum implement compatibility)
 	static const std::string DEFAULT_LANGUAGE_CODE;
 	static const std::string DEFAULT_COUNTRY_CODE;
@@ -169,6 +178,7 @@ private:
 	bool nmeaSendEnabled = DEFAULT_NMEA_SEND_ENABLED;
 	bool aogHeartbeatEnabled = DEFAULT_AOG_HEARTBEAT_ENABLED;
 	bool vtEnabled = DEFAULT_VT_ENABLED;
+	bool allSectionsFollowFirst = DEFAULT_ALL_SECTIONS_FOLLOW_FIRST;
 	std::uint8_t tcVersion = DEFAULT_TC_VERSION;
 	std::string languageCode = DEFAULT_LANGUAGE_CODE;
 	std::string countryCode = DEFAULT_COUNTRY_CODE;

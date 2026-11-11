@@ -507,6 +507,11 @@ void Application::setup_udp_connections()
 				sectionDemand = sectionStates;
 				sectionDemandChangesSinceLog++;
 			}
+			if (settings->is_all_sections_follow_first())
+			{
+				// The implement's sections are really one: all follow AOG's section 1 (sectionDemand above stays as AOG sent it)
+				std::fill(sectionStates.begin(), sectionStates.end(), sectionStates.front());
+			}
 			tcServer->update_section_states(sectionStates);
 		}
 		else if (pgn == 0xF1 && !data.empty()) // 241 - Section Control
@@ -739,6 +744,20 @@ bool Application::update()
 			}
 
 			anyClientWithSections = true;
+
+			if (settings->is_all_sections_follow_first())
+			{
+				// AOG is set up with one section: report it on while any implement section is on
+				bool anyOn = false;
+				for (std::uint8_t i = 0; i < state.get_number_of_sections(); i++)
+				{
+					anyOn = anyOn || (state.get_section_actual_state(i) == SectionState::ON);
+				}
+				std::vector<uint8_t> oneSection = { state.is_section_control_enabled(), 1, static_cast<std::uint8_t>(anyOn ? 1 : 0) };
+				udpConnections->send(0x80, 0xF0, oneSection);
+				continue;
+			}
+
 			std::vector<uint8_t> data = { state.is_section_control_enabled(), state.get_number_of_sections() };
 
 			std::uint8_t sectionIndex = 0;
