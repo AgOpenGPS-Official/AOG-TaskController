@@ -12,6 +12,7 @@
 
 #include "isobus/isobus/isobus_device_descriptor_object_pool_helpers.hpp"
 #include "isobus/isobus/isobus_task_controller_server.hpp"
+#include "isobus/utility/system_timing.hpp"
 
 #include <algorithm>
 #include <bitset>
@@ -20,6 +21,10 @@
 #include <iomanip>
 #include <iostream>
 #include <sstream>
+
+/// Delay between pool activation and applying the initial section control state, so the implement
+/// has settled and answered the measurement commands before it is switched to automatic.
+static constexpr std::uint32_t INITIAL_SECTION_CONTROL_DELAY_MS = 2000;
 
 // Sanitize a string for use as a filename by replacing invalid characters with underscores
 static std::string sanitize_filename(const std::string &input)
@@ -239,6 +244,22 @@ bool ClientState::is_section_control_enabled() const
 void ClientState::set_section_control_enabled(bool state)
 {
 	isSectionControlEnabled = state;
+}
+
+void ClientState::schedule_initial_section_control(std::uint32_t dueMs)
+{
+	initialSectionControlDueMs = dueMs;
+}
+
+bool ClientState::take_due_initial_section_control(std::uint32_t nowMs)
+{
+	// Signed difference so the comparison survives timestamp wrap-around
+	if (!initialSectionControlDueMs || static_cast<std::int32_t>(nowMs - *initialSectionControlDueMs) < 0)
+	{
+		return false;
+	}
+	initialSectionControlDueMs.reset();
+	return true;
 }
 
 bool ClientState::uses_per_element_control() const
@@ -872,6 +893,18 @@ void MyTCServer::request_measurement_commands()
 
 			log() << "Measurement commands sent." << std::endl;
 			client.second.mark_measurement_commands_sent();
+
+			// Switch the implement to automatic shortly after it connects, so AOG's SC button
+			// does not need pressing on every connect. With the setting off, send nothing, as before.
+			if (sectionControlOnConnect)
+			{
+				client.second.schedule_initial_section_control(isobus::SystemTiming::get_timestamp_ms() + INITIAL_SECTION_CONTROL_DELAY_MS);
+			}
+		}
+		if (client.second.take_due_initial_section_control(isobus::SystemTiming::get_timestamp_ms()))
+		{
+			log("TC") << "Applying initial section control state: " << (desiredSectionControlEnabled ? "enabled" : "disabled") << std::endl;
+			apply_section_control_state(client.first, client.second, desiredSectionControlEnabled);
 		}
 	}
 }
@@ -879,6 +912,12 @@ void MyTCServer::request_measurement_commands()
 void MyTCServer::update_section_states(std::vector<bool> &sectionStates)
 {
 	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
+	aogSectionDemand = sectionStates;
+	lastSectionDemandMs = isobus::SystemTiming::get_timestamp_ms();
+	if (0 == lastSectionDemandMs)
+	{
+		lastSectionDemandMs = 1; // 0 means "never"
+	}
 	for (auto &client : clients)
 	{
 		auto &state = client.second;
@@ -925,20 +964,60 @@ void MyTCServer::update_section_states(std::vector<bool> &sectionStates)
 void MyTCServer::update_section_control_enabled(bool enabled)
 {
 	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
+	desiredSectionControlEnabled = enabled;
 	for (auto &client : clients)
 	{
-		// Always update the local flag
-		if (client.second.is_section_control_enabled() != enabled)
-		{
-			client.second.set_section_control_enabled(enabled);
-		}
+		apply_section_control_state(client.first, client.second, enabled);
+	}
+}
 
-		// Only send ISOBUS command to clients that support SectionControlState DDI and have sections
-		if (client.second.has_element_number_for_ddi(isobus::DataDescriptionIndex::SectionControlState) &&
-		    client.second.get_number_of_sections() > 0)
+void MyTCServer::set_section_control_on_connect(bool enabled)
+{
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
+	sectionControlOnConnect = enabled;
+	desiredSectionControlEnabled = enabled;
+}
+
+void MyTCServer::apply_section_control_state(std::shared_ptr<isobus::ControlFunction> client, ClientState &state, bool enabled)
+{
+	// Always update the local flag
+	state.set_section_control_enabled(enabled);
+
+	// Skip clients that don't have any sections configured (e.g., tractors or other non-implement devices)
+	if (state.get_number_of_sections() == 0)
+	{
+		return;
+	}
+
+	// Only send ISOBUS command to clients that support SectionControlState DDI
+	if (state.has_element_number_for_ddi(isobus::DataDescriptionIndex::SectionControlState))
+	{
+		send_section_control_state(client, enabled);
+	}
+
+	if (enabled)
+	{
+		// ISO 11783-10 F.3.5.3 b): after switching to automatic, send the setpoint. update_section_states()
+		// only sends changes, so an all-off demand (AOG's Auto off after a field change) would never reach
+		// the implement and it would keep running on its own state. A demand older than
+		// SECTION_DEMAND_TIMEOUT_MS (no field open) counts as all off.
+		const bool demandCurrent = (0 != lastSectionDemandMs) && !isobus::SystemTiming::time_expired_ms(lastSectionDemandMs, SECTION_DEMAND_TIMEOUT_MS);
+		for (std::uint8_t i = 0; i < state.get_number_of_sections(); i++)
 		{
-			send_section_control_state(client.first, enabled);
+			const bool on = demandCurrent && (i < aogSectionDemand.size()) && aogSectionDemand[i];
+			state.set_section_setpoint_state(i, on ? SectionState::ON : SectionState::OFF);
 		}
+		send_all_section_setpoint_states(client);
+	}
+}
+
+void MyTCServer::send_all_section_setpoint_states(std::shared_ptr<isobus::ControlFunction> client)
+{
+	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
+	const std::uint8_t numberOfSections = clients[client].get_number_of_sections();
+	for (std::uint8_t block = 0; block * NUMBER_SECTIONS_PER_CONDENSED_MESSAGE < numberOfSections; block++)
+	{
+		send_section_setpoint_states(client, block, true);
 	}
 }
 
@@ -955,7 +1034,7 @@ void MyTCServer::send_gnss_quality(std::uint8_t quality)
 	}
 }
 
-void MyTCServer::send_section_setpoint_states(std::shared_ptr<isobus::ControlFunction> client, std::uint8_t ddiOffset)
+void MyTCServer::send_section_setpoint_states(std::shared_ptr<isobus::ControlFunction> client, std::uint8_t ddiOffset, bool forceWorkState)
 {
 	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
 	std::uint8_t sectionOffset = ddiOffset * NUMBER_SECTIONS_PER_CONDENSED_MESSAGE;
@@ -975,12 +1054,12 @@ void MyTCServer::send_section_setpoint_states(std::shared_ptr<isobus::ControlFun
 		send_set_value(client, ddiTarget, elementNumber, value);
 
 		bool setpointWorkState = clients[client].is_any_section_setpoint_on();
-		if ((clients[client].get_setpoint_work_state() != setpointWorkState) && clients[client].has_element_number_for_ddi(isobus::DataDescriptionIndex::SetpointWorkState))
+		if ((forceWorkState || (clients[client].get_setpoint_work_state() != setpointWorkState)) && clients[client].has_element_number_for_ddi(isobus::DataDescriptionIndex::SetpointWorkState))
 		{
 			send_set_value(client, static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SetpointWorkState), clients[client].get_element_number_for_ddi(isobus::DataDescriptionIndex::SetpointWorkState), setpointWorkState ? 1 : 0);
 			clients[client].set_setpoint_work_state(setpointWorkState);
 		}
-		else if (!clients[client].has_element_number_for_ddi(isobus::DataDescriptionIndex::SetpointWorkState))
+		else if (!forceWorkState && !clients[client].has_element_number_for_ddi(isobus::DataDescriptionIndex::SetpointWorkState))
 		{
 			log("TC Server") << "DDI 289 (SetpointWorkState) not available!" << std::endl;
 		}
@@ -1019,7 +1098,7 @@ void MyTCServer::send_section_setpoint_states(std::shared_ptr<isobus::ControlFun
 
 		// Also send global work state on the boom/device element if DDI 289 is available
 		bool setpointWorkState = clients[client].is_any_section_setpoint_on();
-		if (clients[client].get_setpoint_work_state() != setpointWorkState)
+		if (forceWorkState || (clients[client].get_setpoint_work_state() != setpointWorkState))
 		{
 			if (clients[client].has_element_number_for_ddi(isobus::DataDescriptionIndex::SetpointWorkState))
 			{

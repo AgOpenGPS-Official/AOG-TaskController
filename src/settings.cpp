@@ -70,6 +70,8 @@ bool Settings::load()
 	nmeaSendEnabled = loadBoolean("nmeaSendEnabled", DEFAULT_NMEA_SEND_ENABLED);
 	aogHeartbeatEnabled = loadBoolean("aogHeartbeatEnabled", DEFAULT_AOG_HEARTBEAT_ENABLED);
 	vtEnabled = loadBoolean("vtEnabled", DEFAULT_VT_ENABLED);
+	sectionControlOnConnect = loadBoolean("sectionControlOnConnect", DEFAULT_SECTION_CONTROL_ON_CONNECT);
+	sectionControlOnFieldOpen = loadBoolean("sectionControlOnFieldOpen", DEFAULT_SECTION_CONTROL_ON_FIELD_OPEN);
 
 	if (data.contains("tcVersion"))
 	{
@@ -143,6 +145,8 @@ bool Settings::save() const
 	data["nmeaSendEnabled"] = nmeaSendEnabled;
 	data["aogHeartbeatEnabled"] = aogHeartbeatEnabled;
 	data["vtEnabled"] = vtEnabled;
+	data["sectionControlOnConnect"] = sectionControlOnConnect;
+	data["sectionControlOnFieldOpen"] = sectionControlOnFieldOpen;
 	data["tcVersion"] = tcVersion;
 	data["languageCode"] = languageCode;
 	data["countryCode"] = countryCode;
@@ -259,6 +263,28 @@ bool Settings::is_vt_enabled() const
 bool Settings::set_vt_enabled(bool enabled, bool save)
 {
 	return set_boolean(vtEnabled, enabled, save);
+}
+
+bool Settings::is_section_control_on_connect() const
+{
+	std::scoped_lock lock(settingsMutex);
+	return sectionControlOnConnect;
+}
+
+bool Settings::set_section_control_on_connect(bool enabled, bool save)
+{
+	return set_boolean(sectionControlOnConnect, enabled, save);
+}
+
+bool Settings::is_section_control_on_field_open() const
+{
+	std::scoped_lock lock(settingsMutex);
+	return sectionControlOnFieldOpen;
+}
+
+bool Settings::set_section_control_on_field_open(bool enabled, bool save)
+{
+	return set_boolean(sectionControlOnFieldOpen, enabled, save);
 }
 
 bool Settings::is_aog_heartbeat_enabled() const
