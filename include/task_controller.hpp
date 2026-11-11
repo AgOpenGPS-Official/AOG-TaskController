@@ -14,6 +14,7 @@
 #include "isobus/isobus/isobus_device_descriptor_object_pool.hpp"
 #include "isobus/isobus/isobus_standard_data_description_indices.hpp"
 #include "isobus/isobus/isobus_task_controller_server.hpp"
+#include "section_layout.hpp"
 
 #include <cstdint>
 #include <map>
@@ -66,6 +67,35 @@ public:
 	void set_element_work_state(std::uint16_t elementNumber, bool isWorking);
 	bool try_get_element_work_state(std::uint16_t elementNumber, bool &isWorking) const;
 
+	/// @brief Elements carrying the condensed setpoint/actual DDIs, one per boom. Two or more means each boom
+	/// numbers its own sections and gets its own setpoint and DDI 160; zero or one keeps the single-element path.
+	void set_condensed_owners(std::vector<section_layout::CondensedOwner> owners, std::uint16_t setpointBaseDdi);
+	const std::vector<section_layout::CondensedOwner> &get_condensed_owners() const;
+	bool has_multiple_condensed_owners() const;
+	std::uint16_t get_condensed_setpoint_base_ddi() const; ///< DDI 290, or DDI 161 for the settable-actual method
+	/// @brief Maps an owner element's local condensed section to the flat section index. False if unknown.
+	bool try_get_owned_section(std::uint16_t ownerElement, std::uint8_t localSection, std::uint8_t &section) const;
+	/// @brief Records one element's DDI 160 report; with several owners, automatic while any element is automatic
+	void set_element_section_control_state(std::uint16_t elementNumber, bool enabled);
+	/// @brief Elements that declare DDI 160 (Section Control State)
+	void add_section_control_state_element(std::uint16_t elementNumber);
+	const std::vector<std::uint16_t> &get_section_control_state_elements() const;
+
+	/// @brief Section element numbers in flat section order, as found in the DDOP geometry
+	void set_section_elements(const std::vector<std::uint16_t> &elements);
+	const std::vector<std::uint16_t> &get_section_elements() const;
+	/// @brief Stores a Y offset or width that a section reported (DDI 135 / 67 / 70 / 68). True if it changed.
+	bool set_section_geometry_value(std::uint16_t elementNumber, std::uint16_t ddi, std::int32_t value);
+	const std::vector<section_layout::SectionGeometry> &get_section_geometry() const;
+	void set_section_geometry(std::vector<section_layout::SectionGeometry> geometry);
+	/// @brief Sets which AOG section drives each implement section (identity until geometry says otherwise)
+	void set_aog_section_map(const section_layout::AogSectionMap &map);
+	const section_layout::AogSectionMap &get_aog_section_map() const;
+	std::uint8_t get_aog_section_for_section(std::uint8_t section) const;
+	std::uint8_t get_number_of_aog_sections() const;
+	/// @brief Whether any implement section in this AOG section is on
+	bool is_aog_section_on(std::uint8_t aogSection) const;
+
 private:
 	isobus::DeviceDescriptorObjectPool pool; ///< The device descriptor object pool (DDOP) for the TC
 	bool areMeasurementCommandsSent = false; ///< Whether or not the measurement commands have been sent
@@ -83,6 +113,13 @@ private:
 	bool isSectionControlEnabled = false; ///< Stores auto vs manual mode setting
 	bool usesPerElementControl = false; ///< Legacy mode: use per-element setpoint instead of condensed
 	std::uint16_t perElementSetpointDDI = 0; ///< The DDI to use for per-element setpoints (289 or 141), 0 if not applicable
+	std::vector<section_layout::CondensedOwner> condensedOwners; ///< One per boom with its own condensed DDIs
+	std::uint16_t condensedSetpointBaseDdi = 0; ///< First DDI of the condensed setpoint range the owners use
+	std::map<std::uint16_t, bool> elementSectionControlStates; ///< DDI 160 as reported per element
+	std::vector<std::uint16_t> sectionControlStateElements; ///< Elements declaring DDI 160
+	std::vector<std::uint16_t> sectionElements; ///< Flat section index -> section element number (from the geometry)
+	std::vector<section_layout::SectionGeometry> sectionGeometry; ///< Lateral position per section, filled from the DDOP and requests
+	section_layout::AogSectionMap aogSectionMap; ///< Implement section -> AOG section
 };
 
 // Create the task controller server object, this will handle all the ISOBUS communication for us
@@ -120,17 +157,25 @@ public:
 	void update_section_states(std::vector<bool> &sectionStates);
 	void update_section_control_enabled(bool enabled);
 
+	/// @brief Whether sections that cover the same strip (same Y offset and width) share one AOG section (settings: groupOverlappingSections)
+	void set_group_overlapping_sections(bool enabled);
+
 	/// @brief Sends GNSS quality (DDI 514) to every client that declares that DDI.
 	/// @param quality NMEA 2000 GNSS Method: 0=No GNSS, 1=GNSS, 2=DGNSS, 3=Precise, 4=RTK Fixed, 5=RTK Float, 6=Estimated, 7=Manual, 8=Simulated
 	void send_gnss_quality(std::uint8_t quality);
 
 private:
 	void send_section_setpoint_states(std::shared_ptr<isobus::ControlFunction> client, std::uint8_t ddiOffset);
+	/// @brief Sends each condensed owner its own setpoint, sections numbered within that owner
+	void send_owner_section_setpoint_states(std::shared_ptr<isobus::ControlFunction> client);
+	/// @brief Recomputes which AOG section drives each implement section from the known geometry, and logs a change
+	void update_aog_section_map(std::shared_ptr<isobus::ControlFunction> client, ClientState &state);
 	void send_section_control_state(std::shared_ptr<isobus::ControlFunction> client, bool enabled);
 	bool is_ddi_settable(std::shared_ptr<isobus::ControlFunction> client, std::uint16_t ddi);
 
 	std::map<std::shared_ptr<isobus::ControlFunction>, ClientState> clients;
 	std::map<std::shared_ptr<isobus::ControlFunction>, std::queue<std::vector<std::uint8_t>>> uploadedPools;
+	bool groupOverlappingSections = false; ///< Guarded by clientsMutex
 
 	/// @brief Guards clients and uploadedPools.
 	///
