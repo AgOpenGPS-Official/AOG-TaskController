@@ -91,6 +91,9 @@ public:
 	/// @brief Sets which AOG section drives each implement section (identity until geometry says otherwise)
 	void set_aog_section_map(const section_layout::AogSectionMap &map);
 	const section_layout::AogSectionMap &get_aog_section_map() const;
+	/// @brief The grouping the geometry gives, whether or not it is applied (for the log)
+	void set_proposed_aog_section_map(const section_layout::AogSectionMap &map);
+	const section_layout::AogSectionMap &get_proposed_aog_section_map() const;
 	std::uint8_t get_aog_section_for_section(std::uint8_t section) const;
 	std::uint8_t get_number_of_aog_sections() const;
 	/// @brief Whether any implement section in this AOG section is on
@@ -120,6 +123,7 @@ private:
 	std::vector<std::uint16_t> sectionElements; ///< Flat section index -> section element number (from the geometry)
 	std::vector<section_layout::SectionGeometry> sectionGeometry; ///< Lateral position per section, filled from the DDOP and requests
 	section_layout::AogSectionMap aogSectionMap; ///< Implement section -> AOG section
+	section_layout::AogSectionMap proposedAogSectionMap; ///< What the geometry gives; logged when it changes
 };
 
 // Create the task controller server object, this will handle all the ISOBUS communication for us

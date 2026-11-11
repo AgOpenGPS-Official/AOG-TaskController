@@ -442,6 +442,16 @@ const section_layout::AogSectionMap &ClientState::get_aog_section_map() const
 	return aogSectionMap;
 }
 
+void ClientState::set_proposed_aog_section_map(const section_layout::AogSectionMap &map)
+{
+	proposedAogSectionMap = map;
+}
+
+const section_layout::AogSectionMap &ClientState::get_proposed_aog_section_map() const
+{
+	return proposedAogSectionMap;
+}
+
 std::uint8_t ClientState::get_aog_section_for_section(std::uint8_t section) const
 {
 	return (section < aogSectionMap.aogSectionForSection.size()) ? aogSectionMap.aogSectionForSection[section] : section;
@@ -1322,21 +1332,32 @@ void MyTCServer::update_aog_section_map(std::shared_ptr<isobus::ControlFunction>
 {
 	std::lock_guard<std::recursive_mutex> lock(clientsMutex);
 	const auto grouped = section_layout::group_overlapping_sections(state.get_section_geometry());
+	auto describe = [](const section_layout::AogSectionMap &map) {
+		std::ostringstream text;
+		for (std::size_t i = 0; i < map.aogSectionForSection.size(); i++)
+		{
+			text << (i ? ", " : "") << (i + 1) << "->" << (map.aogSectionForSection[i] + 1);
+		}
+		return text.str();
+	};
+
+	if (grouped.aogSectionForSection != state.get_proposed_aog_section_map().aogSectionForSection)
+	{
+		// What the geometry says, logged whether or not the grouping is applied
+		state.set_proposed_aog_section_map(grouped);
+		log("TC Server") << "Client " << client->get_NAME().get_full_name() << ": geometry gives " << static_cast<int>(grouped.numberOfAogSections)
+		                 << " AOG section(s) for " << static_cast<int>(state.get_number_of_sections()) << " implement section(s) (" << describe(grouped) << ")"
+		                 << (grouped.grouped ? (groupOverlappingSections ? ", applied" : ", not applied: groupOverlappingSections is off") : "") << std::endl;
+	}
+
 	const auto map = groupOverlappingSections ? grouped : section_layout::identity_map(state.get_number_of_sections());
 	if (map.aogSectionForSection == state.get_aog_section_map().aogSectionForSection)
 	{
 		return;
 	}
 	state.set_aog_section_map(map);
-
-	std::ostringstream text;
-	for (std::size_t i = 0; i < map.aogSectionForSection.size(); i++)
-	{
-		text << (i ? ", " : "") << (i + 1) << "->" << (map.aogSectionForSection[i] + 1);
-	}
-	log("TC Server") << "Client " << client->get_NAME().get_full_name() << ": " << static_cast<int>(map.numberOfAogSections)
-	                 << " AOG section(s) for " << static_cast<int>(state.get_number_of_sections()) << " implement section(s) ("
-	                 << text.str() << ")" << (map.grouped ? ", overlapping sections share an AOG section" : "") << std::endl;
+	log("TC Server") << "Client " << client->get_NAME().get_full_name() << ": reporting " << static_cast<int>(map.numberOfAogSections)
+	                 << " section(s) to AOG (" << describe(map) << ")" << std::endl;
 }
 
 void MyTCServer::send_owner_section_setpoint_states(std::shared_ptr<isobus::ControlFunction> client)
